@@ -1,0 +1,8 @@
+{
+  "default_template": "templates/kp_template.docx",
+  "default_calc": "samples/Calc_23-12-24 PAC.xlsx",
+  "default_pdf_dir": "pdf",
+  "default_output_dir": "output",
+  "currency": "EUR",
+  "vat_percent": 12
+}
