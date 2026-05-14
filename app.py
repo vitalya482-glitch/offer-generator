@@ -274,62 +274,307 @@ def make_offer(template_path: Path, calc_path: Path, output_dir: Path, client_na
 
 
 def run_gui(project_dir: Path) -> None:
-    import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    try:
+        from PySide6.QtCore import Qt, QSettings
+        from PySide6.QtGui import QFont, QIcon
+        from PySide6.QtWidgets import (
+            QApplication,
+            QComboBox,
+            QFileDialog,
+            QFrame,
+            QGridLayout,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QMainWindow,
+            QMessageBox,
+            QPushButton,
+            QSizePolicy,
+            QSpacerItem,
+            QTextEdit,
+            QVBoxLayout,
+            QWidget,
+        )
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(
+            "Для запуска красивого GUI установите PySide6: pip install PySide6"
+        ) from exc
 
     cfg = load_config(project_dir)
-    root = tk.Tk()
-    root.title("Генератор КП")
-    root.geometry("720x360")
 
-    client = tk.StringVar(value="ТОО Example")
-    template = tk.StringVar(value=str(project_dir / cfg.get("default_template", "templates/kp_template.docx")))
-    calc = tk.StringVar(value=str(project_dir / cfg.get("default_calc", "samples/Calc_23-12-24 PAC.xlsx")))
-    pdf_dir = tk.StringVar(value=str(project_dir / cfg.get("default_pdf_dir", "pdf")))
-    output_dir = tk.StringVar(value=str(project_dir / cfg.get("default_output_dir", "output")))
-    sheet = tk.StringVar(value="")
+    class SamOfferWindow(QMainWindow):
+        def __init__(self) -> None:
+            super().__init__()
+            self.settings = QSettings("SAM Group", "SAM Offer Generator")
+            self.setWindowTitle("SAM Offer Generator")
+            self.setMinimumSize(1040, 680)
+            self.setWindowIcon(QIcon())
 
-    def browse_file(var, filetypes):
-        path = filedialog.askopenfilename(filetypes=filetypes)
-        if path:
-            var.set(path)
+            self.client_edit = QLineEdit(self._saved("client", "ТОО Example"))
+            self.template_edit = QLineEdit(self._saved_path("template", cfg.get("default_template", "templates/kp_template.docx")))
+            self.calc_edit = QLineEdit(self._saved_path("calc", cfg.get("default_calc", "samples/Calc_23-12-24 PAC.xlsx")))
+            self.pdf_edit = QLineEdit(self._saved_path("pdf_dir", cfg.get("default_pdf_dir", "pdf")))
+            self.output_edit = QLineEdit(self._saved_path("output_dir", cfg.get("default_output_dir", "output")))
+            self.sheet_combo = QComboBox()
+            self.sheet_combo.setEditable(True)
+            self.status_label = QLabel("Готов к формированию коммерческого предложения")
+            self.preview = QTextEdit()
+            self.preview.setReadOnly(True)
+            self.preview.setPlaceholderText("Здесь появится краткая проверка Excel-файла и результат генерации.")
 
-    def browse_dir(var):
-        path = filedialog.askdirectory()
-        if path:
-            var.set(path)
+            self._build_ui()
+            self._apply_sam_style()
+            self._load_sheets()
+            self._refresh_preview()
 
-    def generate():
-        try:
-            out = make_offer(
-                template_path=Path(template.get()),
-                calc_path=Path(calc.get()),
-                output_dir=Path(output_dir.get()),
-                client_name=client.get().strip() or "Client",
-                sheet_name=sheet.get().strip() or None,
-                pdf_dir=Path(pdf_dir.get()) if pdf_dir.get().strip() else None,
+        def _saved(self, key: str, default: str) -> str:
+            value = self.settings.value(key, default)
+            return str(value) if value is not None else default
+
+        def _saved_path(self, key: str, default_relative: str) -> str:
+            default_path = str(project_dir / default_relative)
+            value = self.settings.value(key, default_path)
+            return str(value) if value is not None else default_path
+
+        def _build_ui(self) -> None:
+            central = QWidget()
+            root = QHBoxLayout(central)
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(0)
+
+            sidebar = QFrame()
+            sidebar.setObjectName("Sidebar")
+            sidebar.setFixedWidth(290)
+            side = QVBoxLayout(sidebar)
+            side.setContentsMargins(28, 34, 28, 28)
+            side.setSpacing(18)
+
+            brand = QLabel("SAM\nGROUP")
+            brand.setObjectName("Brand")
+            brand.setAlignment(Qt.AlignLeft)
+            title = QLabel("Offer Generator")
+            title.setObjectName("SideTitle")
+            subtitle = QLabel("Коммерческие предложения из Excel, Word и PDF")
+            subtitle.setObjectName("SideSubtitle")
+            subtitle.setWordWrap(True)
+
+            badge = QLabel("MVP → Windows EXE")
+            badge.setObjectName("Badge")
+            badge.setAlignment(Qt.AlignCenter)
+
+            side.addWidget(brand)
+            side.addWidget(title)
+            side.addWidget(subtitle)
+            side.addSpacing(12)
+            side.addWidget(badge)
+            side.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
+            side.addWidget(QLabel("SAM Group style\nDark graphite · Signal red · Clean white"))
+
+            content = QFrame()
+            content.setObjectName("Content")
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(34, 28, 34, 28)
+            content_layout.setSpacing(18)
+
+            header = QHBoxLayout()
+            h_text = QVBoxLayout()
+            page_title = QLabel("Новое коммерческое предложение")
+            page_title.setObjectName("PageTitle")
+            page_subtitle = QLabel("Заполните клиента, выберите расчет и шаблон. Остальное программа соберет автоматически.")
+            page_subtitle.setObjectName("PageSubtitle")
+            h_text.addWidget(page_title)
+            h_text.addWidget(page_subtitle)
+            self.generate_btn = QPushButton("Сформировать КП")
+            self.generate_btn.setObjectName("PrimaryButton")
+            self.generate_btn.clicked.connect(self._generate)
+            header.addLayout(h_text)
+            header.addWidget(self.generate_btn, alignment=Qt.AlignTop)
+            content_layout.addLayout(header)
+
+            form_card = self._card("Данные предложения")
+            grid = QGridLayout(form_card.layout())
+            grid.setColumnStretch(1, 1)
+            grid.setVerticalSpacing(12)
+            grid.setHorizontalSpacing(10)
+
+            rows = [
+                ("Клиент", self.client_edit, None),
+                ("Word-шаблон", self.template_edit, lambda: self._browse_file(self.template_edit, "Word (*.docx)")),
+                ("Excel-расчет", self.calc_edit, lambda: self._browse_file(self.calc_edit, "Excel (*.xlsx)")),
+                ("Папка PDF", self.pdf_edit, lambda: self._browse_dir(self.pdf_edit)),
+                ("Папка результата", self.output_edit, lambda: self._browse_dir(self.output_edit)),
+                ("Лист Excel", self.sheet_combo, None),
+            ]
+            for row, (label, widget, command) in enumerate(rows, start=1):
+                lab = QLabel(label)
+                lab.setObjectName("FormLabel")
+                grid.addWidget(lab, row, 0)
+                grid.addWidget(widget, row, 1)
+                if command:
+                    btn = QPushButton("Выбрать")
+                    btn.setObjectName("GhostButton")
+                    btn.clicked.connect(command)
+                    grid.addWidget(btn, row, 2)
+                elif widget is self.sheet_combo:
+                    btn = QPushButton("Обновить")
+                    btn.setObjectName("GhostButton")
+                    btn.clicked.connect(self._load_sheets)
+                    grid.addWidget(btn, row, 2)
+
+            content_layout.addWidget(form_card)
+
+            bottom = QHBoxLayout()
+            preview_card = self._card("Проверка данных")
+            preview_card.layout().addWidget(self.preview)
+            bottom.addWidget(preview_card, stretch=2)
+
+            status_card = self._card("Статус")
+            status_text = QLabel(
+                "1. Выберите Excel-калькуляцию\n"
+                "2. Проверьте лист и клиента\n"
+                "3. Нажмите кнопку формирования\n\n"
+                "Результат сохраняется в output/ как .docx"
             )
-            messagebox.showinfo("Готово", f"КП сформировано:\n{out}")
-        except Exception as exc:
-            messagebox.showerror("Ошибка", str(exc))
+            status_text.setWordWrap(True)
+            status_card.layout().addWidget(status_text)
+            status_card.layout().addWidget(self.status_label)
+            bottom.addWidget(status_card, stretch=1)
+            content_layout.addLayout(bottom)
 
-    rows = [
-        ("Клиент", client, None),
-        ("Word шаблон", template, lambda: browse_file(template, [("Word", "*.docx")])) ,
-        ("Excel расчет", calc, lambda: browse_file(calc, [("Excel", "*.xlsx")])) ,
-        ("Папка PDF", pdf_dir, lambda: browse_dir(pdf_dir)),
-        ("Папка результата", output_dir, lambda: browse_dir(output_dir)),
-        ("Лист Excel (пусто = первый)", sheet, None),
-    ]
-    for i, (label, var, cmd) in enumerate(rows):
-        ttk.Label(root, text=label).grid(row=i, column=0, padx=10, pady=8, sticky="w")
-        ttk.Entry(root, textvariable=var, width=70).grid(row=i, column=1, padx=10, pady=8, sticky="we")
-        if cmd:
-            ttk.Button(root, text="...", command=cmd).grid(row=i, column=2, padx=10, pady=8)
-    ttk.Button(root, text="Сформировать КП", command=generate).grid(row=len(rows), column=1, padx=10, pady=20, sticky="e")
-    root.columnconfigure(1, weight=1)
-    root.mainloop()
+            root.addWidget(sidebar)
+            root.addWidget(content)
+            self.setCentralWidget(central)
 
+            for widget in (self.client_edit, self.template_edit, self.calc_edit, self.pdf_edit, self.output_edit):
+                widget.textChanged.connect(self._refresh_preview)
+            self.sheet_combo.currentTextChanged.connect(self._refresh_preview)
+            self.calc_edit.textChanged.connect(self._load_sheets)
+
+        def _card(self, title: str) -> QFrame:
+            frame = QFrame()
+            frame.setObjectName("Card")
+            layout = QVBoxLayout(frame)
+            layout.setContentsMargins(20, 18, 20, 20)
+            layout.setSpacing(12)
+            label = QLabel(title)
+            label.setObjectName("CardTitle")
+            layout.addWidget(label)
+            return frame
+
+        def _apply_sam_style(self) -> None:
+            app = QApplication.instance()
+            if app:
+                app.setFont(QFont("Segoe UI", 10))
+            self.setStyleSheet("""
+                QMainWindow { background: #F4F6F8; }
+                #Sidebar { background: #15171B; color: #FFFFFF; }
+                #Content { background: #F4F6F8; }
+                #Brand { color: #FFFFFF; font-size: 34px; font-weight: 900; letter-spacing: 2px; }
+                #SideTitle { color: #FFFFFF; font-size: 23px; font-weight: 700; }
+                #SideSubtitle { color: #B8C0CC; font-size: 13px; line-height: 1.4; }
+                #Badge { background: #D71920; color: white; border-radius: 16px; padding: 8px 12px; font-weight: 700; }
+                #PageTitle { color: #171A1F; font-size: 28px; font-weight: 800; }
+                #PageSubtitle { color: #667085; font-size: 13px; }
+                #Card { background: #FFFFFF; border: 1px solid #E7EAF0; border-radius: 18px; }
+                #CardTitle { color: #171A1F; font-size: 15px; font-weight: 800; }
+                #FormLabel { color: #344054; font-weight: 700; }
+                QLineEdit, QComboBox, QTextEdit {
+                    background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 10px;
+                    padding: 9px 11px; color: #101828; selection-background-color: #D71920;
+                }
+                QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border: 1px solid #D71920; }
+                QTextEdit { min-height: 150px; }
+                QPushButton { border-radius: 11px; padding: 10px 16px; font-weight: 800; }
+                #PrimaryButton { background: #D71920; color: white; border: 1px solid #D71920; }
+                #PrimaryButton:hover { background: #B9151B; }
+                #GhostButton { background: #FFFFFF; color: #1D2939; border: 1px solid #D0D5DD; }
+                #GhostButton:hover { border: 1px solid #D71920; color: #D71920; }
+                QLabel { color: #475467; }
+            """)
+
+        def _browse_file(self, target: QLineEdit, file_filter: str) -> None:
+            path, _ = QFileDialog.getOpenFileName(self, "Выберите файл", target.text(), file_filter)
+            if path:
+                target.setText(path)
+                if target is self.calc_edit:
+                    self._load_sheets()
+
+        def _browse_dir(self, target: QLineEdit) -> None:
+            path = QFileDialog.getExistingDirectory(self, "Выберите папку", target.text())
+            if path:
+                target.setText(path)
+
+        def _load_sheets(self) -> None:
+            current = self.sheet_combo.currentText().strip()
+            self.sheet_combo.blockSignals(True)
+            self.sheet_combo.clear()
+            try:
+                calc_path = Path(self.calc_edit.text())
+                if calc_path.exists():
+                    wb = load_workbook(calc_path, read_only=True, data_only=True)
+                    self.sheet_combo.addItems(wb.sheetnames)
+                    if current and current in wb.sheetnames:
+                        self.sheet_combo.setCurrentText(current)
+            except Exception:
+                self.sheet_combo.addItem("")
+            finally:
+                self.sheet_combo.blockSignals(False)
+
+        def _refresh_preview(self) -> None:
+            try:
+                calc_path = Path(self.calc_edit.text())
+                if not calc_path.exists():
+                    self.preview.setPlainText("Excel-файл пока не найден.")
+                    return
+                calc = parse_calc(calc_path, self.sheet_combo.currentText().strip() or None)
+                qty = int(calc.quantity) if calc.quantity.is_integer() else calc.quantity
+                lines = [
+                    f"Лист: {calc.sheet_name}",
+                    f"Версия: {calc.version}",
+                    f"Модель: {calc.model}",
+                    f"Количество: {qty}",
+                    f"Условия поставки: {calc.delivery_basis}",
+                    f"Итого: {money(calc.total_price)} EUR",
+                    f"Опций найдено: {len(calc.options)}",
+                ]
+                self.preview.setPlainText("\n".join(lines))
+            except Exception as exc:
+                self.preview.setPlainText(f"Не удалось прочитать расчет: {exc}")
+
+        def _remember_values(self) -> None:
+            self.settings.setValue("client", self.client_edit.text())
+            self.settings.setValue("template", self.template_edit.text())
+            self.settings.setValue("calc", self.calc_edit.text())
+            self.settings.setValue("pdf_dir", self.pdf_edit.text())
+            self.settings.setValue("output_dir", self.output_edit.text())
+
+        def _generate(self) -> None:
+            try:
+                self.generate_btn.setEnabled(False)
+                self.status_label.setText("Формирую документ...")
+                QApplication.processEvents()
+                out = make_offer(
+                    template_path=Path(self.template_edit.text()),
+                    calc_path=Path(self.calc_edit.text()),
+                    output_dir=Path(self.output_edit.text()),
+                    client_name=self.client_edit.text().strip() or "Client",
+                    sheet_name=self.sheet_combo.currentText().strip() or None,
+                    pdf_dir=Path(self.pdf_edit.text()) if self.pdf_edit.text().strip() else None,
+                )
+                self._remember_values()
+                self.status_label.setText(f"Готово: {out.name}")
+                QMessageBox.information(self, "SAM Offer Generator", f"КП сформировано:\n{out}")
+            except Exception as exc:
+                self.status_label.setText("Ошибка формирования")
+                QMessageBox.critical(self, "Ошибка", str(exc))
+            finally:
+                self.generate_btn.setEnabled(True)
+                self._refresh_preview()
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = SamOfferWindow()
+    window.show()
+    app.exec()
 
 def main(argv=None) -> int:
     project_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
