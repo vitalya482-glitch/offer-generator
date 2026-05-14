@@ -275,8 +275,8 @@ def make_offer(template_path: Path, calc_path: Path, output_dir: Path, client_na
 
 def run_gui(project_dir: Path) -> None:
     try:
-        from PySide6.QtCore import Qt, QSettings
-        from PySide6.QtGui import QFont, QIcon
+        from PySide6.QtCore import Qt, QSettings, QUrl
+        from PySide6.QtGui import QFont, QIcon, QDesktopServices
         from PySide6.QtWidgets import (
             QApplication,
             QComboBox,
@@ -480,11 +480,28 @@ def run_gui(project_dir: Path) -> None:
                 #CardTitle { color: #171A1F; font-size: 15px; font-weight: 800; }
                 #FormLabel { color: #344054; font-weight: 700; }
                 QLineEdit, QComboBox, QTextEdit {
-                    background: #FFFFFF; border: 1px solid #D0D5DD; border-radius: 10px;
-                    padding: 9px 11px; color: #101828; selection-background-color: #D71920;
-                }
-                QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border: 1px solid #D71920; }
-                QTextEdit { min-height: 150px; }
+                background-color: #FFFFFF;
+                color: #101828;
+                border: 2px solid #D0D5DD;
+                border-radius: 12px;
+                padding: 0 14px;
+                min-height: 42px;
+                font-size: 14px;
+                selection-background-color: #D71920;
+            }
+
+            QLineEdit:focus, QComboBox:focus, QTextEdit:focus {
+                border: 2px solid #D71920;
+            }
+
+            QLineEdit::placeholder {
+                color: #98A2B3;
+            }
+
+            QComboBox {
+                padding-right: 32px;
+            }
+                QTextEdit { min-height: 150px; padding: 12px 14px;}
                 QPushButton { border-radius: 11px; padding: 10px 16px; font-weight: 800; }
                 #PrimaryButton { background: #D71920; color: white; border: 1px solid #D71920; }
                 #PrimaryButton:hover { background: #B9151B; }
@@ -548,12 +565,12 @@ def run_gui(project_dir: Path) -> None:
             self.settings.setValue("calc", self.calc_edit.text())
             self.settings.setValue("pdf_dir", self.pdf_edit.text())
             self.settings.setValue("output_dir", self.output_edit.text())
-
-        def _generate(self) -> None:
+        def _generate(self):
             try:
                 self.generate_btn.setEnabled(False)
                 self.status_label.setText("Формирую документ...")
                 QApplication.processEvents()
+
                 out = make_offer(
                     template_path=Path(self.template_edit.text()),
                     calc_path=Path(self.calc_edit.text()),
@@ -562,12 +579,49 @@ def run_gui(project_dir: Path) -> None:
                     sheet_name=self.sheet_combo.currentText().strip() or None,
                     pdf_dir=Path(self.pdf_edit.text()) if self.pdf_edit.text().strip() else None,
                 )
+
                 self._remember_values()
                 self.status_label.setText(f"Готово: {out.name}")
-                QMessageBox.information(self, "SAM Offer Generator", f"КП сформировано:\n{out}")
+
+                msg = QMessageBox(self)
+                msg.setWindowTitle("SAM Offer Generator")
+                msg.setIcon(QMessageBox.Question)
+                msg.setText("Коммерческое предложение успешно сформировано.")
+                msg.setInformativeText(str(out))
+
+                open_folder_btn = msg.addButton(
+                    "Открыть папку расположения",
+                    QMessageBox.ActionRole
+                )
+
+                open_file_btn = msg.addButton(
+                    "Открыть сформированное КП",
+                    QMessageBox.ActionRole
+                )
+
+                msg.addButton(
+                    "Отмена",
+                    QMessageBox.RejectRole
+                )
+
+                msg.exec()
+
+                clicked = msg.clickedButton()
+
+                if clicked == open_folder_btn:
+                    QDesktopServices.openUrl(
+                        QUrl.fromLocalFile(str(out.parent))
+                    )
+
+                elif clicked == open_file_btn:
+                    QDesktopServices.openUrl(
+                        QUrl.fromLocalFile(str(out))
+                    )
+
             except Exception as exc:
                 self.status_label.setText("Ошибка формирования")
                 QMessageBox.critical(self, "Ошибка", str(exc))
+
             finally:
                 self.generate_btn.setEnabled(True)
                 self._refresh_preview()
