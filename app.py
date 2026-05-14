@@ -392,7 +392,8 @@ def run_gui(project_dir: Path) -> None:
             content_layout.addLayout(header)
 
             form_card = self._card("Данные предложения")
-            grid = QGridLayout(form_card.layout())
+            grid = QGridLayout()
+            form_card.layout().addLayout(grid)
             grid.setColumnStretch(1, 1)
             grid.setVerticalSpacing(12)
             grid.setHorizontalSpacing(10)
