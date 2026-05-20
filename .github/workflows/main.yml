@@ -25,7 +25,7 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --onefile --windowed --name SAM-Offer-Generator --add-data "templates;templates" --add-data "samples;samples" --add-data "config.example.json;." app.py
+          pyinstaller --onefile --windowed --name SAM-Offer-Generator --add-data "config.example.json;." app.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
