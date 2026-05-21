@@ -19,6 +19,21 @@ def stylesheet(scale: float) -> str:
         #Brand {{ color: #FFFFFF; font-size: {px(34)}px; font-weight: 900; letter-spacing: 2px; }}
         #SideTitle {{ color: #FFFFFF; font-size: {px(23)}px; font-weight: 700; }}
         #SideSubtitle {{ color: #B8C0CC; font-size: {px(13)}px; line-height: 1.4; }}
+        #SidebarSectionTitle {{ color: #FFFFFF; font-size: {px(14)}px; font-weight: 800; margin-top: {px(4)}px; }}
+        #SidebarFormLabel {{ color: #B8C0CC; font-size: {px(11)}px; font-weight: 700; }}
+        #SidebarHint {{ color: #667085; font-size: {px(10)}px; }}
+        #SidebarInput {{
+            background-color: #20242B;
+            color: #FFFFFF;
+            border: 1px solid #343A46;
+            border-radius: {px(10)}px;
+            padding: 0 {px(10)}px;
+            min-height: {px(32)}px;
+            font-size: {px(12)}px;
+        }}
+        #SidebarInput:focus {{ border: 1px solid #D71920; }}
+        #SidebarButton {{ background: #D71920; color: white; border: 1px solid #D71920; border-radius: {px(10)}px; }}
+        #SidebarButton:hover {{ background: #B9151B; }}
         #Badge {{ background: #D71920; color: white; border-radius: {px(16)}px; padding: {px(8)}px {px(12)}px; font-weight: 700; }}
         #PageTitle {{ color: #171A1F; font-size: {px(28)}px; font-weight: 800; }}
         #PageSubtitle {{ color: #667085; font-size: {px(13)}px; }}

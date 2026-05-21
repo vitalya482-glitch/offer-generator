@@ -14,6 +14,7 @@ from pathlib import Path
 from brands.registry import BRANDS, get_brand_module
 from core.excel_reader import list_sheets
 from core.models import OfferContext
+from core.manager_profile import ManagerProfile, find_manager_in_project
 from core.project_scanner import clear_scan_cache, scan_project_files
 from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir
 from gui.ui_style import stylesheet, ui_scale
@@ -29,6 +30,7 @@ def run_gui() -> None:
             QFileDialog,
             QFrame,
             QGridLayout,
+            QGroupBox,
             QHBoxLayout,
             QLabel,
             QLineEdit,
@@ -92,11 +94,29 @@ def run_gui() -> None:
             self._last_scale = 0.0
             self._responsive_widgets: list[QWidget] = []
 
+            self.manager_name_edit = QLineEdit(self._saved("manager_name", ""))
+            self.manager_position_edit = QLineEdit(self._saved("manager_position", ""))
+            self.manager_email_edit = QLineEdit(self._saved("manager_email", ""))
+            self.manager_phone_edit = QLineEdit(self._saved("manager_phone", ""))
+            for edit in (
+                self.manager_name_edit,
+                self.manager_position_edit,
+                self.manager_email_edit,
+                self.manager_phone_edit,
+            ):
+                edit.setObjectName("SidebarInput")
+                self._responsive_widgets.append(edit)
+            self.use_manager_btn = QPushButton("Использовать")
+            self.use_manager_btn.setObjectName("SidebarButton")
+            self.use_manager_btn.clicked.connect(self._save_manager_profile)
+            self._responsive_widgets.append(self.use_manager_btn)
+
             self._build_ui()
             self._apply_style()
             self._autofill_client_from_project_dir()
             self._autofill_brand_from_project_dir()
             self._scan_project(force=False)
+            self._autofill_manager_from_project(force=False)
             self._refresh_preview()
 
         def _saved(self, key: str, default: str) -> str:
@@ -174,6 +194,19 @@ def run_gui() -> None:
             side.addWidget(subtitle)
             side.addSpacing(12)
             side.addWidget(badge)
+            side.addSpacing(8)
+            manager_title = QLabel("Исполнитель")
+            manager_title.setObjectName("SidebarSectionTitle")
+            side.addWidget(manager_title)
+            self._add_sidebar_field(side, "ФИО", self.manager_name_edit)
+            self._add_sidebar_field(side, "Должность", self.manager_position_edit)
+            self._add_sidebar_field(side, "Email", self.manager_email_edit)
+            self._add_sidebar_field(side, "Телефон", self.manager_phone_edit)
+            side.addWidget(self.use_manager_btn)
+            manager_hint = QLabel("Если поля пустые, программа попробует взять данные из Word-файла КП в папке проекта.")
+            manager_hint.setObjectName("SidebarHint")
+            manager_hint.setWordWrap(True)
+            side.addWidget(manager_hint)
             side.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
             side.addWidget(QLabel(APP_FOOTER))
 
@@ -256,6 +289,10 @@ def run_gui() -> None:
             self.brand_combo.currentTextChanged.connect(self._refresh_preview)
             self.client_edit.textChanged.connect(self._refresh_preview)
             self.output_edit.textChanged.connect(self._on_output_dir_changed)
+            self.manager_name_edit.textChanged.connect(self._refresh_preview)
+            self.manager_position_edit.textChanged.connect(self._refresh_preview)
+            self.manager_email_edit.textChanged.connect(self._refresh_preview)
+            self.manager_phone_edit.textChanged.connect(self._refresh_preview)
 
             # Save user input immediately, not only after successful generation.
             self.project_edit.textChanged.connect(self._remember_values)
@@ -265,6 +302,12 @@ def run_gui() -> None:
             self.calc_combo.currentTextChanged.connect(self._remember_values)
             self.template_combo.currentTextChanged.connect(self._remember_values)
             self.sheet_combo.currentTextChanged.connect(self._remember_values)
+
+        def _add_sidebar_field(self, layout, label: str, widget) -> None:
+            lab = QLabel(label)
+            lab.setObjectName("SidebarFormLabel")
+            layout.addWidget(lab)
+            layout.addWidget(widget)
 
         def _add_row(self, grid, row: int, label: str, widget, button_text: str | None, command) -> None:
             lab = QLabel(label)
@@ -387,6 +430,62 @@ def run_gui() -> None:
             self._auto_client_value = client
             self._refresh_preview()
 
+        def _manager_profile(self) -> ManagerProfile:
+            return ManagerProfile(
+                name=self.manager_name_edit.text().strip(),
+                position=self.manager_position_edit.text().strip(),
+                email=self.manager_email_edit.text().strip(),
+                phone=self.manager_phone_edit.text().strip(),
+            )
+
+        def _set_manager_profile(self, profile: ManagerProfile) -> None:
+            self.manager_name_edit.setText(profile.name)
+            self.manager_position_edit.setText(profile.position)
+            self.manager_email_edit.setText(profile.email)
+            self.manager_phone_edit.setText(profile.phone)
+
+        def _save_manager_profile(self) -> None:
+            profile = self._manager_profile()
+            self.settings.setValue("manager_name", profile.name)
+            self.settings.setValue("manager_position", profile.position)
+            self.settings.setValue("manager_email", profile.email)
+            self.settings.setValue("manager_phone", profile.phone)
+            self.settings.setValue("manager_profile_locked", "1")
+            self.settings.sync()
+            self.status_label.setText("Данные исполнителя сохранены")
+            self._refresh_preview()
+
+        def _has_saved_manager_profile(self) -> bool:
+            locked = self._saved("manager_profile_locked", "") == "1"
+            saved = any(
+                self._saved(key, "").strip()
+                for key in ("manager_name", "manager_position", "manager_email", "manager_phone")
+            )
+            return locked or saved
+
+        def _autofill_manager_from_project(self, force: bool = False) -> None:
+            if not force and self._has_saved_manager_profile():
+                return
+            if not force and not self._manager_profile().is_empty():
+                return
+
+            project_text = self._project_path_text().strip()
+            project_dir = Path(project_text) if project_text else None
+            if not project_dir or not project_dir.exists():
+                return
+
+            profile = find_manager_in_project(project_dir)
+            if profile.is_empty():
+                return
+
+            self._set_manager_profile(profile)
+            self.settings.setValue("manager_name", profile.name)
+            self.settings.setValue("manager_position", profile.position)
+            self.settings.setValue("manager_email", profile.email)
+            self.settings.setValue("manager_phone", profile.phone)
+            self.settings.sync()
+            self.status_label.setText("Данные исполнителя найдены в Word-файле проекта")
+
         def _on_output_dir_changed(self) -> None:
             if not self._updating_path_display:
                 self.output_dir_path = self.output_edit.text().strip()
@@ -412,6 +511,7 @@ def run_gui() -> None:
                 self._autofill_client_from_project_dir(force=True)
                 self._autofill_brand_from_project_dir()
                 self._scan_project(force=True)
+                self._autofill_manager_from_project(force=False)
 
         def _browse_output_dir(self) -> None:
             path = QFileDialog.getExistingDirectory(self, "Выберите папку результата", self._output_path_text() or self._project_path_text())
@@ -502,6 +602,10 @@ def run_gui() -> None:
                 client_name=self.client_edit.text().strip() or "Client",
                 sheet_name=self.sheet_combo.currentText().strip() or None,
                 pdf_dir=pdf_dir,
+                manager_name=self.manager_name_edit.text().strip(),
+                manager_position=self.manager_position_edit.text().strip(),
+                manager_email=self.manager_email_edit.text().strip(),
+                manager_phone=self.manager_phone_edit.text().strip(),
             )
 
         def _validate_context(self, context: OfferContext) -> None:

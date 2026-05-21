@@ -55,3 +55,7 @@ class OfferContext:
     pdf_dir: Optional[Path] = None
     version: Optional[str] = None
     city: str = "г. Алматы"
+    manager_name: str = ""
+    manager_position: str = ""
+    manager_email: str = ""
+    manager_phone: str = ""
