@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+APP_FOOTER = """
+Направления:
+Stulz · Riello · DC Eltek · Generator
+
+Разработчик:
+Литвинов Виталий Константинович
+"""
+
 import sys
 from pathlib import Path
 
@@ -99,7 +107,7 @@ def run_gui() -> None:
             side.addSpacing(12)
             side.addWidget(badge)
             side.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-            side.addWidget(QLabel("Направления:\nStulz · Riello · DC Eltek · Generator"))
+            side.addWidget(QLabel(APP_FOOTER))
 
             content = QFrame()
             content.setObjectName("Content")
