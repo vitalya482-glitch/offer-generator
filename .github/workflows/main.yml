@@ -31,4 +31,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: offer-generator-windows
-          path: dist/SAM-Offer-Generator/
+          path: dist/
