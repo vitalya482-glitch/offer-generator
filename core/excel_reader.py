@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Optional
+import copy
 import re
 
 from openpyxl import load_workbook
@@ -23,6 +24,77 @@ STOP_OPTION_LABELS = (
     "Total EXW for us", "Transport cost", "Customs clearance", "Certificate",
     "Storage", "Price without margin", "Margin", "Price + Margin", "VAT", "DDP", "DAP", "EXW",
 )
+
+_PARSE_CACHE: dict[tuple[str, int, int, str], CalcData] = {}
+_SHEETS_CACHE: dict[tuple[str, int, int], list[str]] = {}
+
+
+class _CellValue:
+    __slots__ = ("row", "column", "value")
+
+    def __init__(self, row: int, column: int, value: Any) -> None:
+        self.row = row
+        self.column = column
+        self.value = value
+
+
+class CachedSheet:
+    """In-memory sheet snapshot.
+
+    openpyxl is slow when the same sheet is scanned many times. This wrapper
+    reads values once, then gives the existing parser cheap random access and
+    cheap full-text indexes.
+    """
+
+    def __init__(self, ws) -> None:
+        self.title = ws.title
+        self._values = [tuple(row) for row in ws.iter_rows(values_only=True)]
+        self.max_row = len(self._values)
+        self.max_column = max((len(row) for row in self._values), default=0)
+        self._norm_cells: list[tuple[int, int, str]] | None = None
+
+    def cell(self, row: int, column: int) -> _CellValue:
+        value = None
+        if row >= 1 and column >= 1 and row <= self.max_row:
+            row_values = self._values[row - 1]
+            if column <= len(row_values):
+                value = row_values[column - 1]
+        return _CellValue(row, column, value)
+
+    def __getitem__(self, address: str) -> _CellValue:
+        from openpyxl.utils.cell import coordinate_to_tuple
+
+        row, column = coordinate_to_tuple(address)
+        return self.cell(row, column)
+
+    def iter_rows(self):
+        for row_idx, row_values in enumerate(self._values, start=1):
+            yield [
+                _CellValue(row_idx, col_idx, row_values[col_idx - 1] if col_idx <= len(row_values) else None)
+                for col_idx in range(1, self.max_column + 1)
+            ]
+
+    def norm_cells(self) -> list[tuple[int, int, str]]:
+        if self._norm_cells is None:
+            cells: list[tuple[int, int, str]] = []
+            for row_idx, row_values in enumerate(self._values, start=1):
+                for col_idx, value in enumerate(row_values, start=1):
+                    val = _norm(value)
+                    if val:
+                        cells.append((row_idx, col_idx, val))
+            self._norm_cells = cells
+        return self._norm_cells
+
+
+def _file_signature(path: Path) -> tuple[str, int, int]:
+    path = Path(path)
+    stat = path.stat()
+    return str(path.resolve()), stat.st_mtime_ns, stat.st_size
+
+
+def clear_excel_cache() -> None:
+    _PARSE_CACHE.clear()
+    _SHEETS_CACHE.clear()
 
 
 def _text(value: Any) -> str:
@@ -50,17 +122,19 @@ def _is_qty_label(value: Any) -> bool:
 def find_cells_by_label(ws, labels: tuple[str, ...] | list[str] | set[str], exact: bool = False) -> list[tuple[int, int]]:
     result: list[tuple[int, int]] = []
     label_norms = [_norm(x) for x in labels]
-    for row in ws.iter_rows():
-        for cell in row:
-            val = _norm(cell.value)
-            if not val:
-                continue
-            if exact:
-                if val in label_norms:
-                    result.append((cell.row, cell.column))
-            else:
-                if any(label in val for label in label_norms):
-                    result.append((cell.row, cell.column))
+    norm_cells = ws.norm_cells() if hasattr(ws, "norm_cells") else [
+        (cell.row, cell.column, _norm(cell.value))
+        for row in ws.iter_rows()
+        for cell in row
+        if _norm(cell.value)
+    ]
+    for row, col, val in norm_cells:
+        if exact:
+            if val in label_norms:
+                result.append((row, col))
+        else:
+            if any(label in val for label in label_norms):
+                result.append((row, col))
     return result
 
 
@@ -362,29 +436,39 @@ def _sheet_priority(name: str, selected: Optional[str] = None) -> int:
 
 def parse_stulz_calc(xlsx_path: Path, sheet_name: Optional[str] = None) -> CalcData:
     path = Path(xlsx_path)
-    wb = load_workbook(path, data_only=True)
+    signature = _file_signature(path)
+    cache_key = (*signature, sheet_name or "")
+    if cache_key in _PARSE_CACHE:
+        return copy.deepcopy(_PARSE_CACHE[cache_key])
+
+    wb = load_workbook(path, read_only=True, data_only=True)
 
     sheet_names = [sheet_name] if sheet_name and sheet_name in wb.sheetnames else list(wb.sheetnames)
     sheet_names = sorted(sheet_names, key=lambda s: _sheet_priority(s, sheet_name))
 
     errors: list[str] = []
 
-    # 1) Try calculation sheets first.
+    # 1) Try calculation sheets first. Each sheet is materialized once into
+    # CachedSheet, and all parser lookups use that in-memory snapshot/index.
     for name in sheet_names:
-        ws = wb[name]
+        ws = CachedSheet(wb[name])
         try:
             if _find_offer_header(ws) and (_norm(name).startswith("кп") or "offer" in _norm(name)):
                 continue
-            return _parse_calc_sheet(ws)
+            result = _parse_calc_sheet(ws)
+            _PARSE_CACHE[cache_key] = copy.deepcopy(result)
+            return result
         except Exception as exc:
             errors.append(f"{name}: {exc}")
 
     # 2) Fallback to ready КП/offer sheets.
     offer_candidates = sorted(wb.sheetnames, key=lambda s: _sheet_priority(s, sheet_name), reverse=True)
     for name in offer_candidates:
-        ws = wb[name]
+        ws = CachedSheet(wb[name])
         try:
-            return _parse_offer_sheet(ws)
+            result = _parse_offer_sheet(ws)
+            _PARSE_CACHE[cache_key] = copy.deepcopy(result)
+            return result
         except Exception as exc:
             errors.append(f"{name} КП: {exc}")
 
@@ -392,8 +476,14 @@ def parse_stulz_calc(xlsx_path: Path, sheet_name: Optional[str] = None) -> CalcD
 
 
 def list_sheets(xlsx_path: Path) -> list[str]:
-    wb = load_workbook(xlsx_path, read_only=True, data_only=True)
-    return list(wb.sheetnames)
+    path = Path(xlsx_path)
+    signature = _file_signature(path)
+    if signature in _SHEETS_CACHE:
+        return list(_SHEETS_CACHE[signature])
+    wb = load_workbook(path, read_only=True, data_only=True)
+    sheets = list(wb.sheetnames)
+    _SHEETS_CACHE[signature] = list(sheets)
+    return sheets
 
 
 def read_calc_excel(xlsx_path: Path, sheet_name: Optional[str] = None) -> CalcData:

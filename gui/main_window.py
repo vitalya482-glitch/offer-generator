@@ -14,7 +14,7 @@ from pathlib import Path
 from brands.registry import BRANDS, get_brand_module
 from core.excel_reader import list_sheets
 from core.models import OfferContext
-from core.project_scanner import scan_project_files
+from core.project_scanner import clear_scan_cache, scan_project_files
 from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir
 from gui.ui_style import stylesheet, ui_scale
 
@@ -90,7 +90,7 @@ def run_gui() -> None:
             self._apply_style()
             self._autofill_client_from_project_dir()
             self._autofill_brand_from_project_dir()
-            self._scan_project()
+            self._scan_project(force=False)
             self._refresh_preview()
 
         def _saved(self, key: str, default: str) -> str:
@@ -163,7 +163,7 @@ def run_gui() -> None:
             self._add_row(grid, 0, "Папка проекта", self.project_edit, "Выбрать", self._browse_project_dir)
             self._add_row(grid, 1, "Направление", self.brand_combo, None, None)
             self._add_row(grid, 2, "Клиент", self.client_edit, None, None)
-            self._add_row(grid, 3, "Excel-расчет", self.calc_combo, "Обновить", self._scan_project)
+            self._add_row(grid, 3, "Excel-расчет", self.calc_combo, "Обновить", lambda: self._scan_project(force=True))
             self._add_row(grid, 4, "Word-шаблон", self.template_combo, "Обзор", self._browse_template_file)
             self._add_row(grid, 5, "Лист Excel", self.sheet_combo, "Листы", self._load_sheets)
             self._add_row(grid, 6, "Папка результата", self.output_edit, "Выбрать", self._browse_output_dir)
@@ -310,9 +310,11 @@ def run_gui() -> None:
             self._refresh_preview()
 
         def _on_project_dir_changed(self) -> None:
+            # Do not scan the project tree on every typed character.
+            # Scanning is done on startup, after folder selection, or via "Обновить".
             self._autofill_client_from_project_dir()
             self._autofill_brand_from_project_dir()
-            self._scan_project()
+            self.status_label.setText("Папка изменена. Нажмите «Обновить» или выберите папку через кнопку.")
 
         def _autofill_client_from_project_dir(self, force: bool = False) -> None:
             client = self._extract_client_from_project_dir(self.project_edit.text())
@@ -351,7 +353,7 @@ def run_gui() -> None:
 
                 self._autofill_client_from_project_dir(force=True)
                 self._autofill_brand_from_project_dir()
-                self._scan_project()
+                self._scan_project(force=True)
 
         def _browse_output_dir(self) -> None:
             path = QFileDialog.getExistingDirectory(self, "Выберите папку результата", self.output_edit.text() or self.project_edit.text())
@@ -369,13 +371,15 @@ def run_gui() -> None:
                 self.settings.setValue("template_dir", str(Path(path).parent))
                 self._remember_values()
 
-        def _scan_project(self) -> None:
+        def _scan_project(self, force: bool = False) -> None:
             project_dir = Path(self.project_edit.text().strip()) if self.project_edit.text().strip() else None
             if not project_dir or not project_dir.exists():
                 self.status_label.setText("Папка проекта не выбрана")
                 return
 
-            found = scan_project_files(project_dir)
+            if force:
+                clear_scan_cache()
+            found = scan_project_files(project_dir, use_cache=not force)
             old_calc = self.calc_combo.currentText()
             old_template = self.template_combo.currentText()
 
