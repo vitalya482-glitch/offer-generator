@@ -53,7 +53,12 @@ def run_gui() -> None:
             self.setMinimumSize(900, 620)
             self.setWindowIcon(QIcon())
 
-            self.project_edit = QLineEdit(self._saved("project_dir", ""))
+            self._updating_path_display = False
+            self.project_dir_path = self._saved("project_dir", "")
+            self.output_dir_path = self._saved("output_dir", "")
+
+            self.project_edit = QLineEdit(self._display_dir(self.project_dir_path))
+            self.project_edit.setToolTip(self.project_dir_path)
             self.client_edit = QLineEdit(self._saved("client", "ТОО Example"))
             self.brand_combo = QComboBox()
             self.brand_combo.addItems(BRANDS.keys())
@@ -62,21 +67,22 @@ def run_gui() -> None:
             self.calc_combo.setEditable(True)
             saved_calc = self._saved("calc_path", "")
             if saved_calc:
-                self.calc_combo.addItem(saved_calc)
-                self.calc_combo.setCurrentText(saved_calc)
+                self._add_path_item(self.calc_combo, saved_calc, is_file=True)
+                self.calc_combo.setCurrentIndex(0)
             self.template_combo = QComboBox()
             self.template_combo.setEditable(True)
             saved_template = self._saved("template_path", "")
             if saved_template:
-                self.template_combo.addItem(saved_template)
-                self.template_combo.setCurrentText(saved_template)
+                self._add_path_item(self.template_combo, saved_template, is_file=True)
+                self.template_combo.setCurrentIndex(0)
             self.sheet_combo = QComboBox()
             self.sheet_combo.setEditable(True)
             saved_sheet = self._saved("sheet_name", "")
             if saved_sheet:
                 self.sheet_combo.addItem(saved_sheet)
                 self.sheet_combo.setCurrentText(saved_sheet)
-            self.output_edit = QLineEdit(self._saved("output_dir", ""))
+            self.output_edit = QLineEdit(self._display_dir(self.output_dir_path))
+            self.output_edit.setToolTip(self.output_dir_path)
             self.preview = QTextEdit()
             self.preview.setReadOnly(True)
             self.status_label = QLabel("Выберите папку проекта")
@@ -96,6 +102,47 @@ def run_gui() -> None:
         def _saved(self, key: str, default: str) -> str:
             value = self.settings.value(key, default)
             return str(value) if value is not None else default
+
+        def _display_file(self, path_text: str) -> str:
+            return Path(path_text).name if path_text else ""
+
+        def _display_dir(self, path_text: str) -> str:
+            if not path_text:
+                return ""
+            p = Path(path_text)
+            return p.name or path_text
+
+        def _path_from_combo(self, combo: QComboBox) -> str:
+            data = combo.currentData()
+            return str(data) if data else combo.currentText().strip()
+
+        def _add_path_item(self, combo: QComboBox, path_text: str, is_file: bool = True) -> None:
+            full = str(path_text)
+            display = self._display_file(full) if is_file else self._display_dir(full)
+            combo.addItem(display, full)
+            index = combo.count() - 1
+            combo.setItemData(index, full, Qt.ToolTipRole)
+
+        def _find_combo_path(self, combo: QComboBox, path_text: str) -> int:
+            full = str(path_text)
+            for i in range(combo.count()):
+                if str(combo.itemData(i) or combo.itemText(i)) == full:
+                    return i
+            return -1
+
+        def _set_line_path(self, line_edit: QLineEdit, path_text: str, is_file: bool = False) -> None:
+            full = str(path_text)
+            display = self._display_file(full) if is_file else self._display_dir(full)
+            self._updating_path_display = True
+            line_edit.setText(display)
+            self._updating_path_display = False
+            line_edit.setToolTip(full)
+
+        def _project_path_text(self) -> str:
+            return self.project_dir_path or self.project_edit.text().strip()
+
+        def _output_path_text(self) -> str:
+            return self.output_dir_path or self.output_edit.text().strip()
 
         def _build_ui(self) -> None:
             central = QWidget()
@@ -208,7 +255,7 @@ def run_gui() -> None:
             self.sheet_combo.currentTextChanged.connect(self._refresh_preview)
             self.brand_combo.currentTextChanged.connect(self._refresh_preview)
             self.client_edit.textChanged.connect(self._refresh_preview)
-            self.output_edit.textChanged.connect(self._refresh_preview)
+            self.output_edit.textChanged.connect(self._on_output_dir_changed)
 
             # Save user input immediately, not only after successful generation.
             self.project_edit.textChanged.connect(self._remember_values)
@@ -300,7 +347,7 @@ def run_gui() -> None:
             return extract_brand_from_project_dir(path_text, tuple(BRANDS.keys()))
 
         def _autofill_brand_from_project_dir(self) -> None:
-            brand = self._extract_brand_from_project_dir(self.project_edit.text())
+            brand = self._extract_brand_from_project_dir(self._project_path_text())
             if not brand or self.brand_combo.currentText() == brand:
                 return
 
@@ -312,12 +359,15 @@ def run_gui() -> None:
         def _on_project_dir_changed(self) -> None:
             # Do not scan the project tree on every typed character.
             # Scanning is done on startup, after folder selection, or via "Обновить".
+            if not self._updating_path_display:
+                self.project_dir_path = self.project_edit.text().strip()
+                self.project_edit.setToolTip(self.project_dir_path)
             self._autofill_client_from_project_dir()
             self._autofill_brand_from_project_dir()
             self.status_label.setText("Папка изменена. Нажмите «Обновить» или выберите папку через кнопку.")
 
         def _autofill_client_from_project_dir(self, force: bool = False) -> None:
-            client = self._extract_client_from_project_dir(self.project_edit.text())
+            client = self._extract_client_from_project_dir(self._project_path_text())
             if not client:
                 return
 
@@ -337,42 +387,54 @@ def run_gui() -> None:
             self._auto_client_value = client
             self._refresh_preview()
 
+        def _on_output_dir_changed(self) -> None:
+            if not self._updating_path_display:
+                self.output_dir_path = self.output_edit.text().strip()
+                self.output_edit.setToolTip(self.output_dir_path)
+            self._refresh_preview()
+
         def _browse_project_dir(self) -> None:
-            old_project = self.project_edit.text().strip()
+            old_project = self._project_path_text().strip()
             path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", old_project)
             if path:
                 # Changing project must not reset the selected Word template.
                 # Templates are stored separately and are remembered in QSettings.
-                self.project_edit.setText(path)
+                self.project_dir_path = path
+                self._set_line_path(self.project_edit, path, is_file=False)
 
                 # Keep a custom result folder. Update it only when it was empty
                 # or previously pointed to the old project folder.
-                current_output = self.output_edit.text().strip()
+                current_output = self._output_path_text().strip()
                 if not current_output or current_output == old_project:
-                    self.output_edit.setText(path)
+                    self.output_dir_path = path
+                    self._set_line_path(self.output_edit, path, is_file=False)
 
                 self._autofill_client_from_project_dir(force=True)
                 self._autofill_brand_from_project_dir()
                 self._scan_project(force=True)
 
         def _browse_output_dir(self) -> None:
-            path = QFileDialog.getExistingDirectory(self, "Выберите папку результата", self.output_edit.text() or self.project_edit.text())
+            path = QFileDialog.getExistingDirectory(self, "Выберите папку результата", self._output_path_text() or self._project_path_text())
             if path:
-                self.output_edit.setText(path)
+                self.output_dir_path = path
+                self._set_line_path(self.output_edit, path, is_file=False)
 
         def _browse_template_file(self) -> None:
-            current_template = self.template_combo.currentText().strip()
-            start_dir = str(Path(current_template).parent) if current_template else self._saved("template_dir", self.project_edit.text())
+            current_template = self._path_from_combo(self.template_combo)
+            start_dir = str(Path(current_template).parent) if current_template else self._saved("template_dir", self._project_path_text())
             path, _ = QFileDialog.getOpenFileName(self, "Выберите Word-шаблон", start_dir, "Word (*.docx)")
             if path:
-                if self.template_combo.findText(path) < 0:
-                    self.template_combo.addItem(path)
-                self.template_combo.setCurrentText(path)
+                index = self._find_combo_path(self.template_combo, path)
+                if index < 0:
+                    self._add_path_item(self.template_combo, path, is_file=True)
+                    index = self.template_combo.count() - 1
+                self.template_combo.setCurrentIndex(index)
                 self.settings.setValue("template_dir", str(Path(path).parent))
                 self._remember_values()
 
         def _scan_project(self, force: bool = False) -> None:
-            project_dir = Path(self.project_edit.text().strip()) if self.project_edit.text().strip() else None
+            project_text = self._project_path_text().strip()
+            project_dir = Path(project_text) if project_text else None
             if not project_dir or not project_dir.exists():
                 self.status_label.setText("Папка проекта не выбрана")
                 return
@@ -380,27 +442,31 @@ def run_gui() -> None:
             if force:
                 clear_scan_cache()
             found = scan_project_files(project_dir, use_cache=not force)
-            old_calc = self.calc_combo.currentText()
-            old_template = self.template_combo.currentText()
+            old_calc = self._path_from_combo(self.calc_combo)
+            old_template = self._path_from_combo(self.template_combo)
 
             self.calc_combo.blockSignals(True)
             self.calc_combo.clear()
-            self.calc_combo.addItems([str(p) for p in found["excel"]])
-            if old_calc and self.calc_combo.findText(old_calc) >= 0:
-                self.calc_combo.setCurrentText(old_calc)
+            for p in found["excel"]:
+                self._add_path_item(self.calc_combo, str(p), is_file=True)
+            old_calc_index = self._find_combo_path(self.calc_combo, old_calc) if old_calc else -1
+            if old_calc_index >= 0:
+                self.calc_combo.setCurrentIndex(old_calc_index)
             self.calc_combo.blockSignals(False)
 
             # Do not overwrite Word template when the project folder changes.
             # The template is user-selected and saved separately.
             self.template_combo.blockSignals(True)
-            if old_template and self.template_combo.findText(old_template) < 0:
-                self.template_combo.addItem(old_template)
-            if old_template:
-                self.template_combo.setCurrentText(old_template)
+            if old_template and self._find_combo_path(self.template_combo, old_template) < 0:
+                self._add_path_item(self.template_combo, old_template, is_file=True)
+            old_template_index = self._find_combo_path(self.template_combo, old_template) if old_template else -1
+            if old_template_index >= 0:
+                self.template_combo.setCurrentIndex(old_template_index)
             self.template_combo.blockSignals(False)
 
-            if not self.output_edit.text().strip():
-                self.output_edit.setText(str(project_dir))
+            if not self._output_path_text().strip():
+                self.output_dir_path = str(project_dir)
+                self._set_line_path(self.output_edit, str(project_dir), is_file=False)
 
             self.status_label.setText(f"Найдено Excel: {len(found['excel'])}, Word: {len(found['word'])}")
             self._load_sheets()
@@ -411,7 +477,7 @@ def run_gui() -> None:
             self.sheet_combo.blockSignals(True)
             self.sheet_combo.clear()
             try:
-                calc_path = Path(self.calc_combo.currentText().strip())
+                calc_path = Path(self._path_from_combo(self.calc_combo))
                 if calc_path.exists():
                     sheets = list_sheets(calc_path)
                     self.sheet_combo.addItems(sheets)
@@ -424,14 +490,14 @@ def run_gui() -> None:
             self._refresh_preview()
 
         def _make_context(self) -> OfferContext:
-            project_dir = Path(self.project_edit.text().strip())
-            output_dir = Path(self.output_edit.text().strip() or project_dir)
+            project_dir = Path(self._project_path_text().strip())
+            output_dir = Path(self._output_path_text().strip() or project_dir)
             pdf_dir = project_dir if project_dir.exists() else None
             return OfferContext(
                 brand=self.brand_combo.currentText(),
                 project_dir=project_dir,
-                template_path=Path(self.template_combo.currentText().strip()),
-                calc_path=Path(self.calc_combo.currentText().strip()),
+                template_path=Path(self._path_from_combo(self.template_combo)),
+                calc_path=Path(self._path_from_combo(self.calc_combo)),
                 output_dir=output_dir,
                 client_name=self.client_edit.text().strip() or "Client",
                 sheet_name=self.sheet_combo.currentText().strip() or None,
@@ -460,13 +526,13 @@ def run_gui() -> None:
                 self.preview.setPlainText(f"Не удалось прочитать данные: {exc}")
 
         def _remember_values(self) -> None:
-            self.settings.setValue("project_dir", self.project_edit.text())
+            self.settings.setValue("project_dir", self._project_path_text())
             self.settings.setValue("client", self.client_edit.text())
             self.settings.setValue("brand", self.brand_combo.currentText())
-            self.settings.setValue("calc_path", self.calc_combo.currentText())
-            self.settings.setValue("template_path", self.template_combo.currentText())
+            self.settings.setValue("calc_path", self._path_from_combo(self.calc_combo))
+            self.settings.setValue("template_path", self._path_from_combo(self.template_combo))
             self.settings.setValue("sheet_name", self.sheet_combo.currentText())
-            self.settings.setValue("output_dir", self.output_edit.text())
+            self.settings.setValue("output_dir", self._output_path_text())
             self.settings.sync()
 
         def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
