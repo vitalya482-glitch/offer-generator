@@ -11,12 +11,12 @@ Stulz · Riello · DC Eltek · Generator
 import sys
 from pathlib import Path
 
-from openpyxl import load_workbook
-
 from brands.registry import BRANDS, get_brand_module
 from core.excel_reader import list_sheets
 from core.models import OfferContext
 from core.project_scanner import scan_project_files
+from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir
+from gui.ui_style import stylesheet, ui_scale
 
 
 def run_gui() -> None:
@@ -60,10 +60,22 @@ def run_gui() -> None:
             self.brand_combo.setCurrentText(self._saved("brand", "Stulz"))
             self.calc_combo = QComboBox()
             self.calc_combo.setEditable(True)
+            saved_calc = self._saved("calc_path", "")
+            if saved_calc:
+                self.calc_combo.addItem(saved_calc)
+                self.calc_combo.setCurrentText(saved_calc)
             self.template_combo = QComboBox()
             self.template_combo.setEditable(True)
+            saved_template = self._saved("template_path", "")
+            if saved_template:
+                self.template_combo.addItem(saved_template)
+                self.template_combo.setCurrentText(saved_template)
             self.sheet_combo = QComboBox()
             self.sheet_combo.setEditable(True)
+            saved_sheet = self._saved("sheet_name", "")
+            if saved_sheet:
+                self.sheet_combo.addItem(saved_sheet)
+                self.sheet_combo.setCurrentText(saved_sheet)
             self.output_edit = QLineEdit(self._saved("output_dir", ""))
             self.preview = QTextEdit()
             self.preview.setReadOnly(True)
@@ -198,6 +210,15 @@ def run_gui() -> None:
             self.client_edit.textChanged.connect(self._refresh_preview)
             self.output_edit.textChanged.connect(self._refresh_preview)
 
+            # Save user input immediately, not only after successful generation.
+            self.project_edit.textChanged.connect(self._remember_values)
+            self.client_edit.textChanged.connect(self._remember_values)
+            self.output_edit.textChanged.connect(self._remember_values)
+            self.brand_combo.currentTextChanged.connect(self._remember_values)
+            self.calc_combo.currentTextChanged.connect(self._remember_values)
+            self.template_combo.currentTextChanged.connect(self._remember_values)
+            self.sheet_combo.currentTextChanged.connect(self._remember_values)
+
         def _add_row(self, grid, row: int, label: str, widget, button_text: str | None, command) -> None:
             lab = QLabel(label)
             lab.setObjectName("FormLabel")
@@ -237,9 +258,7 @@ def run_gui() -> None:
             return frame
 
         def _ui_scale(self) -> float:
-            width = max(self.width(), 900)
-            height = max(self.height(), 620)
-            return max(0.86, min(1.25, min(width / 1440, height / 900)))
+            return ui_scale(self.width(), self.height())
 
         def _apply_responsive_metrics(self, force: bool = False) -> None:
             scale = self._ui_scale()
@@ -272,105 +291,13 @@ def run_gui() -> None:
             app = QApplication.instance()
             if app:
                 app.setFont(QFont("Segoe UI", max(9, int(10 * scale))))
-
-            def px(value: int) -> int:
-                return max(1, int(value * scale))
-
-            self.setStyleSheet(f"""
-                QMainWindow {{ background: #F4F6F8; }}
-                #ContentScroll {{ background: #F4F6F8; border: none; }}
-                #Sidebar {{ background: #15171B; color: #FFFFFF; }}
-                #Content {{ background: #F4F6F8; }}
-                #Brand {{ color: #FFFFFF; font-size: {px(34)}px; font-weight: 900; letter-spacing: 2px; }}
-                #SideTitle {{ color: #FFFFFF; font-size: {px(23)}px; font-weight: 700; }}
-                #SideSubtitle {{ color: #B8C0CC; font-size: {px(13)}px; line-height: 1.4; }}
-                #Badge {{ background: #D71920; color: white; border-radius: {px(16)}px; padding: {px(8)}px {px(12)}px; font-weight: 700; }}
-                #PageTitle {{ color: #171A1F; font-size: {px(28)}px; font-weight: 800; }}
-                #PageSubtitle {{ color: #667085; font-size: {px(13)}px; }}
-                #Card {{ background: #FFFFFF; border: 1px solid #E7EAF0; border-radius: {px(18)}px; }}
-                #CardTitle {{ color: #171A1F; font-size: {px(15)}px; font-weight: 800; }}
-                #FormLabel {{ color: #344054; font-weight: 700; font-size: {px(12)}px; }}
-                QLineEdit, QComboBox, QTextEdit {{
-                    background-color: #FFFFFF;
-                    color: #101828;
-                    border: 2px solid #D0D5DD;
-                    border-radius: {px(12)}px;
-                    padding: 0 {px(12)}px;
-                    min-height: {px(38)}px;
-                    font-size: {px(13)}px;
-                    selection-background-color: #D71920;
-                }}
-                QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{ border: 2px solid #D71920; }}
-                QTextEdit {{ min-height: {px(150)}px; padding: {px(12)}px {px(14)}px;}}
-                QPushButton {{ border-radius: {px(11)}px; padding: {px(9)}px {px(14)}px; font-weight: 800; font-size: {px(12)}px; }}
-                #PrimaryButton {{ background: #D71920; color: white; border: 1px solid #D71920; }}
-                #PrimaryButton:hover {{ background: #B9151B; }}
-                #GhostButton {{ background: #FFFFFF; color: #1D2939; border: 1px solid #D0D5DD; }}
-                #GhostButton:hover {{ border: 1px solid #D71920; color: #D71920; }}
-                QLabel {{ color: #475467; font-size: {px(12)}px; }}
-            """)
-
-        def _split_project_path(self, path_text: str) -> list[str]:
-            raw = path_text.strip().strip('"')
-            if not raw:
-                return []
-
-            normalized = raw.replace("\\", "/")
-            return [part.strip() for part in normalized.split("/") if part.strip()]
+            self.setStyleSheet(stylesheet(scale))
 
         def _extract_client_from_project_dir(self, path_text: str) -> str:
-            """Return client name from server project path.
-
-            Expected server structure:
-            //Diskstationnew/Exchange/01_Work/01_STULZ/02_Projects/Client/2206/Project
-            or:
-            /diskstationnew/exchange/01_Work/01_STULZ/02_Projects/Client/...
-            """
-            parts = self._split_project_path(path_text)
-            if not parts:
-                return ""
-
-            lowered = [part.lower() for part in parts]
-
-            project_markers = {"02_projects", "2_projects", "projects", "проекты"}
-            for index, part in enumerate(lowered):
-                if part in project_markers and index + 1 < len(parts):
-                    return parts[index + 1]
-
-            # Fallback for the standard SAM structure if the marker is absent:
-            # ... / 01_STULZ / Client / project-code / project-name
-            for index, part in enumerate(lowered):
-                if "stulz" in part and index + 2 < len(parts):
-                    candidate = parts[index + 2]
-                    if candidate and not candidate.lower().endswith("projects"):
-                        return candidate
-
-            return ""
+            return extract_client_from_project_dir(path_text)
 
         def _extract_brand_from_project_dir(self, path_text: str) -> str:
-            """Return brand/direction from the standard SAM folder path."""
-            parts = self._split_project_path(path_text)
-            if not parts:
-                return ""
-
-            brand_rules = (
-                ("stulz", "Stulz"),
-                ("riello", "Riello"),
-                ("dc_eltek", "DC Eltek"),
-                ("dc eltek", "DC Eltek"),
-                ("eltek", "DC Eltek"),
-                ("generator", "Generator"),
-                ("generators", "Generator"),
-            )
-
-            for part in parts:
-                clean = part.lower().replace("-", "_").replace(" ", "_")
-                for marker, brand in brand_rules:
-                    marker_clean = marker.replace(" ", "_")
-                    if marker_clean in clean and self.brand_combo.findText(brand) >= 0:
-                        return brand
-
-            return ""
+            return extract_brand_from_project_dir(path_text, tuple(BRANDS.keys()))
 
         def _autofill_brand_from_project_dir(self) -> None:
             brand = self._extract_brand_from_project_dir(self.project_edit.text())
@@ -409,10 +336,19 @@ def run_gui() -> None:
             self._refresh_preview()
 
         def _browse_project_dir(self) -> None:
-            path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", self.project_edit.text())
+            old_project = self.project_edit.text().strip()
+            path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", old_project)
             if path:
+                # Changing project must not reset the selected Word template.
+                # Templates are stored separately and are remembered in QSettings.
                 self.project_edit.setText(path)
-                self.output_edit.setText(path)
+
+                # Keep a custom result folder. Update it only when it was empty
+                # or previously pointed to the old project folder.
+                current_output = self.output_edit.text().strip()
+                if not current_output or current_output == old_project:
+                    self.output_edit.setText(path)
+
                 self._autofill_client_from_project_dir(force=True)
                 self._autofill_brand_from_project_dir()
                 self._scan_project()
@@ -423,11 +359,15 @@ def run_gui() -> None:
                 self.output_edit.setText(path)
 
         def _browse_template_file(self) -> None:
-            path, _ = QFileDialog.getOpenFileName(self, "Выберите Word-шаблон", self.project_edit.text(), "Word (*.docx)")
+            current_template = self.template_combo.currentText().strip()
+            start_dir = str(Path(current_template).parent) if current_template else self._saved("template_dir", self.project_edit.text())
+            path, _ = QFileDialog.getOpenFileName(self, "Выберите Word-шаблон", start_dir, "Word (*.docx)")
             if path:
                 if self.template_combo.findText(path) < 0:
                     self.template_combo.addItem(path)
                 self.template_combo.setCurrentText(path)
+                self.settings.setValue("template_dir", str(Path(path).parent))
+                self._remember_values()
 
         def _scan_project(self) -> None:
             project_dir = Path(self.project_edit.text().strip()) if self.project_edit.text().strip() else None
@@ -440,16 +380,19 @@ def run_gui() -> None:
             old_template = self.template_combo.currentText()
 
             self.calc_combo.blockSignals(True)
-            self.template_combo.blockSignals(True)
             self.calc_combo.clear()
-            self.template_combo.clear()
             self.calc_combo.addItems([str(p) for p in found["excel"]])
-            self.template_combo.addItems([str(p) for p in found["word"]])
             if old_calc and self.calc_combo.findText(old_calc) >= 0:
                 self.calc_combo.setCurrentText(old_calc)
-            if old_template and self.template_combo.findText(old_template) >= 0:
-                self.template_combo.setCurrentText(old_template)
             self.calc_combo.blockSignals(False)
+
+            # Do not overwrite Word template when the project folder changes.
+            # The template is user-selected and saved separately.
+            self.template_combo.blockSignals(True)
+            if old_template and self.template_combo.findText(old_template) < 0:
+                self.template_combo.addItem(old_template)
+            if old_template:
+                self.template_combo.setCurrentText(old_template)
             self.template_combo.blockSignals(False)
 
             if not self.output_edit.text().strip():
@@ -460,7 +403,7 @@ def run_gui() -> None:
             self._refresh_preview()
 
         def _load_sheets(self) -> None:
-            current = self.sheet_combo.currentText().strip()
+            current = self.sheet_combo.currentText().strip() or self._saved("sheet_name", "")
             self.sheet_combo.blockSignals(True)
             self.sheet_combo.clear()
             try:
@@ -516,7 +459,15 @@ def run_gui() -> None:
             self.settings.setValue("project_dir", self.project_edit.text())
             self.settings.setValue("client", self.client_edit.text())
             self.settings.setValue("brand", self.brand_combo.currentText())
+            self.settings.setValue("calc_path", self.calc_combo.currentText())
+            self.settings.setValue("template_path", self.template_combo.currentText())
+            self.settings.setValue("sheet_name", self.sheet_combo.currentText())
             self.settings.setValue("output_dir", self.output_edit.text())
+            self.settings.sync()
+
+        def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+            self._remember_values()
+            super().closeEvent(event)
 
         def _generate(self) -> None:
             try:

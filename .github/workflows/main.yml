@@ -25,7 +25,7 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --onefile --windowed --name SAM-Offer-Generator --add-data "config.example.json;." --hidden-import brands.stulz --hidden-import brands.riello --hidden-import brands.dc_eltek --hidden-import brands.generator --hidden-import brands.registry --hidden-import core.docx_renderer --hidden-import core.excel_reader --hidden-import core.project_scanner app.py
+          pyinstaller sam_offer_generator.spec
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
