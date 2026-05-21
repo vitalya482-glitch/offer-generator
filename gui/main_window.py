@@ -68,6 +68,7 @@ def run_gui() -> None:
             self.preview = QTextEdit()
             self.preview.setReadOnly(True)
             self.status_label = QLabel("Выберите папку проекта")
+            self._auto_client_value = ""
 
             self._base_font_size = 10
             self._last_scale = 0.0
@@ -75,6 +76,7 @@ def run_gui() -> None:
 
             self._build_ui()
             self._apply_style()
+            self._autofill_client_from_project_dir()
             self._scan_project()
             self._refresh_preview()
 
@@ -186,7 +188,7 @@ def run_gui() -> None:
             self.setCentralWidget(central)
             self._apply_responsive_metrics(force=True)
 
-            self.project_edit.textChanged.connect(self._scan_project)
+            self.project_edit.textChanged.connect(self._on_project_dir_changed)
             self.calc_combo.currentTextChanged.connect(self._load_sheets)
             self.calc_combo.currentTextChanged.connect(self._refresh_preview)
             self.template_combo.currentTextChanged.connect(self._refresh_preview)
@@ -306,6 +308,61 @@ def run_gui() -> None:
                 #GhostButton:hover {{ border: 1px solid #D71920; color: #D71920; }}
                 QLabel {{ color: #475467; font-size: {px(12)}px; }}
             """)
+
+        def _extract_client_from_project_dir(self, path_text: str) -> str:
+            """Return client name from server project path.
+
+            Expected server structure:
+            //Diskstationnew/Exchange/01_Work/01_STULZ/02_Projects/Client/2206/Project
+            or:
+            /diskstationnew/exchange/01_Work/01_STULZ/02_Projects/Client/...
+            """
+            raw = path_text.strip().strip('"')
+            if not raw:
+                return ""
+
+            normalized = raw.replace("\\", "/")
+            parts = [part.strip() for part in normalized.split("/") if part.strip()]
+            lowered = [part.lower() for part in parts]
+
+            project_markers = {"02_projects", "2_projects", "projects", "проекты"}
+            for index, part in enumerate(lowered):
+                if part in project_markers and index + 1 < len(parts):
+                    return parts[index + 1]
+
+            # Fallback for the standard SAM structure if the marker is absent:
+            # ... / 01_STULZ / Client / project-code / project-name
+            for index, part in enumerate(lowered):
+                if "stulz" in part and index + 2 < len(parts):
+                    candidate = parts[index + 2]
+                    if candidate and not candidate.lower().endswith("projects"):
+                        return candidate
+
+            return ""
+
+        def _on_project_dir_changed(self) -> None:
+            self._autofill_client_from_project_dir()
+            self._scan_project()
+
+        def _autofill_client_from_project_dir(self) -> None:
+            client = self._extract_client_from_project_dir(self.project_edit.text())
+            if not client:
+                return
+
+            current = self.client_edit.text().strip()
+            should_update = (
+                not current
+                or current == "ТОО Example"
+                or current == self._auto_client_value
+            )
+            if not should_update:
+                return
+
+            self.client_edit.blockSignals(True)
+            self.client_edit.setText(client)
+            self.client_edit.blockSignals(False)
+            self._auto_client_value = client
+            self._refresh_preview()
 
         def _browse_project_dir(self) -> None:
             path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", self.project_edit.text())

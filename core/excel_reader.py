@@ -133,3 +133,8 @@ def parse_stulz_calc(xlsx_path: Path, sheet_name: Optional[str] = None) -> CalcD
 def list_sheets(xlsx_path: Path) -> list[str]:
     wb = load_workbook(xlsx_path, read_only=True, data_only=True)
     return list(wb.sheetnames)
+
+
+def read_calc_excel(xlsx_path: Path, sheet_name: Optional[str] = None) -> CalcData:
+    """Backward-compatible wrapper used by older brand modules."""
+    return parse_stulz_calc(Path(xlsx_path), sheet_name)
