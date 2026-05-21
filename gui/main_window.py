@@ -35,6 +35,7 @@ def run_gui() -> None:
             QMainWindow,
             QMessageBox,
             QPushButton,
+            QScrollArea,
             QSizePolicy,
             QSpacerItem,
             QTextEdit,
@@ -49,7 +50,7 @@ def run_gui() -> None:
             super().__init__()
             self.settings = QSettings("SAM Group", "SAM Offer Generator")
             self.setWindowTitle("SAM Offer Generator")
-            self.setMinimumSize(1120, 720)
+            self.setMinimumSize(900, 620)
             self.setWindowIcon(QIcon())
 
             self.project_edit = QLineEdit(self._saved("project_dir", ""))
@@ -68,6 +69,10 @@ def run_gui() -> None:
             self.preview.setReadOnly(True)
             self.status_label = QLabel("Выберите папку проекта")
 
+            self._base_font_size = 10
+            self._last_scale = 0.0
+            self._responsive_widgets: list[QWidget] = []
+
             self._build_ui()
             self._apply_style()
             self._scan_project()
@@ -83,9 +88,10 @@ def run_gui() -> None:
             root.setContentsMargins(0, 0, 0, 0)
             root.setSpacing(0)
 
-            sidebar = QFrame()
+            self.sidebar = QFrame()
+            sidebar = self.sidebar
             sidebar.setObjectName("Sidebar")
-            sidebar.setFixedWidth(300)
+            sidebar.setMinimumWidth(220)
             side = QVBoxLayout(sidebar)
             side.setContentsMargins(28, 34, 28, 28)
             side.setSpacing(18)
@@ -109,8 +115,10 @@ def run_gui() -> None:
             side.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
             side.addWidget(QLabel(APP_FOOTER))
 
-            content = QFrame()
+            self.content = QFrame()
+            content = self.content
             content.setObjectName("Content")
+            content.setMinimumWidth(560)
             content_layout = QVBoxLayout(content)
             content_layout.setContentsMargins(34, 28, 34, 28)
             content_layout.setSpacing(18)
@@ -126,8 +134,8 @@ def run_gui() -> None:
             self.generate_btn = QPushButton("Сформировать КП")
             self.generate_btn.setObjectName("PrimaryButton")
             self.generate_btn.clicked.connect(self._generate)
-            header.addLayout(h_text)
-            header.addWidget(self.generate_btn, alignment=Qt.AlignTop)
+            header.addLayout(h_text, stretch=1)
+            header.addWidget(self.generate_btn, stretch=0, alignment=Qt.AlignTop)
             content_layout.addLayout(header)
 
             form_card = self._card("Папка проекта и файлы")
@@ -165,9 +173,18 @@ def run_gui() -> None:
             bottom.addWidget(status_card, stretch=1)
             content_layout.addLayout(bottom)
 
+            scroll = QScrollArea()
+            scroll.setObjectName("ContentScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setWidget(content)
+
             root.addWidget(sidebar)
-            root.addWidget(content)
+            root.addWidget(scroll, stretch=1)
             self.setCentralWidget(central)
+            self._apply_responsive_metrics(force=True)
 
             self.project_edit.textChanged.connect(self._scan_project)
             self.calc_combo.currentTextChanged.connect(self._load_sheets)
@@ -181,14 +198,29 @@ def run_gui() -> None:
         def _add_row(self, grid, row: int, label: str, widget, button_text: str | None, command) -> None:
             lab = QLabel(label)
             lab.setObjectName("FormLabel")
+            lab.setMinimumWidth(110)
+            lab.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            widget.setMinimumWidth(0)
+            if isinstance(widget, QComboBox):
+                widget.setMinimumContentsLength(1)
+                widget.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            self._responsive_widgets.append(widget)
+
             grid.addWidget(lab, row, 0)
             grid.addWidget(widget, row, 1)
             if button_text:
                 btn = QPushButton(button_text)
                 btn.setObjectName("GhostButton")
+                btn.setMinimumWidth(92)
+                btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
                 if command:
                     btn.clicked.connect(command)
+                self._responsive_widgets.append(btn)
                 grid.addWidget(btn, row, 2)
+            else:
+                grid.setColumnMinimumWidth(2, 92)
 
         def _card(self, title: str) -> QFrame:
             frame = QFrame()
@@ -201,41 +233,78 @@ def run_gui() -> None:
             layout.addWidget(label)
             return frame
 
-        def _apply_style(self) -> None:
+        def _ui_scale(self) -> float:
+            width = max(self.width(), 900)
+            height = max(self.height(), 620)
+            return max(0.86, min(1.25, min(width / 1440, height / 900)))
+
+        def _apply_responsive_metrics(self, force: bool = False) -> None:
+            scale = self._ui_scale()
+            if not force and abs(scale - self._last_scale) < 0.03:
+                return
+            self._last_scale = scale
+
+            sidebar_width = int(max(220, min(320, self.width() * 0.22)))
+            self.sidebar.setFixedWidth(sidebar_width)
+
+            content_margin_x = int(22 * scale)
+            content_margin_y = int(20 * scale)
+            self.content.layout().setContentsMargins(content_margin_x, content_margin_y, content_margin_x, content_margin_y)
+            self.content.layout().setSpacing(int(16 * scale))
+
+            min_h = int(38 * scale)
+            for widget in self._responsive_widgets:
+                widget.setMinimumHeight(min_h)
+
+            self.generate_btn.setMinimumWidth(int(220 * scale))
+            self.generate_btn.setMinimumHeight(int(42 * scale))
+            self._apply_style(scale)
+
+        def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+            super().resizeEvent(event)
+            self._apply_responsive_metrics()
+
+        def _apply_style(self, scale: float | None = None) -> None:
+            scale = scale if scale is not None else self._ui_scale()
             app = QApplication.instance()
             if app:
-                app.setFont(QFont("Segoe UI", 10))
-            self.setStyleSheet("""
-                QMainWindow { background: #F4F6F8; }
-                #Sidebar { background: #15171B; color: #FFFFFF; }
-                #Content { background: #F4F6F8; }
-                #Brand { color: #FFFFFF; font-size: 34px; font-weight: 900; letter-spacing: 2px; }
-                #SideTitle { color: #FFFFFF; font-size: 23px; font-weight: 700; }
-                #SideSubtitle { color: #B8C0CC; font-size: 13px; line-height: 1.4; }
-                #Badge { background: #D71920; color: white; border-radius: 16px; padding: 8px 12px; font-weight: 700; }
-                #PageTitle { color: #171A1F; font-size: 28px; font-weight: 800; }
-                #PageSubtitle { color: #667085; font-size: 13px; }
-                #Card { background: #FFFFFF; border: 1px solid #E7EAF0; border-radius: 18px; }
-                #CardTitle { color: #171A1F; font-size: 15px; font-weight: 800; }
-                #FormLabel { color: #344054; font-weight: 700; }
-                QLineEdit, QComboBox, QTextEdit {
+                app.setFont(QFont("Segoe UI", max(9, int(10 * scale))))
+
+            def px(value: int) -> int:
+                return max(1, int(value * scale))
+
+            self.setStyleSheet(f"""
+                QMainWindow {{ background: #F4F6F8; }}
+                #ContentScroll {{ background: #F4F6F8; border: none; }}
+                #Sidebar {{ background: #15171B; color: #FFFFFF; }}
+                #Content {{ background: #F4F6F8; }}
+                #Brand {{ color: #FFFFFF; font-size: {px(34)}px; font-weight: 900; letter-spacing: 2px; }}
+                #SideTitle {{ color: #FFFFFF; font-size: {px(23)}px; font-weight: 700; }}
+                #SideSubtitle {{ color: #B8C0CC; font-size: {px(13)}px; line-height: 1.4; }}
+                #Badge {{ background: #D71920; color: white; border-radius: {px(16)}px; padding: {px(8)}px {px(12)}px; font-weight: 700; }}
+                #PageTitle {{ color: #171A1F; font-size: {px(28)}px; font-weight: 800; }}
+                #PageSubtitle {{ color: #667085; font-size: {px(13)}px; }}
+                #Card {{ background: #FFFFFF; border: 1px solid #E7EAF0; border-radius: {px(18)}px; }}
+                #CardTitle {{ color: #171A1F; font-size: {px(15)}px; font-weight: 800; }}
+                #FormLabel {{ color: #344054; font-weight: 700; font-size: {px(12)}px; }}
+                QLineEdit, QComboBox, QTextEdit {{
                     background-color: #FFFFFF;
                     color: #101828;
                     border: 2px solid #D0D5DD;
-                    border-radius: 12px;
-                    padding: 0 14px;
-                    min-height: 42px;
-                    font-size: 14px;
+                    border-radius: {px(12)}px;
+                    padding: 0 {px(12)}px;
+                    min-height: {px(38)}px;
+                    font-size: {px(13)}px;
                     selection-background-color: #D71920;
-                }
-                QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border: 2px solid #D71920; }
-                QTextEdit { min-height: 150px; padding: 12px 14px;}
-                QPushButton { border-radius: 11px; padding: 10px 16px; font-weight: 800; }
-                #PrimaryButton { background: #D71920; color: white; border: 1px solid #D71920; }
-                #PrimaryButton:hover { background: #B9151B; }
-                #GhostButton { background: #FFFFFF; color: #1D2939; border: 1px solid #D0D5DD; }
-                #GhostButton:hover { border: 1px solid #D71920; color: #D71920; }
-                QLabel { color: #475467; }
+                }}
+                QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{ border: 2px solid #D71920; }}
+                QTextEdit {{ min-height: {px(150)}px; padding: {px(12)}px {px(14)}px;}}
+                QPushButton {{ border-radius: {px(11)}px; padding: {px(9)}px {px(14)}px; font-weight: 800; font-size: {px(12)}px; }}
+                #PrimaryButton {{ background: #D71920; color: white; border: 1px solid #D71920; }}
+                #PrimaryButton:hover {{ background: #B9151B; }}
+                #GhostButton {{ background: #FFFFFF; color: #1D2939; border: 1px solid #D0D5DD; }}
+                #GhostButton:hover {{ border: 1px solid #D71920; color: #D71920; }}
+                QLabel {{ color: #475467; font-size: {px(12)}px; }}
             """)
 
         def _browse_project_dir(self) -> None:
