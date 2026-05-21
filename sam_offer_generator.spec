@@ -1,24 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
-from PyInstaller.utils.hooks import collect_data_files
+block_cipher = None
 
-hiddenimports = []
+hiddenimports = [
+    'gui.main_window',
+    'gui.ui_style',
+    'gui.path_helpers',
 
-# GUI
-hiddenimports += collect_submodules("gui")
+    'brands.stulz',
+    'brands.riello',
+    'brands.dc_eltek',
+    'brands.generator',
+    'brands.registry',
 
-# CORE
-hiddenimports += collect_submodules("core")
+    'core.docx_renderer',
+    'core.excel_reader',
+    'core.project_scanner',
 
-# BRANDS
-hiddenimports += collect_submodules("brands")
-
-# PySide6
-hiddenimports += collect_submodules("PySide6")
-
-datas = []
-datas += collect_data_files("PySide6")
+    'PySide6.QtCore',
+    'PySide6.QtGui',
+    'PySide6.QtWidgets',
+]
 
 a = Analysis(
     ['app.py'],
@@ -27,12 +29,21 @@ a = Analysis(
     datas=[
         ('config.example.json', '.'),
         ('config', 'config'),
-    ] + datas,
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'PySide6.QtWebEngineWidgets',
+        'PySide6.QtWebEngineCore',
+        'PySide6.QtQml',
+        'PySide6.QtQuick',
+        'tkinter',
+        'matplotlib',
+        'numpy',
+        'pandas.tests',
+    ],
     noarchive=False,
 )
 
@@ -49,8 +60,5 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
-    disable_windowed_traceback=False,
 )

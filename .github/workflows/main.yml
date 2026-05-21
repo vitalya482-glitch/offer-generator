@@ -30,5 +30,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: offer-generator-exe
-          path: dist/*.exe
+          name: offer-generator-windows
+          path: dist/SAM-Offer-Generator/
