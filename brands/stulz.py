@@ -1,14 +1,37 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import re
 
 from core.docx_renderer import render_docx
 from core.excel_reader import parse_stulz_calc
 from core.models import CalcData, OfferContext, OfferItem
 
 BRAND_NAME = "Stulz"
+
+
+MONTHS_RU = {
+    1: "января",
+    2: "февраля",
+    3: "марта",
+    4: "апреля",
+    5: "мая",
+    6: "июня",
+    7: "июля",
+    8: "августа",
+    9: "сентября",
+    10: "октября",
+    11: "ноября",
+    12: "декабря",
+}
+
+
+def format_offer_date(dt=None) -> str:
+    dt = dt or datetime.now()
+    return f"{dt.day} {MONTHS_RU[dt.month]} {dt.year} г."
 
 
 def sanitize_filename(value: str) -> str:
@@ -54,20 +77,154 @@ def item_to_template_dict(item: OfferItem, calc: CalcData) -> dict[str, Any]:
     }
 
 
-def build_intro_text(calc: CalcData) -> str:
-    models: list[str] = []
-    for item in calc.items:
-        model = (item.name or "").strip()
-        if model and model not in models:
-            models.append(model)
+@dataclass(frozen=True)
+class StulzProfile:
+    series: str
+    equipment_type_single: str
+    equipment_type_plural: str
+    install_type: str
 
-    model_text = ", ".join(models) if models else "оборудование Stulz"
-    qty = format_qty(calc.quantity)
+
+STULZ_SERIES_PROFILES: tuple[tuple[tuple[str, ...], StulzProfile], ...] = (
+    (("mini space", "minispace", "mini-space"), StulzProfile(
+        series="Mini Space EC",
+        equipment_type_single="прецизионного кондиционера",
+        equipment_type_plural="прецизионных кондиционеров",
+        install_type="напольного исполнения",
+    )),
+    (("cyberair mini", "cyber air mini"), StulzProfile(
+        series="CyberAir Mini",
+        equipment_type_single="прецизионного кондиционера",
+        equipment_type_plural="прецизионных кондиционеров",
+        install_type="напольного исполнения",
+    )),
+    (("cyberair 3pro", "cyberair 3 pro", "cyber air 3pro", "cyber air 3 pro", "cyberair 3"), StulzProfile(
+        series="CyberAir 3PRO",
+        equipment_type_single="прецизионного кондиционера",
+        equipment_type_plural="прецизионных кондиционеров",
+        install_type="напольного исполнения",
+    )),
+    (("cyberrow", "cyber row", "crs", "crl"), StulzProfile(
+        series="CyberRow",
+        equipment_type_single="межрядного прецизионного кондиционера",
+        equipment_type_plural="межрядных прецизионных кондиционеров",
+        install_type="межрядного исполнения",
+    )),
+    (("cyberwall", "cyber wall"), StulzProfile(
+        series="CyberWall",
+        equipment_type_single="прецизионного кондиционера",
+        equipment_type_plural="прецизионных кондиционеров",
+        install_type="настенного исполнения",
+    )),
+    (("cyberlab", "cyber lab"), StulzProfile(
+        series="CyberLab",
+        equipment_type_single="прецизионного кондиционера",
+        equipment_type_plural="прецизионных кондиционеров",
+        install_type="лабораторного исполнения",
+    )),
+    (("wallair", "wall air"), StulzProfile(
+        series="WallAir",
+        equipment_type_single="телекоммуникационного кондиционера",
+        equipment_type_plural="телекоммуникационных кондиционеров",
+        install_type="настенного исполнения",
+    )),
+    (("splitair", "split air", "split-air"), StulzProfile(
+        series="Split Air",
+        equipment_type_single="телекоммуникационного кондиционера",
+        equipment_type_plural="телекоммуникационных кондиционеров",
+        install_type="сплит-исполнения",
+    )),
+    (("telair", "tel air", "tel-air"), StulzProfile(
+        series="TelAir",
+        equipment_type_single="телекоммуникационного кондиционера",
+        equipment_type_plural="телекоммуникационных кондиционеров",
+        install_type="шкафного исполнения",
+    )),
+    (("shelterair", "shelter air", "shelter-air"), StulzProfile(
+        series="ShelterAir FC",
+        equipment_type_single="телекоммуникационного кондиционера",
+        equipment_type_plural="телекоммуникационных кондиционеров",
+        install_type="наружного исполнения",
+    )),
+    (("cybercool", "cyber cool"), StulzProfile(
+        series="CyberCool",
+        equipment_type_single="чиллера",
+        equipment_type_plural="чиллеров",
+        install_type="наружного исполнения",
+    )),
+)
+
+
+def _norm_model_text(value: str) -> str:
+    value = (value or "").lower().replace("ё", "е")
+    value = re.sub(r"[^a-zа-я0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _calc_search_text(calc: CalcData) -> str:
+    parts = [calc.model, calc.sheet_name, calc.delivery_basis]
+    parts.extend(item.name for item in calc.items if item.name)
+    parts.extend(option[0] for option in calc.options if option and option[0])
+    return _norm_model_text(" ".join(parts))
+
+
+def detect_stulz_profile(calc: CalcData) -> StulzProfile:
+    text = _calc_search_text(calc)
+    for keywords, profile in STULZ_SERIES_PROFILES:
+        if any(_norm_model_text(keyword) in text for keyword in keywords):
+            return profile
+
+    return StulzProfile(
+        series="Stulz",
+        equipment_type_single="прецизионного кондиционера",
+        equipment_type_plural="прецизионных кондиционеров",
+        install_type="напольного исполнения",
+    )
+
+
+def detect_airflow_text(calc: CalcData) -> str:
+    text = _calc_search_text(calc)
+
+    if any(x in text for x in ("downflow", "down flow", "underfloor", "under floor", "false floor", "фальшпол", "фальш пол", "нижняя подача", "нижней подачей")):
+        return "с нижней подачей охлажденного воздуха под фальшпол"
+
+    if any(x in text for x in ("upflow", "up flow", "верхняя подача", "верхней подачей")):
+        return "с верхней подачей охлажденного воздуха"
+
+    if any(x in text for x in ("front", "фронтальная", "фронтальной")):
+        if any(x in text for x in ("box", "duct", "короб", "воздуховод")):
+            return "с фронтальной подачей охлажденного воздуха через короб"
+        return "с фронтальной подачей охлажденного воздуха"
+
+    # Common STULZ model-code hints. For Mini-Space/CyberAir old model codes:
+    # CCU/ASU generally indicate upflow, CCD/ASD generally indicate downflow.
+    if re.search(r"\b(ccd|asd)[a-z0-9]*\b", text):
+        return "с нижней подачей охлажденного воздуха под фальшпол"
+    if re.search(r"\b(ccu|asu)[a-z0-9]*\b", text):
+        return "с верхней подачей охлажденного воздуха"
+
+    return "с подачей охлажденного воздуха согласно выбранной конфигурации"
+
+
+def _equipment_type(calc: CalcData, profile: StulzProfile) -> str:
+    qty = calc.quantity
+    try:
+        return profile.equipment_type_single if float(qty) == 1 else profile.equipment_type_plural
+    except Exception:
+        return profile.equipment_type_plural
+
+
+def build_intro_text(calc: CalcData) -> str:
+    profile = detect_stulz_profile(calc)
+    equipment_type = _equipment_type(calc, profile)
+    airflow = detect_airflow_text(calc)
+
+    series_part = f" серии {profile.series}" if profile.series and profile.series != "Stulz" else ""
 
     return (
         "В ответ на Ваш запрос направляем коммерческое предложение "
-        "на поставку прецизионных кондиционеров Stulz "
-        f"в количестве {qty} шт.: {model_text}. "
+        f"на поставку {equipment_type} Stulz{series_part}, "
+        f"{profile.install_type}, {airflow}. "
         "Опции, включенные в комплектацию и технические характеристики "
         "указаны в спецификации коммерческого предложения."
     )
@@ -75,7 +232,6 @@ def build_intro_text(calc: CalcData) -> str:
 
 def build_total_price_block(calc: CalcData) -> str:
     return (
-        "Итого, стоимость оборудования составляет: "
         f"{format_money(calc.total_price)} {currency_name(calc.currency)}, "
         f"с учетом НДС {format_qty(calc.vat_percent)}%."
     )
@@ -98,7 +254,7 @@ def build_currency_terms(calc: CalcData) -> str:
 def build_replacements(context: OfferContext, calc: CalcData) -> dict[str, Any]:
     cur_name = currency_name(calc.currency)
     return {
-        "{{offer_date}}": datetime.now().strftime("%d.%m.%Y"),
+        "{{offer_date}}": format_offer_date(),
         "{{offer_version}}": context.version or calc.version or "1",
         "{{client_company_full}}": context.client_name,
         "{{intro_text}}": build_intro_text(calc),
