@@ -77,6 +77,7 @@ def run_gui() -> None:
             self._build_ui()
             self._apply_style()
             self._autofill_client_from_project_dir()
+            self._autofill_brand_from_project_dir()
             self._scan_project()
             self._refresh_preview()
 
@@ -309,6 +310,14 @@ def run_gui() -> None:
                 QLabel {{ color: #475467; font-size: {px(12)}px; }}
             """)
 
+        def _split_project_path(self, path_text: str) -> list[str]:
+            raw = path_text.strip().strip('"')
+            if not raw:
+                return []
+
+            normalized = raw.replace("\\", "/")
+            return [part.strip() for part in normalized.split("/") if part.strip()]
+
         def _extract_client_from_project_dir(self, path_text: str) -> str:
             """Return client name from server project path.
 
@@ -317,12 +326,10 @@ def run_gui() -> None:
             or:
             /diskstationnew/exchange/01_Work/01_STULZ/02_Projects/Client/...
             """
-            raw = path_text.strip().strip('"')
-            if not raw:
+            parts = self._split_project_path(path_text)
+            if not parts:
                 return ""
 
-            normalized = raw.replace("\\", "/")
-            parts = [part.strip() for part in normalized.split("/") if part.strip()]
             lowered = [part.lower() for part in parts]
 
             project_markers = {"02_projects", "2_projects", "projects", "проекты"}
@@ -340,18 +347,55 @@ def run_gui() -> None:
 
             return ""
 
+        def _extract_brand_from_project_dir(self, path_text: str) -> str:
+            """Return brand/direction from the standard SAM folder path."""
+            parts = self._split_project_path(path_text)
+            if not parts:
+                return ""
+
+            brand_rules = (
+                ("stulz", "Stulz"),
+                ("riello", "Riello"),
+                ("dc_eltek", "DC Eltek"),
+                ("dc eltek", "DC Eltek"),
+                ("eltek", "DC Eltek"),
+                ("generator", "Generator"),
+                ("generators", "Generator"),
+            )
+
+            for part in parts:
+                clean = part.lower().replace("-", "_").replace(" ", "_")
+                for marker, brand in brand_rules:
+                    marker_clean = marker.replace(" ", "_")
+                    if marker_clean in clean and self.brand_combo.findText(brand) >= 0:
+                        return brand
+
+            return ""
+
+        def _autofill_brand_from_project_dir(self) -> None:
+            brand = self._extract_brand_from_project_dir(self.project_edit.text())
+            if not brand or self.brand_combo.currentText() == brand:
+                return
+
+            self.brand_combo.blockSignals(True)
+            self.brand_combo.setCurrentText(brand)
+            self.brand_combo.blockSignals(False)
+            self._refresh_preview()
+
         def _on_project_dir_changed(self) -> None:
             self._autofill_client_from_project_dir()
+            self._autofill_brand_from_project_dir()
             self._scan_project()
 
-        def _autofill_client_from_project_dir(self) -> None:
+        def _autofill_client_from_project_dir(self, force: bool = False) -> None:
             client = self._extract_client_from_project_dir(self.project_edit.text())
             if not client:
                 return
 
             current = self.client_edit.text().strip()
             should_update = (
-                not current
+                force
+                or not current
                 or current == "ТОО Example"
                 or current == self._auto_client_value
             )
@@ -369,6 +413,8 @@ def run_gui() -> None:
             if path:
                 self.project_edit.setText(path)
                 self.output_edit.setText(path)
+                self._autofill_client_from_project_dir(force=True)
+                self._autofill_brand_from_project_dir()
                 self._scan_project()
 
         def _browse_output_dir(self) -> None:

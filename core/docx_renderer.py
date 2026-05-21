@@ -87,10 +87,19 @@ def row_contains_tags(row, tags: list[str]) -> bool:
     return any(tag in row_text for tag in tags)
 
 
-def insert_row_after(table, row):
-    new_tr = deepcopy(row._tr)
-    row._tr.addnext(new_tr)
-    return table.rows[row._index + 1]
+def clone_row_after(table, source_row, after_row):
+    """Clone source_row and insert the clone after after_row.
+
+    Important: for repeated item rows we must always clone the original
+    template row, not the previously filled row. Otherwise the second and
+    next rows inherit already-replaced text and become duplicates.
+    """
+    new_tr = deepcopy(source_row._tr)
+    after_row._tr.addnext(new_tr)
+
+    # python-docx row indexes are recalculated from the XML tree. The newly
+    # inserted row is directly after after_row.
+    return table.rows[after_row._index + 1]
 
 
 def remove_row(table, row) -> None:
@@ -123,7 +132,7 @@ def fill_equipment_table(doc: Document, items: list[dict[str, Any]], total_label
         insert_after = template_row
 
         for item in items:
-            new_row = insert_row_after(table, insert_after)
+            new_row = clone_row_after(table, template_row, insert_after)
             insert_after = new_row
 
             values = {
