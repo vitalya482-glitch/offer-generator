@@ -26,8 +26,6 @@ a = Analysis(
     binaries=[],
     datas=[
         ('config.example.json', '.'),
-        ('templates', 'templates'),
-        ('assets', 'assets'),
         ('config', 'config'),
     ] + datas,
     hiddenimports=hiddenimports,
