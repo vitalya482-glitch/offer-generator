@@ -182,6 +182,28 @@ def remove_empty_service_tags(doc: Document) -> None:
     replace_tags(doc, empty_tags)
 
 
+def get_unique_output_path(path: Path) -> Path:
+    """
+    Returns a free output path without overwriting an existing file.
+
+    Example:
+    KP.docx -> KP_1.docx -> KP_2.docx
+    """
+    if not path.exists():
+        return path
+
+    parent = path.parent
+    stem = path.stem
+    suffix = path.suffix
+    counter = 1
+
+    while True:
+        candidate = parent / f"{stem}_{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 def render_docx(
     template_path: str | Path,
     output_path: str | Path,
@@ -206,6 +228,7 @@ def render_docx(
     remove_empty_service_tags(doc)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = get_unique_output_path(output_path)
     doc.save(output_path)
 
     return output_path
