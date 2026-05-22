@@ -677,23 +677,21 @@ def run_gui() -> None:
             self.template_combo.blockSignals(True)
             self.template_combo.clear()
 
+            # Word-шаблон не привязан к папке проекта. Поэтому при смене проекта
+            # сначала возвращаем текущий/сохраненный шаблон, даже если он лежит
+            # в другой папке, и только затем добавляем найденные в проекте DOCX.
+            if old_template and Path(old_template).exists():
+                self._add_path_item(self.template_combo, old_template, is_file=True)
+
             for p in found["word"]:
-                self._add_path_item(self.template_combo, str(p), is_file=True)
+                if self._find_combo_path(self.template_combo, str(p)) < 0:
+                    self._add_path_item(self.template_combo, str(p), is_file=True)
 
-            selected_template_index = -1
+            selected_template_index = self._find_combo_path(self.template_combo, old_template) if old_template else -1
 
-            # Если старый шаблон находится в текущей папке проекта — оставляем его
-            if old_template:
-                try:
-                    old_path = Path(old_template).resolve()
-                    project_path = project_dir.resolve()
-                    if old_path.exists() and old_path.is_relative_to(project_path):
-                        selected_template_index = self._find_combo_path(self.template_combo, str(old_path))
-                except Exception:
-                    selected_template_index = -1
-
-            # Иначе выбираем самый свежий Word-файл из проекта
-            if selected_template_index < 0 and found["word"]:
+            # Автовыбор шаблона делаем только если шаблон еще не выбран.
+            # Смена проекта не должна перезаписывать выбранный путь шаблона.
+            if selected_template_index < 0 and not old_template and found["word"]:
                 newest_template = max(found["word"], key=lambda p: p.stat().st_mtime)
                 selected_template_index = self._find_combo_path(self.template_combo, str(newest_template))
 
