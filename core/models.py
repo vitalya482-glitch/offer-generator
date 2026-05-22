@@ -24,6 +24,7 @@ class CalcData:
     delivery_basis: str
     items: list[OfferItem] = field(default_factory=list)
     options: list[tuple[str, float]] = field(default_factory=list)
+    installation_included: bool = False
 
     @property
     def model(self) -> str:

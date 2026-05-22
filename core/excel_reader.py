@@ -114,6 +114,57 @@ def _contains_any(value: Any, needles: tuple[str, ...] | list[str] | set[str]) -
     return any(_norm(x) in n for x in needles if _norm(x))
 
 
+
+
+def _is_installation_text(value: Any) -> bool:
+    n = _norm(value)
+    if not n:
+        return False
+    if "демонтаж" in n or "dismant" in n:
+        return False
+    return (
+        "installation" in n
+        or "start-up" in n
+        or "startup" in n
+        or "пуск" in n
+        or "монтаж" in n
+    )
+
+
+def _row_has_positive_amount(ws, row: int, start_col: int = 1) -> bool:
+    for col in range(start_col, ws.max_column + 1):
+        if as_float(ws.cell(row, col).value, 0) > 0:
+            return True
+    return False
+
+
+def _detect_installation_included(ws, groups: list[tuple[int, int, str]], qty_row: int) -> bool:
+    # Rule 1: if the calculation row "Installation & Start-up" contains
+    # any numeric amount, installation and start-up are included.
+    for row, col, _val in ws.norm_cells() if hasattr(ws, "norm_cells") else []:
+        cell_text = ws.cell(row, col).value
+        n = _norm(cell_text)
+        if ("installation" in n and ("start-up" in n or "startup" in n)) or "пуск" in n:
+            if _row_has_positive_amount(ws, row, col + 1):
+                return True
+
+    # Rule 2: if Installation & Start-up is empty, but the calculator has
+    # a vertical calculation block/column named "Монтаж", installation and
+    # start-up are included. Do not count "Демонтаж" as installation.
+    if _is_installation_text(ws.title):
+        return True
+
+    for qty_col, amount_col, name in groups:
+        if not _is_installation_text(name):
+            continue
+        qty = as_float(ws.cell(qty_row, qty_col).value, 0)
+        amount = as_float(ws.cell(qty_row + 1, amount_col).value, 0)
+        column_values = [as_float(ws.cell(r, amount_col).value, 0) for r in range(1, min(ws.max_row, 80) + 1)]
+        if qty > 0 or amount > 0 or any(v > 0 for v in column_values):
+            return True
+
+    return False
+
 def _is_qty_label(value: Any) -> bool:
     n = _norm(value)
     return n in {_norm(x) for x in QTY_LABELS}
@@ -174,23 +225,64 @@ def detect_currency(exchange_rate: float, sheet_title: str, ws=None) -> str:
     return "EUR"
 
 
+def _clean_delivery_basis(value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+
+    # Sometimes delivery terms are taken from sheet names like
+    # DDP_Almaty_20-10(v1). Keep only the Incoterms term + destination.
+    text = text.replace("_", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    match = re.search(r"\b(DDP|DAP|EXW|FCA|CPT|CIP)\b\s*([^,;\n\r]*)", text, flags=re.IGNORECASE)
+    if not match:
+        return text
+
+    term = match.group(1).upper()
+    tail = match.group(2).strip()
+    tail = re.sub(r"\([^)]*\)", "", tail)
+    tail = re.sub(r"\b\d{1,2}[-./]\d{1,2}(?:[-./]\d{2,4})?\b.*$", "", tail).strip()
+    tail = re.sub(r"\s+", " ", tail).strip(" -_/.,;")
+
+    city_map = {
+        "almaty": "Алматы",
+        "алматы": "Алматы",
+    }
+    tail_norm = _norm(tail)
+    destination = city_map.get(tail_norm, tail)
+
+    return f"{term} {destination}".strip()
+
+
 def _detect_delivery_basis(ws) -> str:
-    title = _text(ws.title)
+    # Delivery terms must be read from cells, not from the sheet name.
+    # Prefer cells containing DDP/DAP/EXW etc. and scan the whole used sheet,
+    # because in calculation files this label can be below the price rows.
     candidates: list[str] = []
-    if _contains_any(title, DELIVERY_LABELS):
-        candidates.append(title)
-    for row in range(1, min(ws.max_row, 80) + 1):
-        val = _text(ws.cell(row, 1).value)
-        if val and _contains_any(val, DELIVERY_LABELS):
-            candidates.append(val)
+    for row in range(1, ws.max_row + 1):
+        for col in range(1, ws.max_column + 1):
+            val = _text(ws.cell(row, col).value)
+            if val and _contains_any(val, DELIVERY_LABELS):
+                candidates.append(val)
+
+    # Prefer actual Incoterms labels from cells. Sheet title is only a fallback.
+    candidates.append(_text(ws.title))
+
+    cleaned: list[str] = []
     for val in candidates:
-        n = _norm(val)
-        if "ddp" in n:
-            return val
-        if "dap" in n:
-            return val
-        if "exw" in n:
-            return val
+        clean = _clean_delivery_basis(val)
+        n = _norm(clean)
+        if any(term in n for term in ("ddp", "dap", "exw", "fca", "cpt", "cip")):
+            cleaned.append(clean)
+
+    # DDP/DAP delivery rows are usually the final customer delivery terms,
+    # while rows like "Total EXW for us" are internal cost calculation rows.
+    for term in ("ddp", "dap", "fca", "cpt", "cip", "exw"):
+        for clean in cleaned:
+            n = _norm(clean)
+            if term in n and "for us" not in n:
+                return clean
     return "EXW Hamburg, Germany"
 
 
@@ -325,6 +417,7 @@ def _parse_calc_sheet(ws) -> CalcData:
     version = _text(first_not_empty(ws["C1"].value, ws["A1"].value, "Version 1"))
     delivery_basis = _detect_delivery_basis(ws)
     qty_row = _find_quantity_row(ws, groups)
+    installation_included = _detect_installation_included(ws, groups, qty_row)
     total_row, total_per_unit_row, total_per_qty_row = _best_total_rows(ws)
 
     rate_cells = find_cells_by_label(ws, RATE_LABELS, exact=False)
@@ -393,6 +486,7 @@ def _parse_calc_sheet(ws) -> CalcData:
         delivery_basis=delivery_basis,
         items=items,
         options=options,
+        installation_included=installation_included,
     )
 
 
@@ -463,6 +557,7 @@ def _parse_offer_sheet(ws) -> CalcData:
         delivery_basis="DDP",
         items=items,
         options=[],
+        installation_included=False,
     )
 
 

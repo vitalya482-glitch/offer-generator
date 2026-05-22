@@ -325,8 +325,15 @@ def build_currency_terms(calc: CalcData) -> str:
     return "Стоимость указана в валюте коммерческого предложения."
 
 
+def build_installation_terms(calc: CalcData) -> tuple[str, str]:
+    if getattr(calc, "installation_included", False):
+        return "Монтажные работы включены", "Пусконаладочные работы включены"
+    return "Монтажные работы не включены", "Пусконаладочные работы не включены"
+
+
 def build_replacements(context: OfferContext, calc: CalcData, offer_version: int | None = None) -> dict[str, Any]:
     cur_name = currency_name(calc.currency)
+    installation_terms, startup_terms = build_installation_terms(calc)
     return {
         "{{offer_date}}": format_offer_date(),
         "{{offer_version}}": str(offer_version or context.version or calc.version or "1"),
@@ -340,8 +347,8 @@ def build_replacements(context: OfferContext, calc: CalcData, offer_version: int
         "{{payment_terms}}": "70% предоплата",
         "{{delivery_time}}": "Срок поставки уточняется после размещения заказа.",
         "{{delivery_terms}}": calc.delivery_basis,
-        "{{installation_terms}}": "Монтажные работы не включены",
-        "{{startup_terms}}": "Пусконаладочные работы не включены",
+        "{{installation_terms}}": installation_terms,
+        "{{startup_terms}}": startup_terms,
         "{{offer_validity}}": "Коммерческое предложение действительно в течение 30 календарных дней.",
         "{{currency_terms}}": build_currency_terms(calc),
         "{{signer_name}}": context.signer_name,
@@ -423,6 +430,7 @@ def preview(context: OfferContext) -> str:
         f"Курс: {format_money(calc.exchange_rate)}",
         f"НДС: {format_qty(calc.vat_percent)}%",
         f"Условия поставки: {calc.delivery_basis}",
+        f"Монтаж/ПНР: {'включены' if getattr(calc, 'installation_included', False) else 'не включены'}",
         f"Модели: {', '.join(models) if models else '-'}",
         f"Количество: {format_qty(calc.quantity)}",
         f"Сумма: {format_money(calc.total_price)} {currency_name(calc.currency)}",
