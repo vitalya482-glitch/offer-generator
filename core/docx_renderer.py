@@ -13,6 +13,65 @@ def to_text(value: Any) -> str:
 
 def replace_in_paragraph(paragraph, replacements: dict[str, Any]) -> None:
     """
+    Replaces tags while preserving Word formatting.
+    Handles both normal tags and tags split across several Word runs.
+    """
+    if not paragraph.runs:
+        return
+
+    # First: simple case, tag is inside one run
+    for run in paragraph.runs:
+        for key, value in replacements.items():
+            if key in run.text:
+                run.text = run.text.replace(key, to_text(value))
+
+    full_text = "".join(run.text for run in paragraph.runs)
+
+    if "{{" not in full_text:
+        return
+
+    for key, value in replacements.items():
+        if key not in full_text:
+            continue
+
+        start = full_text.find(key)
+        end = start + len(key)
+
+        pos = 0
+        start_run_idx = None
+        end_run_idx = None
+
+        for i, run in enumerate(paragraph.runs):
+            run_start = pos
+            run_end = pos + len(run.text)
+
+            if start_run_idx is None and run_start <= start < run_end:
+                start_run_idx = i
+
+            if run_start < end <= run_end:
+                end_run_idx = i
+                break
+
+            pos = run_end
+
+        if start_run_idx is None or end_run_idx is None:
+            continue
+
+        start_run = paragraph.runs[start_run_idx]
+        end_run = paragraph.runs[end_run_idx]
+
+        before = start_run.text[: start - sum(len(r.text) for r in paragraph.runs[:start_run_idx])]
+        after_start_pos = end - sum(len(r.text) for r in paragraph.runs[:end_run_idx])
+        after = end_run.text[after_start_pos:]
+
+        start_run.text = before + to_text(value) + after
+
+        for i in range(start_run_idx + 1, end_run_idx + 1):
+            paragraph.runs[i].text = ""
+
+        full_text = "".join(run.text for run in paragraph.runs)
+    
+    """
     Replaces tags while preserving Word formatting as much as possible.
     First tries run-by-run replacement.
     If Word split the tag across several runs, falls back to first-run replacement.
