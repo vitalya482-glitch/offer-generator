@@ -1,6 +1,5 @@
 from __future__ import annotations
 from num2words import num2words
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -9,6 +8,7 @@ import re
 from core.docx_renderer import render_docx
 from core.excel_reader import parse_stulz_calc
 from core.models import CalcData, OfferContext, OfferItem
+from config.stulz_series import AIRFLOW_TEXT, DEFAULT_STULZ_SERIES, STULZ_SERIES
 
 BRAND_NAME = "Stulz"
 
@@ -88,77 +88,61 @@ def item_to_template_dict(item: OfferItem, calc: CalcData) -> dict[str, Any]:
     }
 
 
-@dataclass(frozen=True)
-class StulzProfile:
-    series: str
-    equipment_type_single: str
-    equipment_type_plural: str
-    install_type: str
+def _series_profile(
+    line: str,
+    equipment_type_single: str = "прецизионного кондиционера",
+    equipment_type_plural: str = "прецизионных кондиционеров",
+    install_type: str = "напольного исполнения",
+    airflow: str = "",
+) -> dict[str, str]:
+    return {
+        "line": line,
+        "equipment_type_single": equipment_type_single,
+        "equipment_type_plural": equipment_type_plural,
+        "install_type": install_type,
+        "airflow": airflow,
+    }
 
 
-STULZ_SERIES_PROFILES: tuple[tuple[tuple[str, ...], StulzProfile], ...] = (
-    (("mini space", "minispace", "mini-space"), StulzProfile(
-        series="Mini Space EC",
-        equipment_type_single="прецизионного кондиционера",
-        equipment_type_plural="прецизионных кондиционеров",
-        install_type="напольного исполнения",
-    )),
-    (("cyberair mini", "cyber air mini"), StulzProfile(
-        series="CyberAir Mini",
-        equipment_type_single="прецизионного кондиционера",
-        equipment_type_plural="прецизионных кондиционеров",
-        install_type="напольного исполнения",
-    )),
-    (("cyberair 3pro", "cyberair 3 pro", "cyber air 3pro", "cyber air 3 pro", "cyberair 3"), StulzProfile(
-        series="CyberAir 3PRO",
-        equipment_type_single="прецизионного кондиционера",
-        equipment_type_plural="прецизионных кондиционеров",
-        install_type="напольного исполнения",
-    )),
-    (("cyberrow", "cyber row", "crs", "crl"), StulzProfile(
-        series="CyberRow",
+STULZ_KEYWORD_PROFILES: tuple[tuple[tuple[str, ...], dict[str, str]], ...] = (
+    (("mini space", "minispace", "mini-space"), _series_profile("Stulz Mini Space EC")),
+    (("cyberair mini", "cyber air mini"), _series_profile("Stulz CyberAir Mini")),
+    (("cyberair 3pro", "cyberair 3 pro", "cyber air 3pro", "cyber air 3 pro", "cyberair 3"), _series_profile("Stulz CyberAir 3PRO")),
+    (("cyberair", "cyber air"), _series_profile("Stulz CyberAir")),
+    (("cyberrow", "cyber row", "crs", "crl"), _series_profile(
+        "Stulz CyberRow",
         equipment_type_single="межрядного прецизионного кондиционера",
         equipment_type_plural="межрядных прецизионных кондиционеров",
         install_type="межрядного исполнения",
     )),
-    (("cyberwall", "cyber wall"), StulzProfile(
-        series="CyberWall",
-        equipment_type_single="прецизионного кондиционера",
-        equipment_type_plural="прецизионных кондиционеров",
-        install_type="настенного исполнения",
-    )),
-    (("cyberlab", "cyber lab"), StulzProfile(
-        series="CyberLab",
-        equipment_type_single="прецизионного кондиционера",
-        equipment_type_plural="прецизионных кондиционеров",
-        install_type="лабораторного исполнения",
-    )),
-    (("wallair", "wall air"), StulzProfile(
-        series="WallAir",
+    (("cyberwall", "cyber wall"), _series_profile("Stulz CyberWall", install_type="настенного исполнения")),
+    (("cyberlab", "cyber lab"), _series_profile("Stulz CyberLab", install_type="лабораторного исполнения")),
+    (("wallair", "wall air"), _series_profile(
+        "Stulz WallAir",
         equipment_type_single="телекоммуникационного кондиционера",
         equipment_type_plural="телекоммуникационных кондиционеров",
         install_type="настенного исполнения",
     )),
-    (("splitair", "split air", "split-air"), StulzProfile(
-        series="Split Air",
+    (("splitair", "split air", "split-air"), _series_profile(
+        "Stulz Split Air",
         equipment_type_single="телекоммуникационного кондиционера",
         equipment_type_plural="телекоммуникационных кондиционеров",
         install_type="сплит-исполнения",
     )),
-    (("telair", "tel air", "tel-air"), StulzProfile(
-        series="TelAir",
+    (("telair", "tel air", "tel-air"), _series_profile(
+        "Stulz TelAir",
         equipment_type_single="телекоммуникационного кондиционера",
         equipment_type_plural="телекоммуникационных кондиционеров",
         install_type="шкафного исполнения",
     )),
-    (("shelterair", "shelter air", "shelter-air"), StulzProfile(
-        series="ShelterAir FC",
+    (("shelterair", "shelter air", "shelter-air"), _series_profile(
+        "Stulz ShelterAir FC",
         equipment_type_single="телекоммуникационного кондиционера",
         equipment_type_plural="телекоммуникационных кондиционеров",
         install_type="наружного исполнения",
     )),
-    (("cybercool", "cyber cool"), StulzProfile(
-        series="CyberCool",
+    (("cybercool", "cyber cool"), _series_profile(
+        "Stulz CyberCool",
         equipment_type_single="чиллера",
         equipment_type_plural="чиллеров",
         install_type="наружного исполнения",
@@ -179,21 +163,31 @@ def _calc_search_text(calc: CalcData) -> str:
     return _norm_model_text(" ".join(parts))
 
 
-def detect_stulz_profile(calc: CalcData) -> StulzProfile:
+def _extract_model_prefix(value: str) -> str:
+    match = re.search(r"[A-Za-zА-Яа-я0-9]+", value or "")
+    return match.group(0).upper() if match else ""
+
+
+def detect_stulz_profile(calc: CalcData) -> dict[str, str]:
     text = _calc_search_text(calc)
-    for keywords, profile in STULZ_SERIES_PROFILES:
+
+    for raw_value in [calc.model, calc.sheet_name, *(item.name for item in calc.items)]:
+        prefix = _extract_model_prefix(raw_value)
+        if prefix in STULZ_SERIES:
+            return STULZ_SERIES[prefix]
+
+    for prefix, profile in STULZ_SERIES.items():
+        if re.search(rf"\b{re.escape(prefix.lower())}[a-z0-9]*\b", text):
+            return profile
+
+    for keywords, profile in STULZ_KEYWORD_PROFILES:
         if any(_norm_model_text(keyword) in text for keyword in keywords):
             return profile
 
-    return StulzProfile(
-        series="Stulz",
-        equipment_type_single="прецизионного кондиционера",
-        equipment_type_plural="прецизионных кондиционеров",
-        install_type="напольного исполнения",
-    )
+    return DEFAULT_STULZ_SERIES
 
 
-def detect_airflow_text(calc: CalcData) -> str:
+def detect_airflow_text(calc: CalcData, profile: dict[str, str] | None = None) -> str:
     text = _calc_search_text(calc)
 
     if any(x in text for x in ("downflow", "down flow", "underfloor", "under floor", "false floor", "фальшпол", "фальш пол", "нижняя подача", "нижней подачей")):
@@ -214,28 +208,53 @@ def detect_airflow_text(calc: CalcData) -> str:
     if re.search(r"\b(ccu|asu)[a-z0-9]*\b", text):
         return "с верхней подачей охлажденного воздуха"
 
+    airflow_key = (profile or {}).get("airflow", "")
+    if airflow_key in AIRFLOW_TEXT:
+        return AIRFLOW_TEXT[airflow_key]
+
     return "с подачей охлажденного воздуха согласно выбранной конфигурации"
 
 
-def _equipment_type(calc: CalcData, profile: StulzProfile) -> str:
+def detect_cooling_type_text(calc: CalcData) -> str:
+    text = f" {_calc_search_text(calc)} "
+
+    if re.search(r"\b(cw|acw)\b", text) or any(
+        x in text for x in (" chilled water ", " чиллер ", " водяное охлаждение ", " холодная вода ")
+    ):
+        return "с водяным охлаждением (CW)"
+
+    if re.search(r"\b(dx|direct expansion)\b", text) or any(
+        x in text for x in (" фреон ", " фреонов", " компрессор")
+    ):
+        return "с непосредственным испарением (DX)"
+
+    return ""
+
+
+def _equipment_type(calc: CalcData, profile: dict[str, str]) -> str:
     qty = calc.quantity
     try:
-        return profile.equipment_type_single if float(qty) == 1 else profile.equipment_type_plural
+        key = "equipment_type_single" if float(qty) == 1 else "equipment_type_plural"
     except Exception:
-        return profile.equipment_type_plural
+        key = "equipment_type_plural"
+    return profile.get(key) or DEFAULT_STULZ_SERIES[key]
 
 
 def build_intro_text(calc: CalcData) -> str:
     profile = detect_stulz_profile(calc)
     equipment_type = _equipment_type(calc, profile)
-    airflow = detect_airflow_text(calc)
+    line = profile.get("line") or DEFAULT_STULZ_SERIES["line"]
+    install_type = profile.get("install_type") or DEFAULT_STULZ_SERIES["install_type"]
+    cooling_type = detect_cooling_type_text(calc)
+    airflow = detect_airflow_text(calc, profile)
+    quantity = format_qty(calc.quantity)
 
-    series_part = f" серии {profile.series}" if profile.series and profile.series != "Stulz" else ""
+    details = [part for part in (cooling_type, install_type, airflow, f"в количестве {quantity} шт") if part]
 
     return (
         "В ответ на Ваш запрос направляем коммерческое предложение "
-        f"на поставку {equipment_type} Stulz{series_part}, "
-        f"{profile.install_type}, {airflow}. "
+        f"на поставку {equipment_type} {line}, "
+        f"{', '.join(details)}. "
         "Опции, включенные в комплектацию и технические характеристики "
         "указаны в спецификации коммерческого предложения."
     )
