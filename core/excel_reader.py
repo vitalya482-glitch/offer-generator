@@ -215,9 +215,49 @@ def _next_amount_col(ws, header_row: int, qty_col: int) -> int:
 
 
 def parse_model_groups(ws) -> list[tuple[int, int, str]]:
-    """Find dynamic groups: (quantity column, amount column, item/model name)."""
+    """Find dynamic groups: (quantity column, amount column, item/model name).
+
+    Supports two common Stulz calculator layouts:
+    1) repeated column pairs where the quantity header is above/in the qty column;
+    2) compact layout where column A contains labels (Quantity, Price per unit, TOTAL),
+       quantities are in C/E/G... and model names are in D/F/H... .
+    """
     groups: list[tuple[int, int, str]] = []
     seen: set[tuple[int, int]] = set()
+
+    def add_group(qty_col: int, amount_col: int, name: Any) -> None:
+        if qty_col < 1 or amount_col < 1 or amount_col > ws.max_column:
+            return
+        name_s = _text(name)
+        if not name_s:
+            return
+        if _is_qty_label(name_s) or _norm(name_s) in {"model", "модель", "%"}:
+            return
+        key = (qty_col, amount_col)
+        if key not in seen:
+            groups.append((qty_col, amount_col, name_s))
+            seen.add(key)
+
+    # Compact Stulz layout:
+    # A2 = Модель, D2/F2/... = model names; A3 = Quantity, C3/E3/... = qty.
+    for row in range(1, min(ws.max_row, 12) + 1):
+        if not _is_qty_label(ws.cell(row, 1).value):
+            continue
+        model_row = row - 1 if row > 1 else row
+        for qty_col in range(2, ws.max_column + 1):
+            qty = as_float(ws.cell(row, qty_col).value, 0)
+            if qty <= 0:
+                continue
+            amount_col = qty_col + 1
+            name = first_not_empty(
+                ws.cell(model_row, amount_col).value,
+                ws.cell(model_row, qty_col).value,
+                _nearest_text_above(ws, row, amount_col),
+            )
+            add_group(qty_col, amount_col, name)
+
+    if groups:
+        return groups
 
     # Search the full upper header area, not only row 2.
     for row in range(1, min(ws.max_row, 12) + 1):
@@ -232,32 +272,35 @@ def parse_model_groups(ws) -> list[tuple[int, int, str]]:
                 _nearest_text_above(ws, row, amount_col),
                 ws.cell(row - 1, col).value if row > 1 else None,
             )
-            if not name:
-                continue
-            name_s = _text(name)
-            if _is_qty_label(name_s) or _norm(name_s) in {"model", "%"}:
-                continue
-            key = (col, amount_col)
-            if key not in seen:
-                groups.append((col, amount_col, name_s))
-                seen.add(key)
+            add_group(col, amount_col, name)
 
     # Legacy fallback for older Stulz files.
     if not groups and first_not_empty(ws.cell(2, 4).value):
-        groups.append((3, 4, _text(ws.cell(2, 4).value)))
+        add_group(3, 4, ws.cell(2, 4).value)
 
     return groups
 
 
 def _find_quantity_row(ws, groups: list[tuple[int, int, str]]) -> int:
-    row = _first_row_containing(ws, ("Quantity", "Кол-во", "Количество"))
-    if row:
-        return row
-    # Fallback: first row below header with numeric qty values in most groups.
+    # Prefer rows that actually contain positive quantities in the detected qty columns.
+    # This avoids taking the model header row (for example: A2=Модель, C2=кол-во)
+    # as the quantity row in compact Stulz calculators.
+    label_rows = sorted({
+        row
+        for row, _col in find_cells_by_label(ws, ("Quantity", "Кол-во", "Количество"), exact=False)
+    })
+    for row in label_rows:
+        hits = sum(1 for qty_col, _amount_col, _name in groups if as_float(ws.cell(row, qty_col).value, 0) > 0)
+        if hits:
+            return row
+
+    # Fallback: first row below header with numeric qty values in any group.
     for r in range(1, min(ws.max_row, 20) + 1):
         hits = sum(1 for qty_col, _amount_col, _name in groups if as_float(ws.cell(r, qty_col).value, 0) > 0)
         if hits:
             return r
+
+    # Last fallback: old templates usually keep quantities on row 4.
     return 4
 
 
