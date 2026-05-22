@@ -40,10 +40,21 @@ def sanitize_filename(value: str) -> str:
         value = value.replace(ch, "")
     return value.strip() or "Client"
 
-
 def format_money(value: float) -> str:
     try:
-        return f"{float(value):,.2f}".replace(",", " ")
+        s = f"{float(value):,.2f}"
+
+        # 35,054.00
+        s = s.replace(",", "TEMP")
+
+        # 35TEMP054,00
+        s = s.replace(".", ",")
+
+        # 35 054,00
+        s = s.replace("TEMP", "\u00A0")
+
+        return s
+
     except Exception:
         return str(value)
 
@@ -264,12 +275,12 @@ def build_replacements(context: OfferContext, calc: CalcData) -> dict[str, Any]:
         "{{total_label}}": "ИТОГО",
         "{{grand_total}}": format_money(calc.total_price),
         "{{total_price_block}}": build_total_price_block(calc),
-        "{{payment_terms}}": "100% предоплата, если иное не согласовано сторонами.",
+        "{{payment_terms}}": "70% предоплата",
         "{{delivery_time}}": "Срок поставки уточняется после размещения заказа.",
         "{{delivery_terms}}": calc.delivery_basis,
-        "{{installation_terms}}": "Монтажные работы не включены, если иное не указано в предложении.",
-        "{{startup_terms}}": "Пусконаладочные работы не включены, если иное не указано в предложении.",
-        "{{offer_validity}}": "Коммерческое предложение действительно в течение 14 календарных дней.",
+        "{{installation_terms}}": "Монтажные работы не включены",
+        "{{startup_terms}}": "Пусконаладочные работы не включены",
+        "{{offer_validity}}": "Коммерческое предложение действительно в течение 30 календарных дней.",
         "{{currency_terms}}": build_currency_terms(calc),
         "{{signer_name}}": context.signer_name,
         "{{signer_position}}": context.signer_position,
