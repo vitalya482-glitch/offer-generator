@@ -215,8 +215,8 @@ def run_gui() -> None:
             sidebar.setObjectName("Sidebar")
             sidebar.setMinimumWidth(220)
             side = QVBoxLayout(sidebar)
-            side.setContentsMargins(28, 34, 28, 28)
-            side.setSpacing(18)
+            side.setContentsMargins(18, 16, 18, 14)
+            side.setSpacing(7)
 
             brand = QLabel("SAM\nGROUP")
             brand.setObjectName("Brand")
@@ -232,9 +232,9 @@ def run_gui() -> None:
             side.addWidget(brand)
             side.addWidget(title)
             side.addWidget(subtitle)
-            side.addSpacing(12)
+            side.addSpacing(6)
             side.addWidget(badge)
-            side.addSpacing(8)
+            side.addSpacing(4)
             manager_title = QLabel("Исполнитель")
             manager_title.setObjectName("SidebarSectionTitle")
             side.addWidget(manager_title)
@@ -244,7 +244,7 @@ def run_gui() -> None:
             self._add_sidebar_field(side, "Телефон", self.manager_phone_edit)
             side.addWidget(self.use_manager_btn)
 
-            side.addSpacing(10)
+            side.addSpacing(6)
             signer_title = QLabel("Подписант")
             signer_title.setObjectName("SidebarSectionTitle")
             side.addWidget(signer_title)
@@ -255,8 +255,12 @@ def run_gui() -> None:
             manager_hint.setObjectName("SidebarHint")
             manager_hint.setWordWrap(True)
             side.addWidget(manager_hint)
-            side.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-            side.addWidget(QLabel(APP_FOOTER))
+            side.addSpacerItem(QSpacerItem(20, 12, QSizePolicy.Minimum, QSizePolicy.Expanding))
+
+            footer = QLabel(APP_FOOTER)
+            footer.setObjectName("SidebarFooter")
+            footer.setWordWrap(True)
+            side.addWidget(footer)
 
             self.content = QFrame()
             content = self.content
@@ -324,7 +328,15 @@ def run_gui() -> None:
             scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             scroll.setWidget(content)
 
-            root.addWidget(sidebar)
+            self.sidebar_scroll = QScrollArea()
+            self.sidebar_scroll.setObjectName("SidebarScroll")
+            self.sidebar_scroll.setWidgetResizable(True)
+            self.sidebar_scroll.setFrameShape(QFrame.NoFrame)
+            self.sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.sidebar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.sidebar_scroll.setWidget(sidebar)
+
+            root.addWidget(self.sidebar_scroll)
             root.addWidget(scroll, stretch=1)
             self.setCentralWidget(central)
             self._apply_responsive_metrics(force=True)
@@ -404,17 +416,19 @@ def run_gui() -> None:
                 return
             self._last_scale = scale
 
-            sidebar_width = int(max(220, min(320, self.width() * 0.22)))
+            sidebar_width = int(max(220, min(240, self.width() * 0.20)))
             self.sidebar.setFixedWidth(sidebar_width)
+            if hasattr(self, "sidebar_scroll"):
+                self.sidebar_scroll.setFixedWidth(sidebar_width)
 
             content_margin_x = int(22 * scale)
             content_margin_y = int(20 * scale)
             self.content.layout().setContentsMargins(content_margin_x, content_margin_y, content_margin_x, content_margin_y)
             self.content.layout().setSpacing(int(16 * scale))
 
-            min_h = int(38 * scale)
+            sidebar_input_h = int(28 * scale)
             for widget in self._responsive_widgets:
-                widget.setMinimumHeight(min_h)
+                widget.setMinimumHeight(sidebar_input_h)
 
             self.generate_btn.setMinimumWidth(int(220 * scale))
             self.generate_btn.setMinimumHeight(int(42 * scale))
