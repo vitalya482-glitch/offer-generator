@@ -159,6 +159,48 @@ def run_gui() -> None:
             self._autofill_manager_from_project(force=False)
             self._refresh_preview()
 
+        def _clear_cache(self) -> None:
+            keys_to_clear = [
+                "project_dir",
+                "output_dir",
+                "calc_path",
+                "template_path",
+                "sheet_name",
+                "template_dir",
+            ]
+
+            for key in keys_to_clear:
+                self.settings.remove(key)
+
+            self.settings.sync()
+            clear_scan_cache()
+
+            self.project_dir_path = ""
+            self.output_dir_path = ""
+
+            self._updating_path_display = True
+            self.project_edit.clear()
+            self.output_edit.clear()
+            self._updating_path_display = False
+
+            self.project_edit.setToolTip("")
+            self.output_edit.setToolTip("")
+
+            self.calc_combo.blockSignals(True)
+            self.template_combo.blockSignals(True)
+            self.sheet_combo.blockSignals(True)
+
+            self.calc_combo.clear()
+            self.template_combo.clear()
+            self.sheet_combo.clear()
+
+            self.calc_combo.blockSignals(False)
+            self.template_combo.blockSignals(False)
+            self.sheet_combo.blockSignals(False)
+
+            self.preview.setPlainText("Кэш очищен. Выберите папку проекта заново.")
+            self.status_label.setText("Кэш очищен. Выберите папку проекта заново.")
+
         def _saved(self, key: str, default: str) -> str:
             value = self.settings.value(key, default)
             return str(value) if value is not None else default
@@ -225,15 +267,16 @@ def run_gui() -> None:
             subtitle = QLabel("Папка проекта → расчет Excel → шаблон Word → готовое КП")
             subtitle.setObjectName("SideSubtitle")
             subtitle.setWordWrap(True)
-            badge = QLabel("Project folder workflow")
-            badge.setObjectName("Badge")
-            badge.setAlignment(Qt.AlignCenter)
+            self.clear_cache_btn = QPushButton("Очистить кэш")
+            self.clear_cache_btn.setObjectName("Badge")
+            self.clear_cache_btn.clicked.connect(self._clear_cache)
+            self._responsive_widgets.append(self.clear_cache_btn)
 
             side.addWidget(brand)
             side.addWidget(title)
             side.addWidget(subtitle)
             side.addSpacing(6)
-            side.addWidget(badge)
+            side.addWidget(self.clear_cache_btn)
             side.addSpacing(4)
             manager_title = QLabel("Исполнитель")
             manager_title.setObjectName("SidebarSectionTitle")
