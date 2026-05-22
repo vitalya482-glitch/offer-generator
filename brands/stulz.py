@@ -1,4 +1,4 @@
-from __future__ import annotations
+rom __future__ import annotations
 from num2words import num2words
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +39,49 @@ def sanitize_filename(value: str) -> str:
     for ch in bad:
         value = value.replace(ch, "")
     return value.strip() or "Client"
+
+def extract_revision_number(value: str) -> int | None:
+    """Extract revision number from strings like V1, v 2, (V3), rev4."""
+    text = value or ""
+    match = re.search(r"(?:^|[\s_\-\(])(?:v|rev)\s*(\d+)(?:\)|\b|$)", text, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def find_next_offer_version(output_dir: Path, client_name: str = "", sheet_name: str = "") -> int:
+    """Return next КП revision based on existing DOCX files in the result folder.
+
+    If no previous offer files with revN are found, use Excel sheet revision Vn when present,
+    otherwise start from revision 1.
+    """
+    output_dir = Path(output_dir)
+    max_version = 0
+
+    if output_dir.exists():
+        for file_path in output_dir.glob("*.docx"):
+            name = file_path.name
+            if name.startswith("~$"):
+                continue
+
+            match = re.search(r"(?:^|[\s_\-])rev\s*(\d+)(?:\.docx|[\s_\-]|$)", name, re.IGNORECASE)
+            if match:
+                max_version = max(max_version, int(match.group(1)))
+
+    if max_version > 0:
+        return max_version + 1
+
+    return extract_revision_number(sheet_name) or 1
+
+
+def build_offer_filename(client_name: str, offer_version: int, dt=None) -> str:
+    dt = dt or datetime.now()
+    client = sanitize_filename(client_name).replace(" ", "_")
+    return f"offer_{client}_{dt:%d-%m-%y}_rev{offer_version}.docx"
+
 
 def format_money(value: float) -> str:
     try:
@@ -282,11 +325,11 @@ def build_currency_terms(calc: CalcData) -> str:
     return "Стоимость указана в валюте коммерческого предложения."
 
 
-def build_replacements(context: OfferContext, calc: CalcData) -> dict[str, Any]:
+def build_replacements(context: OfferContext, calc: CalcData, offer_version: int | None = None) -> dict[str, Any]:
     cur_name = currency_name(calc.currency)
     return {
         "{{offer_date}}": format_offer_date(),
-        "{{offer_version}}": context.version or calc.version or "1",
+        "{{offer_version}}": str(offer_version or context.version or calc.version or "1"),
         "{{client_company_full}}": context.client_name,
         "{{intro_text}}": build_intro_text(calc),
         "{{unit_price_header}}": f"Цена за единицу, {cur_name}",
@@ -325,20 +368,19 @@ def load_calc(context: OfferContext) -> CalcData:
 
 def make_offer(context: OfferContext) -> Path:
     calc = load_calc(context)
-    replacements = build_replacements(context, calc)
+    offer_version = find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)
+    replacements = build_replacements(context, calc, offer_version=offer_version)
     items = [item_to_template_dict(item, calc) for item in calc.items]
 
-    filename = f"КП_{sanitize_filename(context.client_name)}_Stulz_{datetime.now():%Y-%m-%d}.docx"
+    filename = build_offer_filename(context.client_name, offer_version)
     output_path = context.output_dir / filename
 
-    render_docx(
+    return render_docx(
         template_path=context.template_path,
         output_path=output_path,
         replacements=replacements,
         items=items,
     )
-
-    return output_path
 
 def money_in_words(amount: float, currency: str) -> str:
     whole = int(round(amount))
@@ -376,6 +418,7 @@ def preview(context: OfferContext) -> str:
         f"Заказчик: {context.client_name}",
         f"Лист Excel: {calc.sheet_name}",
         f"Версия расчета: {calc.version}",
+        f"Версия КП: {find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)}",
         f"Валюта: {calc.currency}",
         f"Курс: {format_money(calc.exchange_rate)}",
         f"НДС: {format_qty(calc.vat_percent)}%",

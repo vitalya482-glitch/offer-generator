@@ -616,7 +616,9 @@ def run_gui() -> None:
 
             if force:
                 clear_scan_cache()
+
             found = scan_project_files(project_dir, use_cache=not force)
+
             old_calc = self._path_from_combo(self.calc_combo)
             old_template = self._path_from_combo(self.template_combo)
 
@@ -629,14 +631,32 @@ def run_gui() -> None:
                 self.calc_combo.setCurrentIndex(old_calc_index)
             self.calc_combo.blockSignals(False)
 
-            # Do not overwrite Word template when the project folder changes.
-            # The template is user-selected and saved separately.
             self.template_combo.blockSignals(True)
-            if old_template and self._find_combo_path(self.template_combo, old_template) < 0:
-                self._add_path_item(self.template_combo, old_template, is_file=True)
-            old_template_index = self._find_combo_path(self.template_combo, old_template) if old_template else -1
-            if old_template_index >= 0:
-                self.template_combo.setCurrentIndex(old_template_index)
+            self.template_combo.clear()
+
+            for p in found["word"]:
+                self._add_path_item(self.template_combo, str(p), is_file=True)
+
+            selected_template_index = -1
+
+            # Если старый шаблон находится в текущей папке проекта — оставляем его
+            if old_template:
+                try:
+                    old_path = Path(old_template).resolve()
+                    project_path = project_dir.resolve()
+                    if old_path.exists() and old_path.is_relative_to(project_path):
+                        selected_template_index = self._find_combo_path(self.template_combo, str(old_path))
+                except Exception:
+                    selected_template_index = -1
+
+            # Иначе выбираем самый свежий Word-файл из проекта
+            if selected_template_index < 0 and found["word"]:
+                newest_template = max(found["word"], key=lambda p: p.stat().st_mtime)
+                selected_template_index = self._find_combo_path(self.template_combo, str(newest_template))
+
+            if selected_template_index >= 0:
+                self.template_combo.setCurrentIndex(selected_template_index)
+
             self.template_combo.blockSignals(False)
 
             if not self._output_path_text().strip():
