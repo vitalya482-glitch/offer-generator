@@ -8,6 +8,17 @@ Stulz · Riello · DC Eltek · Generator
 Литвинов Виталий Константинович
 """
 
+SIGNERS = {
+    "saniya": {
+        "name": "Сания Санаткызы",
+        "position": "Коммерческий директор",
+    },
+    "alisher": {
+        "name": "Анаркулов Алишер",
+        "position": "Исполнительный директор",
+    },
+}
+
 import sys
 from pathlib import Path
 
@@ -36,7 +47,9 @@ def run_gui() -> None:
             QLineEdit,
             QMainWindow,
             QMessageBox,
+            QButtonGroup,
             QPushButton,
+            QRadioButton,
             QScrollArea,
             QSizePolicy,
             QSpacerItem,
@@ -110,6 +123,33 @@ def run_gui() -> None:
             self.use_manager_btn.setObjectName("SidebarButton")
             self.use_manager_btn.clicked.connect(self._save_manager_profile)
             self._responsive_widgets.append(self.use_manager_btn)
+
+            self.signer_group = QButtonGroup(self)
+
+            self.signer_saniya_radio = QRadioButton(
+                "Сания Санаткызы\nКоммерческий директор"
+            )
+            self.signer_saniya_radio.setObjectName("SidebarRadio")
+
+            self.signer_alisher_radio = QRadioButton(
+                "Анаркулов Алишер\nИсполнительный директор"
+            )
+            self.signer_alisher_radio.setObjectName("SidebarRadio")
+
+            self.signer_group.addButton(self.signer_saniya_radio)
+            self.signer_group.addButton(self.signer_alisher_radio)
+
+            saved_signer = self._saved("signer_key", "saniya")
+            if saved_signer == "alisher":
+                self.signer_alisher_radio.setChecked(True)
+            else:
+                self.signer_saniya_radio.setChecked(True)
+
+            self.signer_saniya_radio.toggled.connect(self._on_signer_changed)
+            self.signer_alisher_radio.toggled.connect(self._on_signer_changed)
+
+            self._responsive_widgets.append(self.signer_saniya_radio)
+            self._responsive_widgets.append(self.signer_alisher_radio)
 
             self._build_ui()
             self._apply_style()
@@ -203,6 +243,14 @@ def run_gui() -> None:
             self._add_sidebar_field(side, "Email", self.manager_email_edit)
             self._add_sidebar_field(side, "Телефон", self.manager_phone_edit)
             side.addWidget(self.use_manager_btn)
+
+            side.addSpacing(10)
+            signer_title = QLabel("Подписант")
+            signer_title.setObjectName("SidebarSectionTitle")
+            side.addWidget(signer_title)
+            side.addWidget(self.signer_saniya_radio)
+            side.addWidget(self.signer_alisher_radio)
+
             manager_hint = QLabel("Если поля пустые, программа попробует взять данные из Word-файла КП в папке проекта.")
             manager_hint.setObjectName("SidebarHint")
             manager_hint.setWordWrap(True)
@@ -438,6 +486,19 @@ def run_gui() -> None:
                 phone=self.manager_phone_edit.text().strip(),
             )
 
+        def _selected_signer_key(self) -> str:
+            if self.signer_alisher_radio.isChecked():
+                return "alisher"
+            return "saniya"
+
+        def _selected_signer(self) -> dict[str, str]:
+            return SIGNERS[self._selected_signer_key()]
+
+        def _on_signer_changed(self) -> None:
+            self.settings.setValue("signer_key", self._selected_signer_key())
+            self.settings.sync()
+            self._refresh_preview()
+
         def _set_manager_profile(self, profile: ManagerProfile) -> None:
             self.manager_name_edit.setText(profile.name)
             self.manager_position_edit.setText(profile.position)
@@ -606,6 +667,8 @@ def run_gui() -> None:
                 manager_position=self.manager_position_edit.text().strip(),
                 manager_email=self.manager_email_edit.text().strip(),
                 manager_phone=self.manager_phone_edit.text().strip(),
+                signer_name=self._selected_signer()["name"],
+                signer_position=self._selected_signer()["position"],
             )
 
         def _validate_context(self, context: OfferContext) -> None:
@@ -637,6 +700,7 @@ def run_gui() -> None:
             self.settings.setValue("template_path", self._path_from_combo(self.template_combo))
             self.settings.setValue("sheet_name", self.sheet_combo.currentText())
             self.settings.setValue("output_dir", self._output_path_text())
+            self.settings.setValue("signer_key", self._selected_signer_key())
             self.settings.sync()
 
         def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name

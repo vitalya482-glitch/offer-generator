@@ -59,3 +59,5 @@ class OfferContext:
     manager_position: str = ""
     manager_email: str = ""
     manager_phone: str = ""
+    signer_name: str = "Сания Санаткызы"
+    signer_position: str = "Коммерческий директор"
