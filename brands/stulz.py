@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from num2words import num2words
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -232,7 +232,8 @@ def build_intro_text(calc: CalcData) -> str:
 
 def build_total_price_block(calc: CalcData) -> str:
     return (
-        f"{format_money(calc.total_price)} {currency_name(calc.currency)}, "
+        f"{format_money(calc.total_price)} {currency_name(calc.currency)} "
+        f"({money_in_words(calc.total_price, calc.currency)}), "
         f"с учетом НДС {format_qty(calc.vat_percent)}%."
     )
 
@@ -309,6 +310,30 @@ def make_offer(context: OfferContext) -> Path:
 
     return output_path
 
+def money_in_words(amount: float, currency: str) -> str:
+    whole = int(round(amount))
+
+    cur = currency.upper()
+
+    if cur == "KZT":
+        main = "тенге"
+        minor = "тиын"
+    elif cur == "USD":
+        main = "долларов США"
+        minor = "центов"
+    elif cur == "EUR":
+        main = "евро"
+        minor = "eurocents"
+    else:
+        main = currency
+        minor = ""
+
+    words = num2words(whole, lang="ru")
+
+    if minor:
+        return f"{words} {main} 00 {minor}"
+
+    return f"{words} {main}"
 
 def preview(context: OfferContext) -> str:
     calc = load_calc(context)
