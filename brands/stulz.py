@@ -1,4 +1,4 @@
-rom __future__ import annotations
+from __future__ import annotations
 from num2words import num2words
 from datetime import datetime
 from pathlib import Path
