@@ -39,48 +39,48 @@ def stylesheet(scale: float) -> str:
         #SidebarButton:hover {{ background: #B9151B; }}
         #Badge {{ background: #D71920; color: white; border-radius: {px(14)}px; padding: {px(6)}px {px(10)}px; font-weight: 700; font-size: {px(10)}px; }}
 
-        QRadioButton#SidebarRadio {
+        QRadioButton#SidebarRadio {{
             color: #E5E7EB;
             font-size: {px(10)}px;
             spacing: {px(5)}px;
             padding: {px(1)}px 0;
-        }
-        QRadioButton#SidebarRadio:disabled {
+        }}
+        QRadioButton#SidebarRadio:disabled {{
             color: #98A2B3;
-        }
-        QRadioButton#SidebarRadio::indicator {
+        }}
+        QRadioButton#SidebarRadio::indicator {{
             width: {px(13)}px;
             height: {px(13)}px;
-        }
-        QRadioButton#SidebarRadio::indicator:unchecked {
+        }}
+        QRadioButton#SidebarRadio::indicator:unchecked {{
             border: 1px solid #4B5563;
             border-radius: {px(7)}px;
             background: #15171B;
-        }
-        QRadioButton#SidebarRadio::indicator:checked {
+        }}
+        QRadioButton#SidebarRadio::indicator:checked {{
             border: 1px solid #2E90FA;
             border-radius: {px(7)}px;
             background: #2E90FA;
-        }
-        QScrollBar:vertical {
+        }}
+        QScrollBar:vertical {{
             background: transparent;
             width: {px(7)}px;
             margin: 0;
-        }
-        QScrollBar::handle:vertical {
+        }}
+        QScrollBar::handle:vertical {{
             background: #3B4250;
             border-radius: {px(3)}px;
             min-height: {px(24)}px;
-        }
+        }}
         QScrollBar::add-line:vertical,
-        QScrollBar::sub-line:vertical {
+        QScrollBar::sub-line:vertical {{
             height: 0;
             background: transparent;
-        }
+        }}
         QScrollBar::add-page:vertical,
-        QScrollBar::sub-page:vertical {
+        QScrollBar::sub-page:vertical {{
             background: transparent;
-        }
+        }}
         #PageTitle {{ color: #171A1F; font-size: {px(28)}px; font-weight: 800; }}
         #PageSubtitle {{ color: #667085; font-size: {px(13)}px; }}
         #Card {{ background: #FFFFFF; border: 1px solid #E7EAF0; border-radius: {px(18)}px; }}
@@ -97,7 +97,7 @@ def stylesheet(scale: float) -> str:
             selection-background-color: #D71920;
         }}
         QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{ border: 2px solid #D71920; }}
-        QTextEdit {{ min-height: {px(150)}px; padding: {px(12)}px {px(14)}px;}}
+        QTextEdit {{ min-height: {px(150)}px; padding: {px(12)}px {px(14)}px; }}
         QPushButton {{ border-radius: {px(11)}px; padding: {px(9)}px {px(14)}px; font-weight: 800; font-size: {px(12)}px; }}
         #PrimaryButton {{ background: #D71920; color: white; border: 1px solid #D71920; }}
         #PrimaryButton:hover {{ background: #B9151B; }}
