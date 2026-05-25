@@ -38,6 +38,8 @@ def run_gui() -> None:
         from PySide6.QtWidgets import (
             QApplication,
             QComboBox,
+            QDialog,
+            QDialogButtonBox,
             QFileDialog,
             QFrame,
             QGridLayout,
@@ -60,6 +62,12 @@ def run_gui() -> None:
         )
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("Для запуска GUI установите PySide6: pip install PySide6") from exc
+
+    from gui.settings_dialog import SettingsDialog
+    from gui.pages.stulz_page import StulzPage
+    from gui.pages.riello_page import RielloPage
+    from gui.pages.battery_page import BatteryPage
+    from gui.pages.genset_page import GensetPage
 
     class OfferGeneratorWindow(QMainWindow):
         def __init__(self) -> None:
@@ -203,6 +211,11 @@ def run_gui() -> None:
             self.preview.setPlainText("Кэш очищен. Выберите папку проекта заново.")
             self.status_label.setText("Кэш очищен. Выберите папку проекта заново.")
 
+        def _open_settings_dialog(self) -> None:
+            dialog = SettingsDialog(self)
+            if dialog.exec() == QDialog.Accepted:
+                dialog.apply_to_owner()
+
         def _saved(self, key: str, default: str) -> str:
             value = self.settings.value(key, default)
             return str(value) if value is not None else default
@@ -269,26 +282,16 @@ def run_gui() -> None:
             subtitle = QLabel("Папка проекта → расчет Excel → шаблон Word → готовое КП")
             subtitle.setObjectName("SideSubtitle")
             subtitle.setWordWrap(True)
-            self.clear_cache_btn = QPushButton("Очистить кэш")
-            self.clear_cache_btn.setObjectName("Badge")
-            self.clear_cache_btn.clicked.connect(self._clear_cache)
-            self._responsive_widgets.append(self.clear_cache_btn)
+            self.settings_btn = QPushButton("Настройки")
+            self.settings_btn.setObjectName("Badge")
+            self.settings_btn.clicked.connect(self._open_settings_dialog)
+            self._responsive_widgets.append(self.settings_btn)
 
             side.addWidget(brand)
             side.addWidget(title)
             side.addWidget(subtitle)
             side.addSpacing(6)
-            side.addWidget(self.clear_cache_btn)
-            side.addSpacing(4)
-            manager_title = QLabel("Исполнитель")
-            manager_title.setObjectName("SidebarSectionTitle")
-            side.addWidget(manager_title)
-            self._add_sidebar_field(side, "ФИО", self.manager_name_edit)
-            self._add_sidebar_field(side, "Должность", self.manager_position_edit)
-            self._add_sidebar_field(side, "Email", self.manager_email_edit)
-            self._add_sidebar_field(side, "Телефон", self.manager_phone_edit)
-            side.addWidget(self.use_manager_btn)
-
+            side.addWidget(self.settings_btn)
             side.addSpacing(6)
             signer_title = QLabel("Подписант")
             signer_title.setObjectName("SidebarSectionTitle")
@@ -343,29 +346,15 @@ def run_gui() -> None:
             self.brand_tabs.setObjectName("BrandTabs")
             self.brand_tabs.setDocumentMode(True)
 
-            stulz_tab = QWidget()
-            stulz_layout = QVBoxLayout(stulz_tab)
-            stulz_layout.setContentsMargins(0, 0, 0, 0)
-            stulz_layout.setSpacing(12)
+            self.stulz_page = StulzPage(self)
+            self.riello_page = RielloPage(self)
+            self.battery_page = BatteryPage(self)
+            self.genset_page = GensetPage(self)
 
-            stulz_card = self._card("Stulz: файлы и параметры КП")
-            stulz_grid = QGridLayout()
-            stulz_card.layout().addLayout(stulz_grid)
-            stulz_grid.setColumnStretch(1, 1)
-            stulz_grid.setVerticalSpacing(12)
-            stulz_grid.setHorizontalSpacing(10)
-
-            self._add_row(stulz_grid, 0, "Клиент", self.client_edit, None, None)
-            self._add_row(stulz_grid, 1, "Excel-расчет", self.calc_combo, "Обновить", lambda: self._scan_project(force=True))
-            self._add_row(stulz_grid, 2, "Word-шаблон", self.template_combo, "Обзор", self._browse_template_file)
-            self._add_row(stulz_grid, 3, "Лист Excel", self.sheet_combo, "Листы", self._load_sheets)
-            self._add_row(stulz_grid, 4, "Папка результата", self.output_edit, "Выбрать", self._browse_output_dir)
-            stulz_layout.addWidget(stulz_card)
-
-            self.brand_tabs.addTab(stulz_tab, "Stulz")
-            self.brand_tabs.addTab(self._placeholder_tab("Riello", "Логика Riello будет подключена следующим этапом."), "Riello")
-            self.brand_tabs.addTab(self._placeholder_tab("Battery", "Логика Battery будет подключена следующим этапом."), "Battery")
-            self.brand_tabs.addTab(self._placeholder_tab("Genset", "Логика Genset будет подключена следующим этапом."), "Genset")
+            self.brand_tabs.addTab(self.stulz_page, "Stulz")
+            self.brand_tabs.addTab(self.riello_page, "Riello")
+            self.brand_tabs.addTab(self.battery_page, "Battery")
+            self.brand_tabs.addTab(self.genset_page, "Genset")
             self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
             content_layout.addWidget(self.brand_tabs)
 
