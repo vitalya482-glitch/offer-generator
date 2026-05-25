@@ -246,8 +246,159 @@ def insert_technical_specs_table(doc: Document, specs: list[dict[str, Any]]) -> 
     _clear_paragraph(paragraph)
 
 
+
+# --- Template-row based STULZ specification rendering -----------------------
+
+def _element_parent(element):
+    return element.getparent()
+
+
+def _remove_element(element) -> None:
+    parent = _element_parent(element)
+    if parent is not None:
+        parent.remove(element)
+
+
+def _insert_element_after(after_element, new_element):
+    after_element.addnext(new_element)
+    return new_element
+
+
+def _find_table_with_tags(doc: Document, tags: list[str]):
+    for table in doc.tables:
+        for row in table.rows:
+            if row_contains_tags(row, tags):
+                return table
+    return None
+
+
+def _replace_tags_in_table(table, replacements: dict[str, Any]) -> None:
+    for row in table.rows:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                replace_in_paragraph(paragraph, replacements)
+            for tag, value in replacements.items():
+                if tag in cell.text:
+                    set_cell_keep_style(cell, value)
+
+
+def _fill_template_row_table(table, row_tags: list[str], rows: list[dict[str, Any]]) -> None:
+    template_row = None
+    for row in table.rows:
+        if row_contains_tags(row, row_tags):
+            template_row = row
+            break
+    if template_row is None:
+        return
+
+    insert_after = template_row
+    for values in rows:
+        new_row = clone_row_after(table, template_row, insert_after)
+        insert_after = new_row
+        replacements = {tag: values.get(tag, "") for tag in row_tags}
+        for cell in new_row.cells:
+            for paragraph in cell.paragraphs:
+                replace_in_paragraph(paragraph, replacements)
+            for tag, value in replacements.items():
+                if tag in cell.text:
+                    set_cell_keep_style(cell, value)
+                    break
+    remove_row(table, template_row)
+
+
+def _fill_options_template_table(table, options: list[dict[str, Any]]) -> None:
+    rows = []
+    for idx, option in enumerate(options, start=1):
+        rows.append({
+            "{{opt_no}}": str(idx),
+            "{{opt_name}}": option.get("description", ""),
+            "{{opt_qty}}": option.get("qty", ""),
+        })
+    _fill_template_row_table(table, ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"], rows)
+
+
+def _fill_specs_template_table(table, specs: list[dict[str, Any]]) -> None:
+    rows = []
+    for spec in specs:
+        if spec.get("is_section"):
+            rows.append({
+                "{{technical_specs_parameter}}": spec.get("name", ""),
+                "{{technical_specs_value}}": "",
+            })
+        else:
+            rows.append({
+                "{{technical_specs_parameter}}": spec.get("name", ""),
+                "{{technical_specs_value}}": spec.get("value", ""),
+            })
+    _fill_template_row_table(
+        table,
+        ["{{technical_specs_parameter}}", "{{technical_specs_value}}"],
+        rows,
+    )
+
+
+def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str, Any]]) -> bool:
+    """Fill Word template-row specification blocks for one or many STULZ models.
+
+    The DOCX template must contain:
+    - paragraph with {{options_title}}
+    - table row with {{opt_no}}, {{opt_name}}, {{opt_qty}}
+    - paragraph with {{technical_specs_title}}
+    - table row with {{technical_specs_parameter}}, {{technical_specs_value}}
+
+    The function duplicates this block for every selected model and preserves the
+    Word formatting of the template paragraphs and table rows.
+    """
+    option_title_p = _find_tag_paragraph(doc, "{{options_title}}")
+    option_table = _find_table_with_tags(doc, ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"])
+    specs_title_p = _find_tag_paragraph(doc, "{{technical_specs_title}}")
+    specs_table = _find_table_with_tags(doc, ["{{technical_specs_parameter}}", "{{technical_specs_value}}"])
+
+    if option_title_p is None or option_table is None or specs_title_p is None or specs_table is None:
+        return False
+
+    anchor = specs_table._tbl
+    created_elements = []
+    for block in spec_blocks:
+        option_title_el = deepcopy(option_title_p._p)
+        option_table_el = deepcopy(option_table._tbl)
+        specs_title_el = deepcopy(specs_title_p._p)
+        specs_table_el = deepcopy(specs_table._tbl)
+
+        for el in (option_title_el, option_table_el, specs_title_el, specs_table_el):
+            anchor = _insert_element_after(anchor, el)
+            created_elements.append(el)
+
+        from docx.text.paragraph import Paragraph
+        from docx.table import Table
+
+        option_title_clone = Paragraph(option_title_el, option_title_p._parent)
+        option_table_clone = Table(option_table_el, option_table._parent)
+        specs_title_clone = Paragraph(specs_title_el, specs_title_p._parent)
+        specs_table_clone = Table(specs_table_el, specs_table._parent)
+
+        replace_in_paragraph(option_title_clone, {"{{options_title}}": block.get("options_title", "")})
+        _fill_options_template_table(option_table_clone, block.get("options", []))
+        replace_in_paragraph(specs_title_clone, {"{{technical_specs_title}}": block.get("technical_specs_title", "")})
+        _fill_specs_template_table(specs_table_clone, block.get("technical_specs", []))
+
+    # Remove the original template block after cloned blocks have been inserted.
+    for element in (option_title_p._p, option_table._tbl, specs_title_p._p, specs_table._tbl):
+        _remove_element(element)
+    return True
+
 def remove_empty_service_tags(doc: Document) -> None:
-    replace_tags(doc, {"{{options_table}}": "", "{{technical_specs_table}}": ""})
+    replace_tags(doc, {
+        "{{options_table}}": "",
+        "{{technical_specs_table}}": "",
+        "{{options_title}}": "",
+        "{{opt_no}}": "",
+        "{{opt_name}}": "",
+        "{{opt_qty}}": "",
+        "{{technical_specs_title}}": "",
+        "{{technical_specs_parameter}}": "",
+        "{{technical_specs_value}}": "",
+    })
 
 
 def get_unique_output_path(path: Path) -> Path:
@@ -271,6 +422,7 @@ def render_docx(
     items: list[dict[str, Any]] | None = None,
     options: list[dict[str, Any]] | None = None,
     technical_specs: list[dict[str, Any]] | None = None,
+    stulz_spec_blocks: list[dict[str, Any]] | None = None,
 ) -> Path:
     template_path = Path(template_path)
     output_path = Path(output_path)
@@ -284,8 +436,12 @@ def render_docx(
     )
 
     replace_tags(doc, replacements)
-    insert_options_table(doc, options or [])
-    insert_technical_specs_table(doc, technical_specs or [])
+    used_template_blocks = False
+    if stulz_spec_blocks:
+        used_template_blocks = insert_stulz_specification_blocks(doc, stulz_spec_blocks)
+    if not used_template_blocks:
+        insert_options_table(doc, options or [])
+        insert_technical_specs_table(doc, technical_specs or [])
     remove_empty_service_tags(doc)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

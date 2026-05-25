@@ -358,9 +358,6 @@ def build_replacements(context: OfferContext, calc: CalcData, offer_version: int
         "{{manager_position}}": context.manager_position,
         "{{manager_email}}": context.manager_email,
         "{{manager_phone}}": context.manager_phone,
-        "{{options_title}}": "Опции, включенные в комплектацию оборудования:",
-        "{{options_table}}": "",
-        "{{technical_specs_table}}": "",
     }
 
 
@@ -374,20 +371,89 @@ def load_calc(context: OfferContext) -> CalcData:
     return calc
 
 
+
+def _selected_spec_models(context: OfferContext, calc: CalcData) -> list[dict[str, Any]]:
+    selected = []
+    for row in getattr(context, "spec_models", []) or []:
+        if not row.get("enabled", True):
+            continue
+        model = str(row.get("model", "")).strip()
+        if not model:
+            continue
+        qty_value = row.get("qty_value", row.get("qty", 0))
+        try:
+            qty = float(str(qty_value).replace(",", "."))
+        except Exception:
+            qty = 0.0
+        if qty <= 0:
+            match_item = next((item for item in calc.items if item.name == model), None)
+            qty = float(match_item.qty) if match_item else 1.0
+        selected.append({"model": model, "qty": qty})
+
+    if selected:
+        return selected
+
+    return [{"model": item.name, "qty": float(item.qty)} for item in calc.items if item.name]
+
+
+def _calc_for_spec_model(calc: CalcData, model_name: str, qty: float) -> CalcData:
+    source_item = next((item for item in calc.items if item.name == model_name), None)
+    if source_item is None:
+        source_item = OfferItem(no=1, name=model_name, qty=qty, unit_price=0.0, total_price=0.0)
+    else:
+        source_item = OfferItem(
+            no=source_item.no,
+            name=source_item.name,
+            qty=qty,
+            unit_price=source_item.unit_price,
+            total_price=source_item.unit_price * qty,
+        )
+
+    return CalcData(
+        sheet_name=calc.sheet_name,
+        version=calc.version,
+        currency=calc.currency,
+        vat_percent=calc.vat_percent,
+        exchange_rate=calc.exchange_rate,
+        delivery_basis=calc.delivery_basis,
+        items=[source_item],
+        options=list(calc.options),
+        installation_included=calc.installation_included,
+    )
+
+
+def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[list[dict[str, Any]], list[str]]:
+    blocks: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for selected in _selected_spec_models(context, calc):
+        model = selected["model"]
+        qty = selected["qty"]
+        model_calc = _calc_for_spec_model(calc, model, qty)
+        specification = build_stulz_specification(context.pdf_dir, model_calc)
+        warnings.extend(f"{model}: {warning}" for warning in specification.warnings)
+        blocks.append({
+            "model": model,
+            "options_title": f"Опции, включенные в комплектацию кондиционеров {model}:",
+            "options": [
+                {"description": option.description, "qty": option.qty, "code": option.code}
+                for option in specification.options
+            ],
+            "technical_specs_title": f"Технические характеристики кондиционеров {model}:",
+            "technical_specs": [
+                {"name": row.name, "value": row.value, "is_section": row.is_section}
+                for row in specification.technical_specs
+            ],
+            "calc_pdf": specification.calc_pdf,
+            "winplan_pdf": specification.winplan_pdf,
+        })
+    return blocks, warnings
+
 def make_offer(context: OfferContext) -> Path:
     calc = load_calc(context)
-    specification = build_stulz_specification(context.pdf_dir, calc)
+    spec_blocks, _warnings = build_specification_blocks(context, calc)
     offer_version = find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)
     replacements = build_replacements(context, calc, offer_version=offer_version)
     items = [item_to_template_dict(item, calc) for item in calc.items]
-    options = [
-        {"description": option.description, "qty": option.qty, "code": option.code}
-        for option in specification.options
-    ]
-    technical_specs = [
-        {"name": row.name, "value": row.value, "is_section": row.is_section}
-        for row in specification.technical_specs
-    ]
 
     filename = build_offer_filename(context.client_name, offer_version)
     output_path = context.output_dir / filename
@@ -397,8 +463,7 @@ def make_offer(context: OfferContext) -> Path:
         output_path=output_path,
         replacements=replacements,
         items=items,
-        options=options,
-        technical_specs=technical_specs,
+        stulz_spec_blocks=spec_blocks,
     )
 
 def money_in_words(amount: float, currency: str) -> str:
@@ -428,7 +493,7 @@ def money_in_words(amount: float, currency: str) -> str:
 
 def preview(context: OfferContext) -> str:
     calc = load_calc(context)
-    specification = build_stulz_specification(context.pdf_dir, calc)
+    spec_blocks, spec_warnings = build_specification_blocks(context, calc)
     models = []
     for item in calc.items:
         if item.name and item.name not in models:
@@ -444,18 +509,17 @@ def preview(context: OfferContext) -> str:
         f"НДС: {format_qty(calc.vat_percent)}%",
         f"Условия поставки: {calc.delivery_basis}",
         f"Монтаж/ПНР: {'включены' if getattr(calc, 'installation_included', False) else 'не включены'}",
-        f"Calc PDF: {specification.calc_pdf.name if specification.calc_pdf else '-'}",
-        f"WinPlan PDF: {specification.winplan_pdf.name if specification.winplan_pdf else '-'}",
-        f"Опций для спецификации: {len(specification.options)}",
-        f"Строк тех. характеристик: {len(specification.technical_specs)}",
+        f"Моделей для спецификации: {len(spec_blocks)}",
+        f"Опций для спецификации: {sum(len(block.get('options', [])) for block in spec_blocks)}",
+        f"Строк тех. характеристик: {sum(len(block.get('technical_specs', [])) for block in spec_blocks)}",
         f"Модели: {', '.join(models) if models else '-'}",
         f"Количество: {format_qty(calc.quantity)}",
         f"Сумма: {format_money(calc.total_price)} {currency_name(calc.currency)}",
         "",
         "Предупреждения спецификации:",
     ]
-    if specification.warnings:
-        lines.extend(f"- {warning}" for warning in specification.warnings)
+    if spec_warnings:
+        lines.extend(f"- {warning}" for warning in spec_warnings)
     else:
         lines.append("- нет")
 

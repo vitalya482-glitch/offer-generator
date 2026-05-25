@@ -95,6 +95,28 @@ class StulzPage(QWidget):
             state[model] = (enabled, qty)
         return state
 
+
+    def selected_spec_models(self) -> list[dict[str, object]]:
+        models: list[dict[str, object]] = []
+        table = self.owner.spec_models_table
+        for row in range(table.rowCount()):
+            enabled_item = table.item(row, 0)
+            model_item = table.item(row, 1)
+            qty_item = table.item(row, 2)
+            if not model_item:
+                continue
+            model = model_item.text().strip()
+            if not model:
+                continue
+            enabled = enabled_item.checkState() == Qt.Checked if enabled_item else True
+            qty_text = qty_item.text().strip() if qty_item else ""
+            try:
+                qty = float(qty_text.replace(",", ".")) if qty_text else 0.0
+            except Exception:
+                qty = 0.0
+            models.append({"enabled": enabled, "model": model, "qty": qty_text, "qty_value": qty})
+        return models
+
     def refresh_spec_models(self, context: OfferContext | None = None) -> None:
         owner = self.owner
         table = owner.spec_models_table

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 
 @dataclass
@@ -62,3 +62,4 @@ class OfferContext:
     manager_phone: str = ""
     signer_name: str = "Сания Санаткызы"
     signer_position: str = "Коммерческий директор"
+    spec_models: list[dict[str, Any]] = field(default_factory=list)

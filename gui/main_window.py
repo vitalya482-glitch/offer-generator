@@ -838,6 +838,7 @@ def run_gui() -> None:
                 manager_phone=self.manager_phone_edit.text().strip(),
                 signer_name=self._selected_signer()["name"],
                 signer_position=self._selected_signer()["position"],
+                spec_models=self._selected_spec_models(),
             )
 
         def _validate_context(self, context: OfferContext) -> None:
@@ -856,6 +857,11 @@ def run_gui() -> None:
             if hasattr(self, "stulz_page"):
                 return self.stulz_page.current_spec_model_state()
             return {}
+
+        def _selected_spec_models(self) -> list[dict[str, object]]:
+            if hasattr(self, "stulz_page"):
+                return self.stulz_page.selected_spec_models()
+            return []
 
         def _refresh_spec_models(self, context: OfferContext | None = None) -> None:
             if hasattr(self, "stulz_page"):
