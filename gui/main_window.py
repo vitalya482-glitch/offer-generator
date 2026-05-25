@@ -53,6 +53,7 @@ def run_gui() -> None:
             QScrollArea,
             QSizePolicy,
             QSpacerItem,
+            QTabWidget,
             QTextEdit,
             QVBoxLayout,
             QWidget,
@@ -152,6 +153,7 @@ def run_gui() -> None:
             self._responsive_widgets.append(self.signer_alisher_radio)
 
             self._build_ui()
+            self._select_tab_for_brand(self.brand_combo.currentText())
             self._apply_style()
             self._autofill_client_from_project_dir()
             self._autofill_brand_from_project_dir()
@@ -328,21 +330,44 @@ def run_gui() -> None:
             header.addWidget(self.generate_btn, stretch=0, alignment=Qt.AlignTop)
             content_layout.addLayout(header)
 
-            form_card = self._card("Папка проекта и файлы")
-            grid = QGridLayout()
-            form_card.layout().addLayout(grid)
-            grid.setColumnStretch(1, 1)
-            grid.setVerticalSpacing(12)
-            grid.setHorizontalSpacing(10)
+            project_card = self._card("Папка проекта")
+            project_grid = QGridLayout()
+            project_card.layout().addLayout(project_grid)
+            project_grid.setColumnStretch(1, 1)
+            project_grid.setVerticalSpacing(12)
+            project_grid.setHorizontalSpacing(10)
+            self._add_row(project_grid, 0, "Папка проекта", self.project_edit, "Выбрать", self._browse_project_dir)
+            content_layout.addWidget(project_card)
 
-            self._add_row(grid, 0, "Папка проекта", self.project_edit, "Выбрать", self._browse_project_dir)
-            self._add_row(grid, 1, "Направление", self.brand_combo, None, None)
-            self._add_row(grid, 2, "Клиент", self.client_edit, None, None)
-            self._add_row(grid, 3, "Excel-расчет", self.calc_combo, "Обновить", lambda: self._scan_project(force=True))
-            self._add_row(grid, 4, "Word-шаблон", self.template_combo, "Обзор", self._browse_template_file)
-            self._add_row(grid, 5, "Лист Excel", self.sheet_combo, "Листы", self._load_sheets)
-            self._add_row(grid, 6, "Папка результата", self.output_edit, "Выбрать", self._browse_output_dir)
-            content_layout.addWidget(form_card)
+            self.brand_tabs = QTabWidget()
+            self.brand_tabs.setObjectName("BrandTabs")
+            self.brand_tabs.setDocumentMode(True)
+
+            stulz_tab = QWidget()
+            stulz_layout = QVBoxLayout(stulz_tab)
+            stulz_layout.setContentsMargins(0, 0, 0, 0)
+            stulz_layout.setSpacing(12)
+
+            stulz_card = self._card("Stulz: файлы и параметры КП")
+            stulz_grid = QGridLayout()
+            stulz_card.layout().addLayout(stulz_grid)
+            stulz_grid.setColumnStretch(1, 1)
+            stulz_grid.setVerticalSpacing(12)
+            stulz_grid.setHorizontalSpacing(10)
+
+            self._add_row(stulz_grid, 0, "Клиент", self.client_edit, None, None)
+            self._add_row(stulz_grid, 1, "Excel-расчет", self.calc_combo, "Обновить", lambda: self._scan_project(force=True))
+            self._add_row(stulz_grid, 2, "Word-шаблон", self.template_combo, "Обзор", self._browse_template_file)
+            self._add_row(stulz_grid, 3, "Лист Excel", self.sheet_combo, "Листы", self._load_sheets)
+            self._add_row(stulz_grid, 4, "Папка результата", self.output_edit, "Выбрать", self._browse_output_dir)
+            stulz_layout.addWidget(stulz_card)
+
+            self.brand_tabs.addTab(stulz_tab, "Stulz")
+            self.brand_tabs.addTab(self._placeholder_tab("Riello", "Логика Riello будет подключена следующим этапом."), "Riello")
+            self.brand_tabs.addTab(self._placeholder_tab("Battery", "Логика Battery будет подключена следующим этапом."), "Battery")
+            self.brand_tabs.addTab(self._placeholder_tab("Genset", "Логика Genset будет подключена следующим этапом."), "Genset")
+            self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
+            content_layout.addWidget(self.brand_tabs)
 
             bottom = QHBoxLayout()
             preview_card = self._card("Проверка данных")
@@ -450,6 +475,56 @@ def run_gui() -> None:
             layout.addWidget(label)
             return frame
 
+        def _placeholder_tab(self, title: str, text: str) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(12)
+            card = self._card(title)
+            label = QLabel(text)
+            label.setWordWrap(True)
+            card.layout().addWidget(label)
+            layout.addWidget(card)
+            layout.addStretch(1)
+            return tab
+
+        def _brand_for_tab_index(self, index: int) -> str:
+            tab_to_brand = {
+                0: "Stulz",
+                1: "Riello",
+                2: "DC Eltek",
+                3: "Generator",
+            }
+            return tab_to_brand.get(index, "Stulz")
+
+        def _tab_index_for_brand(self, brand: str) -> int:
+            brand_to_tab = {
+                "Stulz": 0,
+                "Riello": 1,
+                "DC Eltek": 2,
+                "Generator": 3,
+            }
+            return brand_to_tab.get(brand, 0)
+
+        def _select_tab_for_brand(self, brand: str) -> None:
+            if not hasattr(self, "brand_tabs"):
+                return
+            index = self._tab_index_for_brand(brand)
+            if self.brand_tabs.currentIndex() == index:
+                return
+            self.brand_tabs.blockSignals(True)
+            self.brand_tabs.setCurrentIndex(index)
+            self.brand_tabs.blockSignals(False)
+
+        def _on_brand_tab_changed(self, index: int) -> None:
+            brand = self._brand_for_tab_index(index)
+            if self.brand_combo.currentText() != brand:
+                self.brand_combo.blockSignals(True)
+                self.brand_combo.setCurrentText(brand)
+                self.brand_combo.blockSignals(False)
+            self._remember_values()
+            self._refresh_preview()
+
         def _ui_scale(self) -> float:
             return ui_scale(self.width(), self.height())
 
@@ -496,13 +571,17 @@ def run_gui() -> None:
 
         def _autofill_brand_from_project_dir(self) -> None:
             brand = self._extract_brand_from_project_dir(self._project_path_text())
-            if not brand or self.brand_combo.currentText() == brand:
+            if not brand:
                 return
 
-            self.brand_combo.blockSignals(True)
-            self.brand_combo.setCurrentText(brand)
-            self.brand_combo.blockSignals(False)
-            self._refresh_preview()
+            changed = self.brand_combo.currentText() != brand
+            if changed:
+                self.brand_combo.blockSignals(True)
+                self.brand_combo.setCurrentText(brand)
+                self.brand_combo.blockSignals(False)
+            self._select_tab_for_brand(brand)
+            if changed:
+                self._refresh_preview()
 
         def _on_project_dir_changed(self) -> None:
             # Do not scan the project tree on every typed character.

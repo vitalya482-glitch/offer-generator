@@ -46,10 +46,19 @@ def extract_brand_from_project_dir(path_text: str, available_brands: list[str] |
     available = set(available_brands)
     brand_rules = (
         ('stulz', 'Stulz'),
+        ('01_stulz', 'Stulz'),
         ('riello', 'Riello'),
+        ('ups', 'Riello'),
+        ('02_ups', 'Riello'),
+        ('battery', 'DC Eltek'),
+        ('batteries', 'DC Eltek'),
+        ('05_batteries', 'DC Eltek'),
         ('dc_eltek', 'DC Eltek'),
         ('dc eltek', 'DC Eltek'),
         ('eltek', 'DC Eltek'),
+        ('genset', 'Generator'),
+        ('gen_set', 'Generator'),
+        ('03_genset', 'Generator'),
         ('generator', 'Generator'),
         ('generators', 'Generator'),
     )
