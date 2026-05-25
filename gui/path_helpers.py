@@ -71,3 +71,61 @@ def extract_brand_from_project_dir(path_text: str, available_brands: list[str] |
                 return brand
 
     return ''
+
+
+def infer_specifications_dir(project_dir_text: str, pdf_dirs: list | tuple | None = None) -> str:
+    """Guess the folder that contains STULZ specification model folders.
+
+    Standard project structure:
+    <project>/.../<model folder>/<WinPlan/Calc pdf files>
+
+    The returned folder is only a default. User can change it in the GUI.
+    """
+    from pathlib import Path
+    import os
+
+    project_text = str(project_dir_text or '').strip().strip('"')
+    if not project_text:
+        return ''
+
+    project_dir = Path(project_text)
+    if not project_dir.exists():
+        return project_text
+
+    candidates = [Path(p) for p in (pdf_dirs or []) if str(p).strip()]
+
+    def has_spec_pdf(folder: Path) -> bool:
+        try:
+            for item in folder.iterdir():
+                if not item.is_file() or item.suffix.lower() != '.pdf':
+                    continue
+                name = item.name.lower()
+                if 'winplan' in name or 'calc' in name or 'option' in name:
+                    return True
+        except OSError:
+            return False
+        return False
+
+    if has_spec_pdf(project_dir):
+        return str(project_dir)
+
+    spec_dirs = [p for p in candidates if p.exists() and has_spec_pdf(p)]
+    if not spec_dirs:
+        # Lightweight fallback: inspect one level below the project folder.
+        try:
+            spec_dirs = [p for p in project_dir.iterdir() if p.is_dir() and has_spec_pdf(p)]
+        except OSError:
+            spec_dirs = []
+
+    if not spec_dirs:
+        return str(project_dir)
+
+    # If PDFs are in model folders, use their common parent as the default.
+    try:
+        common = Path(os.path.commonpath([str(p) for p in spec_dirs]))
+    except Exception:
+        common = spec_dirs[0]
+
+    if common.is_file():
+        common = common.parent
+    return str(common)

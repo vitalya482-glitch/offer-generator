@@ -22,6 +22,7 @@ class StulzPage(QWidget):
         owner._add_row(grid, 0, "Клиент", owner.client_edit, None, None)
         owner._add_row(grid, 1, "Excel-расчет", owner.calc_combo, "Обновить", lambda: owner._scan_project(force=True))
         owner._add_row(grid, 2, "Лист Excel", owner.sheet_combo, "Листы", owner._load_sheets)
-        owner._add_row(grid, 3, "Папка результата", owner.output_edit, "Выбрать", owner._browse_output_dir)
+        owner._add_row(grid, 3, "Папка спецификаций", owner.spec_edit, "Выбрать", owner._browse_spec_dir)
+        owner._add_row(grid, 4, "Папка результата", owner.output_edit, "Выбрать", owner._browse_output_dir)
 
         layout.addWidget(stulz_card)

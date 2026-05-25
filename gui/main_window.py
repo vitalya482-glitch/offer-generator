@@ -27,7 +27,7 @@ from core.excel_reader import list_sheets
 from core.models import OfferContext
 from core.manager_profile import ManagerProfile, find_manager_in_project
 from core.project_scanner import clear_scan_cache, scan_project_files
-from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir
+from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir, infer_specifications_dir
 from gui.ui_style import stylesheet, ui_scale
 
 
@@ -80,9 +80,12 @@ def run_gui() -> None:
             self._updating_path_display = False
             self.project_dir_path = self._saved("project_dir", "")
             self.output_dir_path = self._saved("output_dir", "")
+            self.spec_dir_path = self._saved("spec_dir", "")
 
             self.project_edit = QLineEdit(self._display_dir(self.project_dir_path))
             self.project_edit.setToolTip(self.project_dir_path)
+            self.spec_edit = QLineEdit(self._display_dir(self.spec_dir_path))
+            self.spec_edit.setToolTip(self.spec_dir_path)
             self.client_edit = QLineEdit(self._saved("client", "ТОО Example"))
             self.brand_combo = QComboBox()
             self.brand_combo.addItems(BRANDS.keys())
@@ -176,6 +179,7 @@ def run_gui() -> None:
                 "calc_path",
                 "template_path",
                 "sheet_name",
+                "spec_dir",
                 "template_dir",
             ]
 
@@ -187,14 +191,17 @@ def run_gui() -> None:
 
             self.project_dir_path = ""
             self.output_dir_path = ""
+            self.spec_dir_path = ""
 
             self._updating_path_display = True
             self.project_edit.clear()
             self.output_edit.clear()
+            self.spec_edit.clear()
             self._updating_path_display = False
 
             self.project_edit.setToolTip("")
             self.output_edit.setToolTip("")
+            self.spec_edit.setToolTip("")
 
             self.calc_combo.blockSignals(True)
             self.template_combo.blockSignals(True)
@@ -260,6 +267,9 @@ def run_gui() -> None:
 
         def _output_path_text(self) -> str:
             return self.output_dir_path or self.output_edit.text().strip()
+
+        def _spec_path_text(self) -> str:
+            return self.spec_dir_path or self.spec_edit.text().strip()
 
         def _build_ui(self) -> None:
             central = QWidget()
@@ -406,6 +416,7 @@ def run_gui() -> None:
             self.brand_combo.currentTextChanged.connect(self._refresh_preview)
             self.client_edit.textChanged.connect(self._refresh_preview)
             self.output_edit.textChanged.connect(self._on_output_dir_changed)
+            self.spec_edit.textChanged.connect(self._on_spec_dir_changed)
             self.manager_name_edit.textChanged.connect(self._refresh_preview)
             self.manager_position_edit.textChanged.connect(self._refresh_preview)
             self.manager_email_edit.textChanged.connect(self._refresh_preview)
@@ -415,6 +426,7 @@ def run_gui() -> None:
             self.project_edit.textChanged.connect(self._remember_values)
             self.client_edit.textChanged.connect(self._remember_values)
             self.output_edit.textChanged.connect(self._remember_values)
+            self.spec_edit.textChanged.connect(self._remember_values)
             self.brand_combo.currentTextChanged.connect(self._remember_values)
             self.calc_combo.currentTextChanged.connect(self._remember_values)
             self.template_combo.currentTextChanged.connect(self._remember_values)
@@ -678,14 +690,28 @@ def run_gui() -> None:
                 self.output_edit.setToolTip(self.output_dir_path)
             self._refresh_preview()
 
+        def _on_spec_dir_changed(self) -> None:
+            if not self._updating_path_display:
+                self.spec_dir_path = self.spec_edit.text().strip()
+                self.spec_edit.setToolTip(self.spec_dir_path)
+            self._refresh_preview()
+
         def _browse_project_dir(self) -> None:
             old_project = self._project_path_text().strip()
+            old_spec = self._spec_path_text().strip()
             path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", old_project)
             if path:
                 # Changing project must not reset the selected Word template.
                 # Templates are stored separately and are remembered in QSettings.
                 self.project_dir_path = path
                 self._set_line_path(self.project_edit, path, is_file=False)
+
+                # Папка спецификаций зависит от проекта, но пользователь может
+                # указать ее вручную. Автообновляем только пустой путь или путь
+                # внутри старой папки проекта.
+                if not old_spec or (old_project and old_spec.startswith(old_project)):
+                    self.spec_dir_path = ""
+                    self._set_line_path(self.spec_edit, "", is_file=False)
 
                 # Keep a custom result folder. Update it only when it was empty
                 # or previously pointed to the old project folder.
@@ -704,6 +730,13 @@ def run_gui() -> None:
             if path:
                 self.output_dir_path = path
                 self._set_line_path(self.output_edit, path, is_file=False)
+
+        def _browse_spec_dir(self) -> None:
+            start_dir = self._spec_path_text() or self._project_path_text()
+            path = QFileDialog.getExistingDirectory(self, "Выберите папку спецификаций", start_dir)
+            if path:
+                self.spec_dir_path = path
+                self._set_line_path(self.spec_edit, path, is_file=False)
 
         def _browse_template_file(self) -> None:
             current_template = self._path_from_combo(self.template_combo)
@@ -772,7 +805,14 @@ def run_gui() -> None:
                 self.output_dir_path = str(project_dir)
                 self._set_line_path(self.output_edit, str(project_dir), is_file=False)
 
-            self.status_label.setText(f"Найдено Excel: {len(found['excel'])}, Word: {len(found['word'])}")
+            old_spec = self._spec_path_text().strip()
+            should_update_spec = not old_spec
+            if should_update_spec:
+                guessed_spec_dir = infer_specifications_dir(str(project_dir), found.get("pdf_dirs", []))
+                self.spec_dir_path = guessed_spec_dir
+                self._set_line_path(self.spec_edit, guessed_spec_dir, is_file=False)
+
+            self.status_label.setText(f"Найдено Excel: {len(found['excel'])}, Word: {len(found['word'])}, папок PDF: {len(found['pdf_dirs'])}")
             self._load_sheets()
             self._refresh_preview()
 
@@ -796,7 +836,8 @@ def run_gui() -> None:
         def _make_context(self) -> OfferContext:
             project_dir = Path(self._project_path_text().strip())
             output_dir = Path(self._output_path_text().strip() or project_dir)
-            pdf_dir = project_dir if project_dir.exists() else None
+            spec_text = self._spec_path_text().strip()
+            pdf_dir = Path(spec_text) if spec_text else (project_dir if project_dir.exists() else None)
             return OfferContext(
                 brand=self.brand_combo.currentText(),
                 project_dir=project_dir,
@@ -821,6 +862,8 @@ def run_gui() -> None:
                 raise FileNotFoundError("Выберите существующий Excel-файл калькуляции.")
             if not context.template_path.exists():
                 raise FileNotFoundError("Выберите существующий Word-шаблон.")
+            if context.pdf_dir and not context.pdf_dir.exists():
+                raise FileNotFoundError("Выберите существующую папку спецификаций.")
             if context.template_path.suffix.lower() != ".docx":
                 raise ValueError("Word-шаблон должен быть файлом .docx")
 
@@ -843,6 +886,7 @@ def run_gui() -> None:
             self.settings.setValue("template_path", self._path_from_combo(self.template_combo))
             self.settings.setValue("sheet_name", self.sheet_combo.currentText())
             self.settings.setValue("output_dir", self._output_path_text())
+            self.settings.setValue("spec_dir", self._spec_path_text())
             self.settings.setValue("signer_key", self._selected_signer_key())
             self.settings.sync()
 
