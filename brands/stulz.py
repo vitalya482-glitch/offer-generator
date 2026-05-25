@@ -327,8 +327,8 @@ def build_currency_terms(calc: CalcData) -> str:
 
 def build_installation_terms(calc: CalcData) -> tuple[str, str]:
     if getattr(calc, "installation_included", False):
-        return "Монтажные работы включены", "Пусконаладочные работы включены"
-    return "Монтажные работы не включены", "Пусконаладочные работы не включены"
+        return "включены", "включены"
+    return "не включены", "не включены"
 
 
 def build_replacements(context: OfferContext, calc: CalcData, offer_version: int | None = None) -> dict[str, Any]:
