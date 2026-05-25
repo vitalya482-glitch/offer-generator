@@ -37,6 +37,7 @@ def run_gui() -> None:
         from PySide6.QtGui import QDesktopServices, QFont, QIcon
         from PySide6.QtWidgets import (
             QApplication,
+            QAbstractItemView,
             QComboBox,
             QDialog,
             QDialogButtonBox,
@@ -46,6 +47,7 @@ def run_gui() -> None:
             QGroupBox,
             QHBoxLayout,
             QLabel,
+            QHeaderView,
             QLineEdit,
             QMainWindow,
             QMessageBox,
@@ -56,6 +58,8 @@ def run_gui() -> None:
             QSizePolicy,
             QSpacerItem,
             QTabWidget,
+            QTableWidget,
+            QTableWidgetItem,
             QTextEdit,
             QVBoxLayout,
             QWidget,
@@ -110,8 +114,6 @@ def run_gui() -> None:
                 self.sheet_combo.setCurrentText(saved_sheet)
             self.output_edit = QLineEdit(self._display_dir(self.output_dir_path))
             self.output_edit.setToolTip(self.output_dir_path)
-            self.preview = QTextEdit()
-            self.preview.setReadOnly(True)
             self.status_label = QLabel("Выберите папку проекта")
             self._auto_client_value = ""
 
@@ -215,6 +217,8 @@ def run_gui() -> None:
             self.template_combo.blockSignals(False)
             self.sheet_combo.blockSignals(False)
 
+            if hasattr(self, "stulz_page"):
+                self.stulz_page.clear_spec_models()
             self.preview.setPlainText("Кэш очищен. Выберите папку проекта заново.")
             self.status_label.setText("Кэш очищен. Выберите папку проекта заново.")
 
@@ -367,25 +371,6 @@ def run_gui() -> None:
             self.brand_tabs.addTab(self.genset_page, "Genset")
             self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
             content_layout.addWidget(self.brand_tabs)
-
-            bottom = QHBoxLayout()
-            preview_card = self._card("Проверка данных")
-            preview_card.layout().addWidget(self.preview)
-            bottom.addWidget(preview_card, stretch=2)
-
-            status_card = self._card("Статус")
-            status_text = QLabel(
-                "1. Выберите папку проекта\n"
-                "2. Выберите направление\n"
-                "3. Выберите Excel и Word\n"
-                "4. Нажмите \"Сформировать КП\"\n\n"
-                "Результат сохраняется в выбранную папку результата."
-            )
-            status_text.setWordWrap(True)
-            status_card.layout().addWidget(status_text)
-            status_card.layout().addWidget(self.status_label)
-            bottom.addWidget(status_card, stretch=1)
-            content_layout.addLayout(bottom)
 
             scroll = QScrollArea()
             scroll.setObjectName("ContentScroll")
@@ -867,9 +852,19 @@ def run_gui() -> None:
             if context.template_path.suffix.lower() != ".docx":
                 raise ValueError("Word-шаблон должен быть файлом .docx")
 
+        def _current_spec_model_state(self) -> dict[str, tuple[bool, str]]:
+            if hasattr(self, "stulz_page"):
+                return self.stulz_page.current_spec_model_state()
+            return {}
+
+        def _refresh_spec_models(self, context: OfferContext | None = None) -> None:
+            if hasattr(self, "stulz_page"):
+                self.stulz_page.refresh_spec_models(context)
+
         def _refresh_preview(self) -> None:
             try:
                 context = self._make_context()
+                self._refresh_spec_models(context)
                 if not context.calc_path.exists():
                     self.preview.setPlainText("Excel-файл пока не выбран или не найден.")
                     return
@@ -877,6 +872,7 @@ def run_gui() -> None:
                 self.preview.setPlainText(module.preview(context))
             except Exception as exc:
                 self.preview.setPlainText(f"Не удалось прочитать данные: {exc}")
+                self._refresh_spec_models(None)
 
         def _remember_values(self) -> None:
             self.settings.setValue("project_dir", self._project_path_text())
