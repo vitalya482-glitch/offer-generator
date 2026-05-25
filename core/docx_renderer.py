@@ -6,6 +6,7 @@ from typing import Any
 
 from docx import Document
 from docx.enum.text import WD_BREAK
+from docx.oxml import OxmlElement
 from docx.shared import Pt
 
 
@@ -16,7 +17,6 @@ def to_text(value: Any) -> str:
 
 
 def replace_in_paragraph(paragraph, replacements: dict[str, Any]) -> None:
-    """Replace tags while preserving Word formatting where possible."""
     if not paragraph.runs:
         return
 
@@ -60,6 +60,7 @@ def replace_tags(doc: Document, replacements: dict[str, Any]) -> None:
 
 def set_cell_keep_style(cell, value: Any) -> None:
     value = to_text(value)
+
     if cell.paragraphs:
         paragraph = cell.paragraphs[0]
     else:
@@ -92,12 +93,24 @@ def remove_row(table, row) -> None:
     table._tbl.remove(row._tr)
 
 
-def fill_equipment_table(doc: Document, items: list[dict[str, Any]], total_label: str, grand_total: str) -> None:
-    item_tags = ["{{item_no}}", "{{item_name}}", "{{item_qty}}", "{{item_unit_price}}", "{{item_total}}"]
+def fill_equipment_table(
+    doc: Document,
+    items: list[dict[str, Any]],
+    total_label: str,
+    grand_total: str,
+) -> None:
+    item_tags = [
+        "{{item_no}}",
+        "{{item_name}}",
+        "{{item_qty}}",
+        "{{item_unit_price}}",
+        "{{item_total}}",
+    ]
 
     for table in doc.tables:
         template_row = None
         total_row = None
+
         for row in table.rows:
             if row_contains_tags(row, item_tags):
                 template_row = row
@@ -108,9 +121,11 @@ def fill_equipment_table(doc: Document, items: list[dict[str, Any]], total_label
             continue
 
         insert_after = template_row
+
         for item in items:
             new_row = clone_row_after(table, template_row, insert_after)
             insert_after = new_row
+
             values = {
                 "{{item_no}}": item.get("item_no", ""),
                 "{{item_name}}": item.get("item_name", ""),
@@ -118,22 +133,22 @@ def fill_equipment_table(doc: Document, items: list[dict[str, Any]], total_label
                 "{{item_unit_price}}": item.get("item_unit_price", ""),
                 "{{item_total}}": item.get("item_total", ""),
             }
+
             for cell in new_row.cells:
                 for paragraph in cell.paragraphs:
                     replace_in_paragraph(paragraph, values)
-                remaining = cell.text
-                for tag, value in values.items():
-                    if tag in remaining:
-                        set_cell_keep_style(cell, value)
-                        break
 
         remove_row(table, template_row)
 
         if total_row is not None:
-            values = {"{{total_label}}": total_label, "{{grand_total}}": grand_total}
+            values = {
+                "{{total_label}}": total_label,
+                "{{grand_total}}": grand_total,
+            }
             for cell in total_row.cells:
                 for paragraph in cell.paragraphs:
                     replace_in_paragraph(paragraph, values)
+
         return
 
 
@@ -150,264 +165,235 @@ def _clear_paragraph(paragraph) -> None:
         paragraph.text = ""
 
 
-def _insert_table_after_paragraph(doc: Document, paragraph, rows: int, cols: int):
-    table = doc.add_table(rows=rows, cols=cols)
-    paragraph._p.addnext(table._tbl)
-    return table
-
-
 def _find_tag_paragraph(doc: Document, tag: str):
     for paragraph in doc.paragraphs:
         if _paragraph_contains(paragraph, tag):
             return paragraph
+
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
                     if _paragraph_contains(paragraph, tag):
                         return paragraph
+
     return None
+
+
+def _insert_paragraph_before(paragraph):
+    new_p = OxmlElement("w:p")
+    paragraph._p.addprevious(new_p)
+    return paragraph._parent.add_paragraph("")
+
+
+def _insert_paragraph_after_element(element):
+    new_p = OxmlElement("w:p")
+    element.addnext(new_p)
+    return new_p
+
+
+def _insert_page_break_before_paragraph(paragraph) -> None:
+    new_p = OxmlElement("w:p")
+    paragraph._p.addprevious(new_p)
+
+    parent = paragraph._p.getparent()
+    index = parent.index(new_p)
+
+    temp_doc = paragraph._parent
+    new_paragraph = temp_doc.paragraphs[index] if index < len(temp_doc.paragraphs) else None
+
+    if new_paragraph is not None:
+        new_paragraph.add_run().add_break(WD_BREAK.PAGE)
+
+
+def _insert_empty_paragraph_after_paragraph(paragraph) -> None:
+    new_p = OxmlElement("w:p")
+    paragraph._p.addnext(new_p)
+
+
+def _insert_empty_paragraph_after_table(table) -> None:
+    new_p = OxmlElement("w:p")
+    table._tbl.addnext(new_p)
+
+
+def _insert_page_break_after_table(table) -> None:
+    new_p = OxmlElement("w:p")
+    table._tbl.addnext(new_p)
+
+    run = OxmlElement("w:r")
+    br = OxmlElement("w:br")
+    br.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type", "page")
+    run.append(br)
+    new_p.append(run)
 
 
 def _set_cell_text(cell, text: Any, bold: bool = False) -> None:
     text = to_text(text)
-    cell.text = ""
-    paragraph = cell.paragraphs[0]
-    for idx, part in enumerate(text.split("\n")):
-        if idx:
-            paragraph.add_run().add_break(WD_BREAK.LINE)
-        run = paragraph.add_run(part)
-        run.bold = bold
+
+    if cell.paragraphs:
+        paragraph = cell.paragraphs[0]
+    else:
+        paragraph = cell.add_paragraph()
+
+    for run in paragraph.runs:
+        run.text = ""
+
+    if not paragraph.runs:
+        run = paragraph.add_run("")
+    else:
+        run = paragraph.runs[0]
+
+    parts = text.split("\n")
+    run.text = parts[0]
+    run.bold = bold
+
+    try:
+        run.font.size = Pt(9)
+    except Exception:
+        pass
+
+    for part in parts[1:]:
+        br_run = paragraph.add_run()
+        br_run.add_break(WD_BREAK.LINE)
+        text_run = paragraph.add_run(part)
+        text_run.bold = bold
         try:
-            run.font.size = Pt(9)
+            text_run.font.size = Pt(9)
         except Exception:
             pass
 
-
-def _apply_table_style(table) -> None:
-    try:
-        table.style = "Table Grid"
-    except Exception:
-        pass
-    table.autofit = True
+    for extra_paragraph in cell.paragraphs[1:]:
+        for extra_run in extra_paragraph.runs:
+            extra_run.text = ""
 
 
-def insert_options_table(doc: Document, options: list[dict[str, Any]]) -> None:
-    tag = "{{options_table}}"
-    paragraph = _find_tag_paragraph(doc, tag)
-    if not options:
-        if paragraph is not None:
-            _clear_paragraph(paragraph)
-        return
-
-    if paragraph is None:
-        paragraph = doc.add_paragraph()
-        paragraph.add_run(tag)
-
-    table = _insert_table_after_paragraph(doc, paragraph, rows=1, cols=3)
-    _apply_table_style(table)
-    headers = ["№", "Наименование опции", "Кол-во"]
-    for idx, header in enumerate(headers):
-        _set_cell_text(table.rows[0].cells[idx], header, bold=True)
-
-    for no, option in enumerate(options, start=1):
-        row = table.add_row()
-        _set_cell_text(row.cells[0], str(no))
-        _set_cell_text(row.cells[1], option.get("description", ""))
-        _set_cell_text(row.cells[2], option.get("qty", ""))
-
-    _clear_paragraph(paragraph)
-
-
-def insert_technical_specs_table(doc: Document, specs: list[dict[str, Any]]) -> None:
-    tag = "{{technical_specs_table}}"
-    paragraph = _find_tag_paragraph(doc, tag)
-    if not specs:
-        if paragraph is not None:
-            _clear_paragraph(paragraph)
-        return
-
-    if paragraph is None:
-        paragraph = doc.add_paragraph()
-        paragraph.add_run(tag)
-
-    table = _insert_table_after_paragraph(doc, paragraph, rows=0, cols=2)
-    _apply_table_style(table)
-
-    for spec in specs:
-        row = table.add_row()
-        if spec.get("is_section"):
-            merged = row.cells[0].merge(row.cells[1])
-            _set_cell_text(merged, spec.get("name", ""), bold=True)
-        else:
-            _set_cell_text(row.cells[0], spec.get("name", ""), bold=True)
-            _set_cell_text(row.cells[1], spec.get("value", ""))
-
-    _clear_paragraph(paragraph)
-
-
-
-# --- Template-row based STULZ specification rendering -----------------------
-
-def _element_parent(element):
-    return element.getparent()
-
-
-def _remove_element(element) -> None:
-    parent = _element_parent(element)
-    if parent is not None:
-        parent.remove(element)
-
-
-def _insert_element_after(after_element, new_element):
-    after_element.addnext(new_element)
-    return new_element
-
-
-def _find_table_with_tags(doc: Document, tags: list[str]):
+def _find_table_with_row_tags(doc: Document, tags: list[str]):
     for table in doc.tables:
         for row in table.rows:
             if row_contains_tags(row, tags):
-                return table
-    return None
+                return table, row
+    return None, None
 
 
-def _replace_tags_in_table(table, replacements: dict[str, Any]) -> None:
-    for row in table.rows:
-        for cell in row.cells:
-            for paragraph in cell.paragraphs:
-                replace_in_paragraph(paragraph, replacements)
-            for tag, value in replacements.items():
-                if tag in cell.text:
-                    set_cell_keep_style(cell, value)
+def fill_options_template_table(
+    doc: Document,
+    options: list[dict[str, Any]],
+    title: str,
+) -> None:
+    title_tag = "{{options_title}}"
+    row_tags = ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"]
 
+    title_paragraph = _find_tag_paragraph(doc, title_tag)
+    table, template_row = _find_table_with_row_tags(doc, row_tags)
 
-def _fill_template_row_table(table, row_tags: list[str], rows: list[dict[str, Any]]) -> None:
-    template_row = None
-    for row in table.rows:
-        if row_contains_tags(row, row_tags):
-            template_row = row
-            break
-    if template_row is None:
+    if title_paragraph is not None:
+        _insert_page_break_before_paragraph(title_paragraph)
+        replace_in_paragraph(title_paragraph, {title_tag: title})
+        _insert_empty_paragraph_after_paragraph(title_paragraph)
+
+    if table is None or template_row is None:
+        return
+
+    if not options:
+        remove_row(table, template_row)
         return
 
     insert_after = template_row
-    for values in rows:
+
+    for no, option in enumerate(options, start=1):
         new_row = clone_row_after(table, template_row, insert_after)
         insert_after = new_row
-        replacements = {tag: values.get(tag, "") for tag in row_tags}
+
+        values = {
+            "{{opt_no}}": str(no),
+            "{{opt_name}}": option.get("description", option.get("name", "")),
+            "{{opt_qty}}": option.get("qty", ""),
+        }
+
         for cell in new_row.cells:
             for paragraph in cell.paragraphs:
-                replace_in_paragraph(paragraph, replacements)
-            for tag, value in replacements.items():
-                if tag in cell.text:
-                    set_cell_keep_style(cell, value)
-                    break
+                replace_in_paragraph(paragraph, values)
+
     remove_row(table, template_row)
+    _insert_empty_paragraph_after_table(table)
 
 
-def _fill_options_template_table(table, options: list[dict[str, Any]]) -> None:
-    rows = []
-    for idx, option in enumerate(options, start=1):
-        rows.append({
-            "{{opt_no}}": str(idx),
-            "{{opt_name}}": option.get("description", ""),
-            "{{opt_qty}}": option.get("qty", ""),
-        })
-    _fill_template_row_table(table, ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"], rows)
+def fill_technical_specs_template_table(
+    doc: Document,
+    specs: list[dict[str, Any]],
+    title: str,
+) -> None:
+    title_tag = "{{technical_specs_title}}"
+    row_tags = ["{{technical_specs_parameter}}", "{{technical_specs_value}}"]
 
+    title_paragraph = _find_tag_paragraph(doc, title_tag)
+    table, template_row = _find_table_with_row_tags(doc, row_tags)
 
-def _fill_specs_template_table(table, specs: list[dict[str, Any]]) -> None:
-    rows = []
+    if title_paragraph is not None:
+        _insert_empty_paragraph_after_paragraph(title_paragraph)
+        replace_in_paragraph(title_paragraph, {title_tag: title})
+        _insert_empty_paragraph_after_paragraph(title_paragraph)
+
+    if table is None or template_row is None:
+        return
+
+    if not specs:
+        remove_row(table, template_row)
+        return
+
+    insert_after = template_row
+
     for spec in specs:
+        new_row = clone_row_after(table, template_row, insert_after)
+        insert_after = new_row
+
         if spec.get("is_section"):
-            rows.append({
+            values = {
                 "{{technical_specs_parameter}}": spec.get("name", ""),
                 "{{technical_specs_value}}": "",
-            })
+            }
         else:
-            rows.append({
+            values = {
                 "{{technical_specs_parameter}}": spec.get("name", ""),
                 "{{technical_specs_value}}": spec.get("value", ""),
-            })
-    _fill_template_row_table(
-        table,
-        ["{{technical_specs_parameter}}", "{{technical_specs_value}}"],
-        rows,
-    )
+            }
 
+        for cell in new_row.cells:
+            for paragraph in cell.paragraphs:
+                replace_in_paragraph(paragraph, values)
 
-def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str, Any]]) -> bool:
-    """Fill Word template-row specification blocks for one or many STULZ models.
+    remove_row(table, template_row)
+    _insert_empty_paragraph_after_table(table)
+    _insert_page_break_after_table(table)
 
-    The DOCX template must contain:
-    - paragraph with {{options_title}}
-    - table row with {{opt_no}}, {{opt_name}}, {{opt_qty}}
-    - paragraph with {{technical_specs_title}}
-    - table row with {{technical_specs_parameter}}, {{technical_specs_value}}
-
-    The function duplicates this block for every selected model and preserves the
-    Word formatting of the template paragraphs and table rows.
-    """
-    option_title_p = _find_tag_paragraph(doc, "{{options_title}}")
-    option_table = _find_table_with_tags(doc, ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"])
-    specs_title_p = _find_tag_paragraph(doc, "{{technical_specs_title}}")
-    specs_table = _find_table_with_tags(doc, ["{{technical_specs_parameter}}", "{{technical_specs_value}}"])
-
-    if option_title_p is None or option_table is None or specs_title_p is None or specs_table is None:
-        return False
-
-    anchor = specs_table._tbl
-    created_elements = []
-    for block in spec_blocks:
-        option_title_el = deepcopy(option_title_p._p)
-        option_table_el = deepcopy(option_table._tbl)
-        specs_title_el = deepcopy(specs_title_p._p)
-        specs_table_el = deepcopy(specs_table._tbl)
-
-        for el in (option_title_el, option_table_el, specs_title_el, specs_table_el):
-            anchor = _insert_element_after(anchor, el)
-            created_elements.append(el)
-
-        from docx.text.paragraph import Paragraph
-        from docx.table import Table
-
-        option_title_clone = Paragraph(option_title_el, option_title_p._parent)
-        option_table_clone = Table(option_table_el, option_table._parent)
-        specs_title_clone = Paragraph(specs_title_el, specs_title_p._parent)
-        specs_table_clone = Table(specs_table_el, specs_table._parent)
-
-        replace_in_paragraph(option_title_clone, {"{{options_title}}": block.get("options_title", "")})
-        _fill_options_template_table(option_table_clone, block.get("options", []))
-        replace_in_paragraph(specs_title_clone, {"{{technical_specs_title}}": block.get("technical_specs_title", "")})
-        _fill_specs_template_table(specs_table_clone, block.get("technical_specs", []))
-
-    # Remove the original template block after cloned blocks have been inserted.
-    for element in (option_title_p._p, option_table._tbl, specs_title_p._p, specs_table._tbl):
-        _remove_element(element)
-    return True
 
 def remove_empty_service_tags(doc: Document) -> None:
-    replace_tags(doc, {
-        "{{options_table}}": "",
-        "{{technical_specs_table}}": "",
-        "{{options_title}}": "",
-        "{{opt_no}}": "",
-        "{{opt_name}}": "",
-        "{{opt_qty}}": "",
-        "{{technical_specs_title}}": "",
-        "{{technical_specs_parameter}}": "",
-        "{{technical_specs_value}}": "",
-    })
+    replace_tags(
+        doc,
+        {
+            "{{options_table}}": "",
+            "{{technical_specs_table}}": "",
+            "{{technical_specifications}}": "",
+            "{{options_title}}": "",
+            "{{opt_no}}": "",
+            "{{opt_name}}": "",
+            "{{opt_qty}}": "",
+            "{{technical_specs_title}}": "",
+            "{{technical_specs_parameter}}": "",
+            "{{technical_specs_value}}": "",
+        },
+    )
 
 
 def get_unique_output_path(path: Path) -> Path:
     if not path.exists():
         return path
+
     parent = path.parent
     stem = path.stem
     suffix = path.suffix
     counter = 1
+
     while True:
         candidate = parent / f"{stem}_{counter}{suffix}"
         if not candidate.exists():
@@ -422,10 +408,10 @@ def render_docx(
     items: list[dict[str, Any]] | None = None,
     options: list[dict[str, Any]] | None = None,
     technical_specs: list[dict[str, Any]] | None = None,
-    stulz_spec_blocks: list[dict[str, Any]] | None = None,
 ) -> Path:
     template_path = Path(template_path)
     output_path = Path(output_path)
+
     doc = Document(template_path)
 
     fill_equipment_table(
@@ -435,16 +421,38 @@ def render_docx(
         grand_total=to_text(replacements.get("{{grand_total}}", "")),
     )
 
+    options_title = to_text(
+        replacements.get(
+            "{{options_title}}",
+            "Опции, включенные в комплектацию кондиционеров:",
+        )
+    )
+
+    technical_specs_title = to_text(
+        replacements.get(
+            "{{technical_specs_title}}",
+            "Технические характеристики кондиционеров:",
+        )
+    )
+
     replace_tags(doc, replacements)
-    used_template_blocks = False
-    if stulz_spec_blocks:
-        used_template_blocks = insert_stulz_specification_blocks(doc, stulz_spec_blocks)
-    if not used_template_blocks:
-        insert_options_table(doc, options or [])
-        insert_technical_specs_table(doc, technical_specs or [])
+
+    fill_options_template_table(
+        doc=doc,
+        options=options or [],
+        title=options_title,
+    )
+
+    fill_technical_specs_template_table(
+        doc=doc,
+        specs=technical_specs or [],
+        title=technical_specs_title,
+    )
+
     remove_empty_service_tags(doc)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path = get_unique_output_path(output_path)
+
     doc.save(output_path)
     return output_path
