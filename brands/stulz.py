@@ -8,6 +8,7 @@ import re
 from core.docx_renderer import render_docx
 from core.excel_reader import parse_stulz_calc
 from core.models import CalcData, OfferContext, OfferItem
+from core.stulz_specification import build_stulz_specification
 from config.stulz_series import AIRFLOW_TEXT, DEFAULT_STULZ_SERIES, STULZ_SERIES
 
 BRAND_NAME = "Stulz"
@@ -327,8 +328,8 @@ def build_currency_terms(calc: CalcData) -> str:
 
 def build_installation_terms(calc: CalcData) -> tuple[str, str]:
     if getattr(calc, "installation_included", False):
-        return "включены", "включены"
-    return "не включены", "не включены"
+        return "Монтажные работы включены", "Пусконаладочные работы включены"
+    return "Монтажные работы не включены", "Пусконаладочные работы не включены"
 
 
 def build_replacements(context: OfferContext, calc: CalcData, offer_version: int | None = None) -> dict[str, Any]:
@@ -375,9 +376,18 @@ def load_calc(context: OfferContext) -> CalcData:
 
 def make_offer(context: OfferContext) -> Path:
     calc = load_calc(context)
+    specification = build_stulz_specification(context.pdf_dir, calc)
     offer_version = find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)
     replacements = build_replacements(context, calc, offer_version=offer_version)
     items = [item_to_template_dict(item, calc) for item in calc.items]
+    options = [
+        {"description": option.description, "qty": option.qty, "code": option.code}
+        for option in specification.options
+    ]
+    technical_specs = [
+        {"name": row.name, "value": row.value, "is_section": row.is_section}
+        for row in specification.technical_specs
+    ]
 
     filename = build_offer_filename(context.client_name, offer_version)
     output_path = context.output_dir / filename
@@ -387,6 +397,8 @@ def make_offer(context: OfferContext) -> Path:
         output_path=output_path,
         replacements=replacements,
         items=items,
+        options=options,
+        technical_specs=technical_specs,
     )
 
 def money_in_words(amount: float, currency: str) -> str:
@@ -416,6 +428,7 @@ def money_in_words(amount: float, currency: str) -> str:
 
 def preview(context: OfferContext) -> str:
     calc = load_calc(context)
+    specification = build_stulz_specification(context.pdf_dir, calc)
     models = []
     for item in calc.items:
         if item.name and item.name not in models:
@@ -431,12 +444,25 @@ def preview(context: OfferContext) -> str:
         f"НДС: {format_qty(calc.vat_percent)}%",
         f"Условия поставки: {calc.delivery_basis}",
         f"Монтаж/ПНР: {'включены' if getattr(calc, 'installation_included', False) else 'не включены'}",
+        f"Calc PDF: {specification.calc_pdf.name if specification.calc_pdf else '-'}",
+        f"WinPlan PDF: {specification.winplan_pdf.name if specification.winplan_pdf else '-'}",
+        f"Опций для спецификации: {len(specification.options)}",
+        f"Строк тех. характеристик: {len(specification.technical_specs)}",
         f"Модели: {', '.join(models) if models else '-'}",
         f"Количество: {format_qty(calc.quantity)}",
         f"Сумма: {format_money(calc.total_price)} {currency_name(calc.currency)}",
         "",
-        "Позиции:",
+        "Предупреждения спецификации:",
     ]
+    if specification.warnings:
+        lines.extend(f"- {warning}" for warning in specification.warnings)
+    else:
+        lines.append("- нет")
+
+    lines.extend([
+        "",
+        "Позиции:",
+    ])
     for item in calc.items:
         lines.append(
             f"{item.no}. {item.name} | кол-во {format_qty(item.qty)} | "

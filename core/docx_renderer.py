@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from docx import Document
+from docx.enum.text import WD_BREAK
+from docx.shared import Pt
 
 
 def to_text(value: Any) -> str:
@@ -12,79 +16,16 @@ def to_text(value: Any) -> str:
 
 
 def replace_in_paragraph(paragraph, replacements: dict[str, Any]) -> None:
-    """
-    Replaces tags while preserving Word formatting.
-    Handles both normal tags and tags split across several Word runs.
-    """
+    """Replace tags while preserving Word formatting where possible."""
     if not paragraph.runs:
         return
 
-    # First: simple case, tag is inside one run
-    for run in paragraph.runs:
-        for key, value in replacements.items():
-            if key in run.text:
-                run.text = run.text.replace(key, to_text(value))
-
-    full_text = "".join(run.text for run in paragraph.runs)
-
-    if "{{" not in full_text:
-        return
-
-    for key, value in replacements.items():
-        if key not in full_text:
-            continue
-
-        start = full_text.find(key)
-        end = start + len(key)
-
-        pos = 0
-        start_run_idx = None
-        end_run_idx = None
-
-        for i, run in enumerate(paragraph.runs):
-            run_start = pos
-            run_end = pos + len(run.text)
-
-            if start_run_idx is None and run_start <= start < run_end:
-                start_run_idx = i
-
-            if run_start < end <= run_end:
-                end_run_idx = i
-                break
-
-            pos = run_end
-
-        if start_run_idx is None or end_run_idx is None:
-            continue
-
-        start_run = paragraph.runs[start_run_idx]
-        end_run = paragraph.runs[end_run_idx]
-
-        before = start_run.text[: start - sum(len(r.text) for r in paragraph.runs[:start_run_idx])]
-        after_start_pos = end - sum(len(r.text) for r in paragraph.runs[:end_run_idx])
-        after = end_run.text[after_start_pos:]
-
-        start_run.text = before + to_text(value) + after
-
-        for i in range(start_run_idx + 1, end_run_idx + 1):
-            paragraph.runs[i].text = ""
-
-        full_text = "".join(run.text for run in paragraph.runs)
-    
-    """
-    Replaces tags while preserving Word formatting as much as possible.
-    First tries run-by-run replacement.
-    If Word split the tag across several runs, falls back to first-run replacement.
-    """
     changed = False
-
     for run in paragraph.runs:
         original = run.text
         updated = original
-
         for key, value in replacements.items():
             updated = updated.replace(key, to_text(value))
-
         if updated != original:
             run.text = updated
             changed = True
@@ -93,7 +34,6 @@ def replace_in_paragraph(paragraph, replacements: dict[str, Any]) -> None:
         return
 
     full_text = "".join(run.text for run in paragraph.runs)
-
     if "{{" not in full_text:
         return
 
@@ -101,7 +41,7 @@ def replace_in_paragraph(paragraph, replacements: dict[str, Any]) -> None:
     for key, value in replacements.items():
         updated_full = updated_full.replace(key, to_text(value))
 
-    if updated_full != full_text and paragraph.runs:
+    if updated_full != full_text:
         paragraph.runs[0].text = updated_full
         for run in paragraph.runs[1:]:
             run.text = ""
@@ -119,11 +59,7 @@ def replace_tags(doc: Document, replacements: dict[str, Any]) -> None:
 
 
 def set_cell_keep_style(cell, value: Any) -> None:
-    """
-    Sets cell text without using cell.text, so Word formatting is preserved.
-    """
     value = to_text(value)
-
     if cell.paragraphs:
         paragraph = cell.paragraphs[0]
     else:
@@ -147,38 +83,21 @@ def row_contains_tags(row, tags: list[str]) -> bool:
 
 
 def clone_row_after(table, source_row, after_row):
-    """Clone source_row and insert the clone after after_row.
-
-    Important: for repeated item rows we must always clone the original
-    template row, not the previously filled row. Otherwise the second and
-    next rows inherit already-replaced text and become duplicates.
-    """
     new_tr = deepcopy(source_row._tr)
     after_row._tr.addnext(new_tr)
-
-    # python-docx row indexes are recalculated from the XML tree. The newly
-    # inserted row is directly after after_row.
     return table.rows[after_row._index + 1]
 
 
 def remove_row(table, row) -> None:
-    tbl = table._tbl
-    tbl.remove(row._tr)
+    table._tbl.remove(row._tr)
 
 
 def fill_equipment_table(doc: Document, items: list[dict[str, Any]], total_label: str, grand_total: str) -> None:
-    item_tags = [
-        "{{item_no}}",
-        "{{item_name}}",
-        "{{item_qty}}",
-        "{{item_unit_price}}",
-        "{{item_total}}",
-    ]
+    item_tags = ["{{item_no}}", "{{item_name}}", "{{item_qty}}", "{{item_unit_price}}", "{{item_total}}"]
 
     for table in doc.tables:
         template_row = None
         total_row = None
-
         for row in table.rows:
             if row_contains_tags(row, item_tags):
                 template_row = row
@@ -189,11 +108,9 @@ def fill_equipment_table(doc: Document, items: list[dict[str, Any]], total_label
             continue
 
         insert_after = template_row
-
         for item in items:
             new_row = clone_row_after(table, template_row, insert_after)
             insert_after = new_row
-
             values = {
                 "{{item_no}}": item.get("item_no", ""),
                 "{{item_name}}": item.get("item_name", ""),
@@ -201,61 +118,145 @@ def fill_equipment_table(doc: Document, items: list[dict[str, Any]], total_label
                 "{{item_unit_price}}": item.get("item_unit_price", ""),
                 "{{item_total}}": item.get("item_total", ""),
             }
-
             for cell in new_row.cells:
                 for paragraph in cell.paragraphs:
                     replace_in_paragraph(paragraph, values)
-
                 remaining = cell.text
-                if "{{item_no}}" in remaining:
-                    set_cell_keep_style(cell, values["{{item_no}}"])
-                elif "{{item_name}}" in remaining:
-                    set_cell_keep_style(cell, values["{{item_name}}"])
-                elif "{{item_qty}}" in remaining:
-                    set_cell_keep_style(cell, values["{{item_qty}}"])
-                elif "{{item_unit_price}}" in remaining:
-                    set_cell_keep_style(cell, values["{{item_unit_price}}"])
-                elif "{{item_total}}" in remaining:
-                    set_cell_keep_style(cell, values["{{item_total}}"])
+                for tag, value in values.items():
+                    if tag in remaining:
+                        set_cell_keep_style(cell, value)
+                        break
 
         remove_row(table, template_row)
 
         if total_row is not None:
-            values = {
-                "{{total_label}}": total_label,
-                "{{grand_total}}": grand_total,
-            }
-
+            values = {"{{total_label}}": total_label, "{{grand_total}}": grand_total}
             for cell in total_row.cells:
                 for paragraph in cell.paragraphs:
                     replace_in_paragraph(paragraph, values)
-
         return
 
 
+def _paragraph_contains(paragraph, tag: str) -> bool:
+    return tag in "".join(run.text for run in paragraph.runs) or tag in paragraph.text
+
+
+def _clear_paragraph(paragraph) -> None:
+    if paragraph.runs:
+        paragraph.runs[0].text = ""
+        for run in paragraph.runs[1:]:
+            run.text = ""
+    else:
+        paragraph.text = ""
+
+
+def _insert_table_after_paragraph(doc: Document, paragraph, rows: int, cols: int):
+    table = doc.add_table(rows=rows, cols=cols)
+    paragraph._p.addnext(table._tbl)
+    return table
+
+
+def _find_tag_paragraph(doc: Document, tag: str):
+    for paragraph in doc.paragraphs:
+        if _paragraph_contains(paragraph, tag):
+            return paragraph
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    if _paragraph_contains(paragraph, tag):
+                        return paragraph
+    return None
+
+
+def _set_cell_text(cell, text: Any, bold: bool = False) -> None:
+    text = to_text(text)
+    cell.text = ""
+    paragraph = cell.paragraphs[0]
+    for idx, part in enumerate(text.split("\n")):
+        if idx:
+            paragraph.add_run().add_break(WD_BREAK.LINE)
+        run = paragraph.add_run(part)
+        run.bold = bold
+        try:
+            run.font.size = Pt(9)
+        except Exception:
+            pass
+
+
+def _apply_table_style(table) -> None:
+    try:
+        table.style = "Table Grid"
+    except Exception:
+        pass
+    table.autofit = True
+
+
+def insert_options_table(doc: Document, options: list[dict[str, Any]]) -> None:
+    tag = "{{options_table}}"
+    paragraph = _find_tag_paragraph(doc, tag)
+    if not options:
+        if paragraph is not None:
+            _clear_paragraph(paragraph)
+        return
+
+    if paragraph is None:
+        paragraph = doc.add_paragraph()
+        paragraph.add_run(tag)
+
+    table = _insert_table_after_paragraph(doc, paragraph, rows=1, cols=3)
+    _apply_table_style(table)
+    headers = ["№", "Наименование опции", "Кол-во"]
+    for idx, header in enumerate(headers):
+        _set_cell_text(table.rows[0].cells[idx], header, bold=True)
+
+    for no, option in enumerate(options, start=1):
+        row = table.add_row()
+        _set_cell_text(row.cells[0], str(no))
+        _set_cell_text(row.cells[1], option.get("description", ""))
+        _set_cell_text(row.cells[2], option.get("qty", ""))
+
+    _clear_paragraph(paragraph)
+
+
+def insert_technical_specs_table(doc: Document, specs: list[dict[str, Any]]) -> None:
+    tag = "{{technical_specs_table}}"
+    paragraph = _find_tag_paragraph(doc, tag)
+    if not specs:
+        if paragraph is not None:
+            _clear_paragraph(paragraph)
+        return
+
+    if paragraph is None:
+        paragraph = doc.add_paragraph()
+        paragraph.add_run(tag)
+
+    table = _insert_table_after_paragraph(doc, paragraph, rows=0, cols=2)
+    _apply_table_style(table)
+
+    for spec in specs:
+        row = table.add_row()
+        if spec.get("is_section"):
+            merged = row.cells[0].merge(row.cells[1])
+            _set_cell_text(merged, spec.get("name", ""), bold=True)
+        else:
+            _set_cell_text(row.cells[0], spec.get("name", ""), bold=True)
+            _set_cell_text(row.cells[1], spec.get("value", ""))
+
+    _clear_paragraph(paragraph)
+
+
 def remove_empty_service_tags(doc: Document) -> None:
-    empty_tags = {
-        "{{options_table}}": "",
-        "{{technical_specs_table}}": "",
-    }
-    replace_tags(doc, empty_tags)
+    replace_tags(doc, {"{{options_table}}": "", "{{technical_specs_table}}": ""})
 
 
 def get_unique_output_path(path: Path) -> Path:
-    """
-    Returns a free output path without overwriting an existing file.
-
-    Example:
-    KP.docx -> KP_1.docx -> KP_2.docx
-    """
     if not path.exists():
         return path
-
     parent = path.parent
     stem = path.stem
     suffix = path.suffix
     counter = 1
-
     while True:
         candidate = parent / f"{stem}_{counter}{suffix}"
         if not candidate.exists():
@@ -268,26 +269,26 @@ def render_docx(
     output_path: str | Path,
     replacements: dict[str, Any],
     items: list[dict[str, Any]] | None = None,
+    options: list[dict[str, Any]] | None = None,
+    technical_specs: list[dict[str, Any]] | None = None,
 ) -> Path:
     template_path = Path(template_path)
     output_path = Path(output_path)
-
     doc = Document(template_path)
-
-    items = items or []
 
     fill_equipment_table(
         doc=doc,
-        items=items,
+        items=items or [],
         total_label=to_text(replacements.get("{{total_label}}", "ИТОГО")),
         grand_total=to_text(replacements.get("{{grand_total}}", "")),
     )
 
     replace_tags(doc, replacements)
+    insert_options_table(doc, options or [])
+    insert_technical_specs_table(doc, technical_specs or [])
     remove_empty_service_tags(doc)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path = get_unique_output_path(output_path)
     doc.save(output_path)
-
     return output_path
