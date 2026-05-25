@@ -1,0 +1,296 @@
+[
+  {
+    "source_name": "Unit type:",
+    "ru_name": "Тип модуля:",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Cooling capacity (total):",
+    "ru_name": "Холодопроизводительность (общая):",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "Net sensible cooling capacity:",
+    "ru_name": "Холодопроизводительность (явная):",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "Condensing temperature:",
+    "ru_name": "Температура конденсации:",
+    "section": "",
+    "unit": "°C"
+  },
+  {
+    "source_name": "EER:",
+    "ru_name": "Соотношение производительности к потребляемой мощности:",
+    "section": "",
+    "unit": "кВт/кВт"
+  },
+  {
+    "source_name": "Sound power level:",
+    "ru_name": "Уровень звукового давления:",
+    "section": "",
+    "unit": "дБ(A)"
+  },
+  {
+    "source_name": "LpA (2m freefield):",
+    "ru_name": "Уровень звукового давления (на расстоянии 2 м):",
+    "section": "",
+    "unit": "дБ(A)"
+  },
+  {
+    "source_name": "Airflow:",
+    "ru_name": "Объемный расход воздушного потока:",
+    "section": "",
+    "unit": "м3/ч"
+  },
+  {
+    "source_name": "Return air temperature:",
+    "ru_name": "Температура возвратного воздуха:",
+    "section": "",
+    "unit": "°C"
+  },
+  {
+    "source_name": "Return air humidity:",
+    "ru_name": "Относительная влажность возвратного воздуха:",
+    "section": "",
+    "unit": "%"
+  },
+  {
+    "source_name": "Supply air temperature:",
+    "ru_name": "Температура подаваемого воздуха:",
+    "section": "",
+    "unit": "°C"
+  },
+  {
+    "source_name": "Height:",
+    "ru_name": "Габариты (высота):",
+    "section": "",
+    "unit": "мм"
+  },
+  {
+    "source_name": "Width:",
+    "ru_name": "Габариты (ширина):",
+    "section": "",
+    "unit": "мм"
+  },
+  {
+    "source_name": "Depth:",
+    "ru_name": "Габариты (глубина):",
+    "section": "",
+    "unit": "мм"
+  },
+  {
+    "source_name": "Weight:",
+    "ru_name": "Вес:",
+    "section": "",
+    "unit": "кг"
+  },
+  {
+    "source_name": "Refrigerant:",
+    "ru_name": "Тип хладагента:",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Power supply:",
+    "ru_name": "Электрическое подключение:",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Fan (Data per unit)",
+    "ru_name": "Вентилятор:",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Fan type:",
+    "ru_name": "Тип вентилятора:",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Number:",
+    "ru_name": "Количество:",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Max. revolutions:",
+    "ru_name": "Максимальное количество оборотов:",
+    "section": "",
+    "unit": "Об/мин"
+  },
+  {
+    "source_name": "Revolutions:",
+    "ru_name": "Количество оборотов:",
+    "section": "",
+    "unit": "Об/мин"
+  },
+  {
+    "source_name": "Nominal power:",
+    "ru_name": "Номинальная мощность:",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "Power consumption:",
+    "ru_name": "Потребляемая мощность:",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "ESP external static pressure:",
+    "ru_name": "Внешнее статическое давление:",
+    "section": "",
+    "unit": "Па"
+  },
+  {
+    "source_name": "Total pressure drop:",
+    "ru_name": "Общее падение давления:",
+    "section": "",
+    "unit": "Па"
+  },
+  {
+    "source_name": "Control voltage:",
+    "ru_name": "Контрольное напряжение:",
+    "section": "",
+    "unit": "В"
+  },
+  {
+    "source_name": "Compressor (Data per compressor)",
+    "ru_name": "Компрессор:",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Electrical power consumption:",
+    "ru_name": "Потребление электричества:",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "COP:",
+    "ru_name": "СОР:",
+    "section": "",
+    "unit": "кВт/кВт"
+  },
+  {
+    "source_name": "Number:",
+    "ru_name": "Количество:",
+    "section": "",
+    "unit": "шт"
+  },
+  {
+    "source_name": "Heat rejection:",
+    "ru_name": "Общий отвод тепла:",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "Evaporating temperature:",
+    "ru_name": "Температура на испарителе:",
+    "section": "",
+    "unit": "°С"
+  },
+  {
+    "source_name": "Condenser",
+    "ru_name": "Выносной блок (Конденсор):",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Unit type:",
+    "ru_name": "Тип модуля:",
+    "section": "",
+    "unit": ""
+  },
+  {
+    "source_name": "Ambient temperature:",
+    "ru_name": "Температура окружающей среды:",
+    "section": "",
+    "unit": "°C"
+  },
+  {
+    "source_name": "LpA (5m freefield):",
+    "ru_name": "Уровень звукового давления (на расстоянии 5 м):",
+    "section": "",
+    "unit": "дБ(А)"
+  },
+  {
+    "source_name": "Required condenser capacity:",
+    "ru_name": "Требуемая производительность выносного блока:",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "Available condenser capacity:",
+    "ru_name": "Доступная производительность выносного блока:",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "Difference:",
+    "ru_name": "Разница:",
+    "section": "",
+    "unit": "%"
+  },
+  {
+    "source_name": "Number of fans:",
+    "ru_name": "Количество вентиляторов:",
+    "section": "",
+    "unit": "шт"
+  },
+  {
+    "source_name": "Number of condensers:",
+    "ru_name": "Количество конденсеров:",
+    "section": "",
+    "unit": "шт"
+  },
+  {
+    "source_name": "Weight:",
+    "ru_name": "Вес:",
+    "section": "",
+    "unit": "кг"
+  },
+  {
+    "source_name": "Current consumption (per fan):",
+    "ru_name": "Рабочий ток (для вентилятора):",
+    "section": "",
+    "unit": "А"
+  },
+  {
+    "source_name": "Power consumption (per fan):",
+    "ru_name": "Мощность (для вентилятора):",
+    "section": "",
+    "unit": "кВт"
+  },
+  {
+    "source_name": "Height:",
+    "ru_name": "Габариты (высота):",
+    "section": "",
+    "unit": "мм"
+  },
+  {
+    "source_name": "Width:",
+    "ru_name": "Габариты (ширина):",
+    "section": "",
+    "unit": "мм"
+  },
+  {
+    "source_name": "Depth:",
+    "ru_name": "Габариты (глубина):",
+    "section": "",
+    "unit": "мм"
+  },
+  {
+    "source_name": "Airflow:",
+    "ru_name": "Объемный расход воздушного потока:",
+    "section": "",
+    "unit": "м3/ч"
+  }
+]

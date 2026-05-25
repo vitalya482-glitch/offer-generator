@@ -2,6 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.stulz_reference import (
+    import_options_from_xlsm,
+    import_winplan_from_xlsm,
+    load_stulz_options,
+    load_stulz_winplan,
+    save_stulz_options,
+    save_stulz_winplan,
+)
+from gui.reference_table_dialog import ReferenceTableDialog
+
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -75,6 +85,26 @@ class SettingsDialog(QDialog):
             manager_grid.addWidget(self.manager_edits[key], row, 1, 1, 2)
         layout.addWidget(manager_card)
 
+
+        reference_card = owner._card("Справочники STULZ")
+        reference_hint = QLabel(
+            "Здесь редактируются базы переводов для спецификаций: опции STULZ и параметры WinPlan. "
+            "Изменения сохраняются в config/*.json и будут использоваться дальше при сборке спецификации."
+        )
+        reference_hint.setWordWrap(True)
+        reference_card.layout().addWidget(reference_hint)
+        reference_buttons = QGridLayout()
+        reference_card.layout().addLayout(reference_buttons)
+        options_btn = QPushButton("Опции Stulz")
+        options_btn.setObjectName("GhostButton")
+        options_btn.clicked.connect(self._open_stulz_options)
+        reference_buttons.addWidget(options_btn, 0, 0)
+        winplan_btn = QPushButton("WinPlan")
+        winplan_btn.setObjectName("GhostButton")
+        winplan_btn.clicked.connect(self._open_winplan)
+        reference_buttons.addWidget(winplan_btn, 0, 1)
+        layout.addWidget(reference_card)
+
         cache_card = owner._card("Кэш")
         cache_hint = QLabel("Очистка сбрасывает сохраненные пути проекта, расчета, шаблона и папки результата.")
         cache_hint.setWordWrap(True)
@@ -92,6 +122,39 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _open_stulz_options(self) -> None:
+        dialog = ReferenceTableDialog(
+            self,
+            title="Опции Stulz",
+            columns=[
+                ("Код", "code"),
+                ("Название в Calculation", "source_name"),
+                ("Русское описание для КП", "ru_description"),
+            ],
+            load_rows=load_stulz_options,
+            save_rows=save_stulz_options,
+            import_rows=import_options_from_xlsm,
+            untranslated_key="ru_description",
+        )
+        dialog.exec()
+
+    def _open_winplan(self) -> None:
+        dialog = ReferenceTableDialog(
+            self,
+            title="WinPlan",
+            columns=[
+                ("Название в WinPlan", "source_name"),
+                ("Русское название", "ru_name"),
+                ("Раздел", "section"),
+                ("Ед. изм.", "unit"),
+            ],
+            load_rows=load_stulz_winplan,
+            save_rows=save_stulz_winplan,
+            import_rows=import_winplan_from_xlsm,
+            untranslated_key="ru_name",
+        )
+        dialog.exec()
 
     def _browse_template(self) -> None:
         owner = self.owner
