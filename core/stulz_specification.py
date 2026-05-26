@@ -13,6 +13,7 @@ from core.pdf_parsers.stulz_winplan_pdf import StulzTechRow, parse_stulz_winplan
 class StulzSpecificationData:
     calc_pdf: Path | None = None
     winplan_pdf: Path | None = None
+    drawing_pdf: Path | None = None
     options: list[StulzOptionRow] = field(default_factory=list)
     technical_specs: list[StulzTechRow] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -42,10 +43,17 @@ def _model_tokens(calc: CalcData) -> list[str]:
 def _score_file(path: Path, tokens: list[str], kind: str) -> int:
     name = _normalize(path.stem)
     score = 0
+
     if kind == "winplan" and "winplan" in name:
         score += 100
     if kind == "calc" and "calc" in name:
         score += 100
+
+    # Drawing PDFs usually have the model name only, without Calc/WinPlan markers.
+    if kind == "drawing":
+        if "calc" in name or "winplan" in name:
+            score -= 100
+
     for token in tokens:
         token_norm = _normalize(token)
         if token_norm and token_norm in name:
@@ -53,6 +61,7 @@ def _score_file(path: Path, tokens: list[str], kind: str) -> int:
         compact = token_norm.replace(" ", "")
         if compact and compact in name.replace(" ", ""):
             score += 15
+
     return score
 
 
@@ -77,11 +86,32 @@ def find_stulz_pdf_pair(pdf_dir: str | Path | None, calc: CalcData) -> tuple[Pat
     return calc_pdf, winplan_pdf
 
 
+def find_stulz_drawing_pdf(pdf_dir: str | Path | None, calc: CalcData) -> Path | None:
+    """Find model drawing PDF, for example ASD261AS.PDF.
+
+    Calc and WinPlan PDFs are intentionally ignored here.
+    """
+    if not pdf_dir:
+        return None
+    root = Path(pdf_dir)
+    if not root.exists():
+        return None
+
+    pdfs = [p for p in root.rglob("*.pdf") if p.is_file()]
+    if not pdfs:
+        return None
+
+    tokens = _model_tokens(calc)
+    candidates = sorted(pdfs, key=lambda p: _score_file(p, tokens, "drawing"), reverse=True)
+    return next((p for p in candidates if _score_file(p, tokens, "drawing") >= 20), None)
+
+
 def build_stulz_specification(pdf_dir: str | Path | None, calc: CalcData) -> StulzSpecificationData:
     data = StulzSpecificationData()
     calc_pdf, winplan_pdf = find_stulz_pdf_pair(pdf_dir, calc)
     data.calc_pdf = calc_pdf
     data.winplan_pdf = winplan_pdf
+    data.drawing_pdf = find_stulz_drawing_pdf(pdf_dir, calc)
 
     if calc_pdf:
         try:

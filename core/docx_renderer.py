@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from docx import Document
 from docx.enum.text import WD_BREAK
 from docx.oxml import OxmlElement
-from docx.shared import Pt
+from docx.shared import Inches, Pt
 
 
 BOLD_SPEC_ROWS = {
@@ -365,6 +366,52 @@ def set_option_name_cell_text(cell, text: str) -> None:
                 run.font.bold = False
                 run.font.size = Pt(10)
 
+
+def _insert_pdf_first_page_as_picture(paragraph, pdf_path: Any, width_inches: float = 6.5) -> bool:
+    """Render first PDF page to PNG and insert it into the given paragraph.
+
+    Requires PyMuPDF package: pip install PyMuPDF
+    """
+    if not pdf_path:
+        return False
+
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        return False
+
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        paragraph.add_run(f"[PDF-чертёж не вставлен: не установлен PyMuPDF]")
+        return False
+
+    tmp_png_path = None
+    try:
+        with fitz.open(str(pdf_path)) as pdf_doc:
+            if pdf_doc.page_count < 1:
+                return False
+
+            page = pdf_doc.load_page(0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_png_path = Path(tmp.name)
+            pix.save(str(tmp_png_path))
+
+        run = paragraph.add_run()
+        run.add_picture(str(tmp_png_path), width=Inches(width_inches))
+        return True
+    except Exception as exc:
+        paragraph.add_run(f"[PDF-чертёж не вставлен: {exc}]")
+        return False
+    finally:
+        if tmp_png_path and tmp_png_path.exists():
+            try:
+                tmp_png_path.unlink()
+            except Exception:
+                pass
+
+
 def _fill_template_row_table(table, row_tags: list[str], rows: list[dict[str, Any]]) -> None:
     template_row = None
     for row in table.rows:
@@ -445,9 +492,11 @@ def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str,
     """Fill Word template-row specification blocks for one or many STULZ models.
 
     Order for each model:
-    options title -> options table -> one empty line -> technical specs title -> technical specs table.
+    options title -> options table -> one empty line ->
+    technical specs title -> technical specs table -> optional drawing PDF image.
 
-    Between two models there is also only one empty line after the technical specs table.
+    The drawing PDF is taken from block["drawing_pdf"] and inserted after
+    the technical specs table.
     """
     option_title_p = _find_tag_paragraph(doc, "{{options_title}}")
     option_table = _find_table_with_tags(doc, ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"])
@@ -468,6 +517,9 @@ def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str,
         specs_title_el = deepcopy(specs_title_p._p)
         specs_table_el = deepcopy(specs_table._tbl)
 
+        drawing_pdf = block.get("drawing_pdf")
+        drawing_paragraph_el = _make_empty_paragraph_element() if drawing_pdf else None
+
         elements = [
             option_title_el,
             option_table_el,
@@ -476,7 +528,11 @@ def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str,
             specs_table_el,
         ]
 
-        # Only one empty paragraph between tables of different conditioner blocks.
+        if drawing_paragraph_el is not None:
+            elements.append(_make_empty_paragraph_element())
+            elements.append(drawing_paragraph_el)
+
+        # One empty paragraph between different conditioner blocks.
         if block_index < len(spec_blocks) - 1:
             elements.append(_make_empty_paragraph_element())
 
@@ -492,6 +548,10 @@ def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str,
         _fill_options_template_table(option_table_clone, block.get("options", []))
         replace_in_paragraph(specs_title_clone, {"{{technical_specs_title}}": block.get("technical_specs_title", "")})
         _fill_specs_template_table(specs_table_clone, block.get("technical_specs", []))
+
+        if drawing_paragraph_el is not None:
+            drawing_paragraph = Paragraph(drawing_paragraph_el, specs_title_p._parent)
+            _insert_pdf_first_page_as_picture(drawing_paragraph, drawing_pdf)
 
     # Remove the original template block after cloned blocks have been inserted.
     for element in (option_title_p._p, option_table._tbl, specs_title_p._p, specs_table._tbl):

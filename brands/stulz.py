@@ -445,6 +445,7 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
             ],
             "calc_pdf": specification.calc_pdf,
             "winplan_pdf": specification.winplan_pdf,
+            "drawing_pdf": specification.drawing_pdf,
         })
     return blocks, warnings
 
