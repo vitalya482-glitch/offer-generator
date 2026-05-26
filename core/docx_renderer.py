@@ -10,6 +10,14 @@ from docx.oxml import OxmlElement
 from docx.shared import Pt
 
 
+BOLD_SPEC_ROWS = {
+    "Тип модуля:",
+    "Вентилятор:",
+    "Выносной блок (Конденсор):",
+}
+
+
+
 def to_text(value: Any) -> str:
     if value is None:
         return ""
@@ -333,23 +341,53 @@ def _fill_options_template_table(table, options: list[dict[str, Any]]) -> None:
 
 
 def _fill_specs_template_table(table, specs: list[dict[str, Any]]) -> None:
-    rows = []
+    template_row = None
+
+    for row in table.rows:
+        if row_contains_tags(
+            row,
+            ["{{technical_specs_parameter}}", "{{technical_specs_value}}"],
+        ):
+            template_row = row
+            break
+
+    if template_row is None:
+        return
+
+    insert_after = template_row
+
     for spec in specs:
-        if spec.get("is_section"):
-            rows.append({
-                "{{technical_specs_parameter}}": spec.get("name", ""),
-                "{{technical_specs_value}}": "",
-            })
-        else:
-            rows.append({
-                "{{technical_specs_parameter}}": spec.get("name", ""),
-                "{{technical_specs_value}}": spec.get("value", ""),
-            })
-    _fill_template_row_table(
-        table,
-        ["{{technical_specs_parameter}}", "{{technical_specs_value}}"],
-        rows,
-    )
+        new_row = clone_row_after(table, template_row, insert_after)
+        insert_after = new_row
+
+        parameter = spec.get("name", "")
+        value = "" if spec.get("is_section") else spec.get("value", "")
+
+        values = {
+            "{{technical_specs_parameter}}": parameter,
+            "{{technical_specs_value}}": value,
+        }
+
+        is_bold = parameter.strip() in BOLD_SPEC_ROWS
+
+        for cell in new_row.cells:
+            for paragraph in cell.paragraphs:
+                replace_in_paragraph(paragraph, values)
+
+                for run in paragraph.runs:
+                    run.bold = is_bold
+
+            remaining = cell.text
+            for tag, replacement_value in values.items():
+                if tag in remaining:
+                    set_cell_keep_style(cell, replacement_value)
+
+                    for paragraph in cell.paragraphs:
+                        for run in paragraph.runs:
+                            run.bold = is_bold
+                    break
+
+    remove_row(table, template_row)
 
 
 def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str, Any]]) -> bool:
@@ -375,18 +413,26 @@ def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str,
     anchor = specs_table._tbl
     created_elements = []
     for block in spec_blocks:
-        # Do not generate page breaks or extra empty paragraphs here.
-        # Page layout must be controlled only by the Word template.
+        page_break_before_el = _make_page_break_paragraph_element()
         option_title_el = deepcopy(option_title_p._p)
+        empty_after_option_title_el = _make_empty_paragraph_element()
         option_table_el = deepcopy(option_table._tbl)
+        empty_after_option_table_el = _make_empty_paragraph_element()
         specs_title_el = deepcopy(specs_title_p._p)
+        empty_after_specs_title_el = _make_empty_paragraph_element()
         specs_table_el = deepcopy(specs_table._tbl)
+        page_break_after_specs_el = _make_page_break_paragraph_element()
 
         for el in (
+            page_break_before_el,
             option_title_el,
+            empty_after_option_title_el,
             option_table_el,
+            empty_after_option_table_el,
             specs_title_el,
+            empty_after_specs_title_el,
             specs_table_el,
+            page_break_after_specs_el,
         ):
             anchor = _insert_element_after(anchor, el)
             created_elements.append(el)
