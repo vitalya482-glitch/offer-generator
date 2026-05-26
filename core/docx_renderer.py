@@ -307,9 +307,16 @@ def _replace_tags_in_table(table, replacements: dict[str, Any]) -> None:
 
 def set_option_name_cell_text(cell, text: str) -> None:
     """
-    Форматирование ячейки опции как в старом шаблоне Word:
-    первая строка - жирный 11 pt, последующий текст - обычный 10 pt.
-    Переносы сохраняются через Word line break.
+    Форматирование ячейки опции:
+
+    первая строка:
+    - жирный
+    - 11 pt
+
+    последующий текст:
+    - НЕ жирный
+    - 10 pt
+    - переносы сохраняются через Word line break
     """
     text = to_text(text).strip()
     lines = [line.strip() for line in text.splitlines()]
@@ -317,22 +324,46 @@ def set_option_name_cell_text(cell, text: str) -> None:
     title = lines[0] if lines else ""
     body_lines = [line for line in lines[1:] if line]
 
+    # Полностью очищаем ячейку, чтобы не наследовать жирный run из шаблона.
     cell.text = ""
+
     paragraph = cell.paragraphs[0]
+
+    # Дополнительно сбрасываем форматирование всех старых run, если Word их сохранил.
+    for run in paragraph.runs:
+        run.text = ""
+        run.bold = False
+        run.font.bold = False
+        run.font.size = Pt(10)
 
     if title:
         title_run = paragraph.add_run(title)
         title_run.bold = True
+        title_run.font.bold = True
         title_run.font.size = Pt(11)
 
     if body_lines:
         body_run = paragraph.add_run()
         body_run.bold = False
+        body_run.font.bold = False
         body_run.font.size = Pt(10)
+
         for line in body_lines:
             body_run.add_break(WD_BREAK.LINE)
             body_run.add_text(line)
 
+        # Важно: python-docx иногда наследует bold из шаблона.
+        # Поэтому после добавления текста ещё раз проходим по run и принудительно
+        # оставляем жирным только первый run с заголовком.
+        for i, run in enumerate(paragraph.runs):
+            if i == 0 and title:
+                run.bold = True
+                run.font.bold = True
+                run.font.size = Pt(11)
+            else:
+                run.bold = False
+                run.font.bold = False
+                run.font.size = Pt(10)
 
 def _fill_template_row_table(table, row_tags: list[str], rows: list[dict[str, Any]]) -> None:
     template_row = None
@@ -413,14 +444,10 @@ def _fill_specs_template_table(table, specs: list[dict[str, Any]]) -> None:
 def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str, Any]]) -> bool:
     """Fill Word template-row specification blocks for one or many STULZ models.
 
-    The DOCX template must contain:
-    - paragraph with {{options_title}}
-    - table row with {{opt_no}}, {{opt_name}}, {{opt_qty}}
-    - paragraph with {{technical_specs_title}}
-    - table row with {{technical_specs_parameter}}, {{technical_specs_value}}
+    Order for each model:
+    options title -> options table -> one empty line -> technical specs title -> technical specs table.
 
-    The function duplicates this block for every selected model and preserves the
-    Word formatting of the template paragraphs and table rows.
+    Between two models there is also only one empty line after the technical specs table.
     """
     option_title_p = _find_tag_paragraph(doc, "{{options_title}}")
     option_table = _find_table_with_tags(doc, ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"])
@@ -431,41 +458,30 @@ def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str,
         return False
 
     anchor = specs_table._tbl
-    created_elements = []
+
+    from docx.text.paragraph import Paragraph
+    from docx.table import Table
+
     for block_index, block in enumerate(spec_blocks):
-        # Структура блока как в примере:
-        # заголовок опций -> таблица опций -> пустые строки -> заголовок ТХ -> таблица ТХ -> пустые строки перед следующим блоком.
         option_title_el = deepcopy(option_title_p._p)
         option_table_el = deepcopy(option_table._tbl)
-        empty_after_option_table_1 = _make_empty_paragraph_element()
-        empty_after_option_table_2 = _make_empty_paragraph_element()
         specs_title_el = deepcopy(specs_title_p._p)
         specs_table_el = deepcopy(specs_table._tbl)
 
         elements = [
             option_title_el,
             option_table_el,
-            empty_after_option_table_1,
-            empty_after_option_table_2,
+            _make_empty_paragraph_element(),
             specs_title_el,
             specs_table_el,
         ]
 
-        # Между блоками кондиционеров оставляем несколько пустых строк.
-        # После последнего блока лишние пустые строки не добавляем.
+        # Only one empty paragraph between tables of different conditioner blocks.
         if block_index < len(spec_blocks) - 1:
-            elements.extend([
-                _make_empty_paragraph_element(),
-                _make_empty_paragraph_element(),
-                _make_empty_paragraph_element(),
-            ])
+            elements.append(_make_empty_paragraph_element())
 
         for el in elements:
             anchor = _insert_element_after(anchor, el)
-            created_elements.append(el)
-
-        from docx.text.paragraph import Paragraph
-        from docx.table import Table
 
         option_title_clone = Paragraph(option_title_el, option_title_p._parent)
         option_table_clone = Table(option_table_el, option_table._parent)
