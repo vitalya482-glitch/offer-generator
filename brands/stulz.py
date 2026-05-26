@@ -435,7 +435,7 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
             "model": model,
             "options_title": f"Опции, включенные в комплектацию кондиционеров {model}:",
             "options": [
-                {"description": option.description, "qty": option.qty, "code": option.code}
+                {"description": option.description, "qty": option.qty, "code": option.code, "source_name": option.source_name, "translated": option.translated}
                 for option in specification.options
             ],
             "technical_specs_title": f"Технические характеристики кондиционеров {model}:",

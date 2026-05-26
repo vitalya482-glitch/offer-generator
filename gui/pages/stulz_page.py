@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QTableWidget,
     QTableWidgetItem,
+    QPushButton,
+    QMessageBox,
     QTextEdit,
     QHBoxLayout,
     QVBoxLayout,
@@ -70,10 +72,29 @@ class StulzPage(QWidget):
         owner.spec_models_table.horizontalHeader().setStretchLastSection(False)
         owner.spec_models_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         spec_card.layout().addWidget(owner.spec_models_table)
+
+        owner.spec_preview_button = QPushButton("Предпросмотр спецификаций")
+        owner.spec_preview_button.clicked.connect(self.open_spec_preview)
+        spec_card.layout().addWidget(owner.spec_preview_button)
         spec_card.layout().addWidget(owner.status_label)
         bottom.addWidget(spec_card, stretch=1)
 
         layout.addLayout(bottom)
+
+
+    def open_spec_preview(self) -> None:
+        try:
+            from brands.stulz import build_specification_blocks, load_calc
+            from gui.spec_preview_dialog import SpecPreviewDialog
+
+            context = self.owner._make_context()
+            self.owner._validate_context(context)
+            calc = load_calc(context)
+            spec_blocks, warnings = build_specification_blocks(context, calc)
+            dialog = SpecPreviewDialog(spec_blocks, warnings, self)
+            dialog.exec()
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть предпросмотр спецификаций:\n{exc}")
 
     def clear_spec_models(self) -> None:
         self.owner.spec_models_table.setRowCount(0)

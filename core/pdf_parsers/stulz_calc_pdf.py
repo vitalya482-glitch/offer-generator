@@ -19,6 +19,14 @@ class StulzOptionRow:
     translated: bool = True
 
 
+CODE_RE = r"(?:\d{6,8}|[A-ZА-Я]{1,3}\d{4,8})"
+ROW_START_RE = re.compile(rf"^\s*(?P<qty>\d+(?:[\.,]\d+)?)\s+(?P<code>{CODE_RE})\s+(?P<name>.+?)\s*$", re.IGNORECASE)
+WEIRD_ROW_RE = re.compile(
+    rf"(?ms)^\s*(?P<qty>\d+(?:[\.,]\d+)?)\s+[^\n]*?\b(?:EUR|USD|KZT)\s*(?P<code>{CODE_RE})\s+(?P<name>.*?)(?=\n\s*\d+(?:[\.,]\d+)?\s+[^\n]*?\b(?:EUR|USD|KZT)\s*{CODE_RE}\s+|\nTotal per device:|\nQuantity:|\Z)",
+    re.IGNORECASE,
+)
+
+
 def extract_pdf_text(path: str | Path) -> str:
     reader = PdfReader(str(path))
     return "\n".join(page.extract_text() or "" for page in reader.pages)
@@ -34,6 +42,14 @@ def _normalize(value: str) -> str:
     value = _clean_text(value).lower().replace("ё", "е")
     value = re.sub(r"[^a-zа-я0-9]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _strip_price_tail(value: str) -> str:
+    value = _clean_text(value)
+    # Remove common trailing price fragments copied from PDF tables.
+    value = re.sub(r"\s+\d[\d\s]*[\.,]\d{2}\s*(?:EUR|USD|KZT)?\s*$", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+(?:EUR|USD|KZT)\s+\d[\d\s]*[\.,]\d{2}\s*(?:EUR|USD|KZT)?\s*$", "", value, flags=re.IGNORECASE)
+    return _clean_text(value)
 
 
 def _build_option_lookup() -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
@@ -71,22 +87,64 @@ def _remember_missing_option(code: str, source_name: str) -> None:
     save_missing_options(missing)
 
 
-def _parse_raw_options(text: str) -> Iterable[tuple[str, str, str]]:
-    # Stulz Calc PDF usually has rows like:
-    #  1  339,50 970,00 EUR1402918 A - Three phase supervision ... EUR 339,50 EUR
-    pattern = re.compile(
-        r"(?ms)^\s*(?P<qty>\d+(?:[\.,]\d+)?)\s+.*?EUR\s*(?P<code>\d{7,8})\s+(?P<name>.*?)(?=\s*EUR|\n\s*\d+(?:[\.,]\d+)?\s+.*?EUR\s*\d{7,8}|\nTotal per device:|\nQuantity:)",
-    )
-    for match in pattern.finditer(text):
+def _parse_weird_price_before_code_rows(text: str) -> Iterable[tuple[str, str, str]]:
+    for match in WEIRD_ROW_RE.finditer(text):
         qty = match.group("qty").replace(",", ".").strip()
         code = match.group("code").strip()
-        name = _clean_text(match.group("name"))
-        if not code or not name:
+        name = _strip_price_tail(match.group("name"))
+        name = re.sub(r"\b(?:EUR|USD|KZT)\b.*$", "", name, flags=re.IGNORECASE).strip()
+        if code and name and "total per device" not in name.lower():
+            yield qty, code, name
+
+
+def _parse_normal_rows(text: str) -> Iterable[tuple[str, str, str]]:
+    rows: list[tuple[str, str, list[str]]] = []
+    current: tuple[str, str, list[str]] | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
             continue
-        # Basic unit is not an option and normally has no leading qty, but keep an extra guard.
-        if "total per device" in name.lower():
+        low = line.lower()
+        if low.startswith("total per device") or low.startswith("quantity:") or low.startswith("basic unit"):
+            if current:
+                rows.append(current)
+                current = None
+            break
+
+        match = ROW_START_RE.match(line)
+        if match:
+            if current:
+                rows.append(current)
+            current = (match.group("qty").replace(",", ".").strip(), match.group("code").strip(), [match.group("name").strip()])
             continue
-        yield qty, code, name
+
+        # continuation line for wrapped option name
+        if current and not re.match(r"^(?:EUR|USD|KZT)\b", line, re.IGNORECASE):
+            current[2].append(line)
+
+    if current:
+        rows.append(current)
+
+    for qty, code, parts in rows:
+        name = _strip_price_tail(" ".join(parts))
+        name = re.sub(r"\b(?:EUR|USD|KZT)\b.*$", "", name, flags=re.IGNORECASE).strip()
+        if code and name and "total per device" not in name.lower():
+            yield qty, code, name
+
+
+def _parse_raw_options(text: str) -> Iterable[tuple[str, str, str]]:
+    # Two PDF text-layer formats are common:
+    # 1) qty code name price
+    # 2) qty prices EURcode name price
+    yielded: set[tuple[str, str, str]] = set()
+    for parser in (_parse_normal_rows, _parse_weird_price_before_code_rows):
+        for qty, code, name in parser(text):
+            key = (qty, code, _normalize(name))
+            if key in yielded:
+                continue
+            yielded.add(key)
+            yield qty, code, name
 
 
 def _format_qty(option_qty: str, equipment_qty: float | int) -> str:
@@ -110,12 +168,12 @@ def parse_stulz_calc_options(path: str | Path, equipment_qty: float | int = 1) -
     by_code, rows = _build_option_lookup()
     result: list[StulzOptionRow] = []
 
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     for raw_qty, code, source_name in _parse_raw_options(text):
-        key = (code, source_name)
-        if key in seen:
+        code = code.strip()
+        if code in seen:
             continue
-        seen.add(key)
+        seen.add(code)
         description, translated = _lookup_description(code, source_name, by_code, rows)
         if not translated:
             _remember_missing_option(code, source_name)
