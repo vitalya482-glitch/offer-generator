@@ -375,26 +375,18 @@ def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str,
     anchor = specs_table._tbl
     created_elements = []
     for block in spec_blocks:
-        page_break_before_el = _make_page_break_paragraph_element()
+        # Do not generate page breaks or extra empty paragraphs here.
+        # Page layout must be controlled only by the Word template.
         option_title_el = deepcopy(option_title_p._p)
-        empty_after_option_title_el = _make_empty_paragraph_element()
         option_table_el = deepcopy(option_table._tbl)
-        empty_after_option_table_el = _make_empty_paragraph_element()
         specs_title_el = deepcopy(specs_title_p._p)
-        empty_after_specs_title_el = _make_empty_paragraph_element()
         specs_table_el = deepcopy(specs_table._tbl)
-        page_break_after_specs_el = _make_page_break_paragraph_element()
 
         for el in (
-            page_break_before_el,
             option_title_el,
-            empty_after_option_title_el,
             option_table_el,
-            empty_after_option_table_el,
             specs_title_el,
-            empty_after_specs_title_el,
             specs_table_el,
-            page_break_after_specs_el,
         ):
             anchor = _insert_element_after(anchor, el)
             created_elements.append(el)
