@@ -13,9 +13,9 @@ from docx.shared import Pt
 BOLD_SPEC_ROWS = {
     "Тип модуля:",
     "Вентилятор:",
+    "Компрессор:",
     "Выносной блок (Конденсор):",
 }
-
 
 
 def to_text(value: Any) -> str:
@@ -305,6 +305,35 @@ def _replace_tags_in_table(table, replacements: dict[str, Any]) -> None:
                     set_cell_keep_style(cell, value)
 
 
+def set_option_name_cell_text(cell, text: str) -> None:
+    """
+    Форматирование ячейки опции как в старом шаблоне Word:
+    первая строка - жирный 11 pt, последующий текст - обычный 10 pt.
+    Переносы сохраняются через Word line break.
+    """
+    text = to_text(text).strip()
+    lines = [line.strip() for line in text.splitlines()]
+
+    title = lines[0] if lines else ""
+    body_lines = [line for line in lines[1:] if line]
+
+    cell.text = ""
+    paragraph = cell.paragraphs[0]
+
+    if title:
+        title_run = paragraph.add_run(title)
+        title_run.bold = True
+        title_run.font.size = Pt(11)
+
+    if body_lines:
+        body_run = paragraph.add_run()
+        body_run.bold = False
+        body_run.font.size = Pt(10)
+        for line in body_lines:
+            body_run.add_break(WD_BREAK.LINE)
+            body_run.add_text(line)
+
+
 def _fill_template_row_table(table, row_tags: list[str], rows: list[dict[str, Any]]) -> None:
     template_row = None
     for row in table.rows:
@@ -324,7 +353,10 @@ def _fill_template_row_table(table, row_tags: list[str], rows: list[dict[str, An
                 replace_in_paragraph(paragraph, replacements)
             for tag, value in replacements.items():
                 if tag in cell.text:
-                    set_cell_keep_style(cell, value)
+                    if tag == "{{opt_name}}":
+                        set_option_name_cell_text(cell, value)
+                    else:
+                        set_cell_keep_style(cell, value)
                     break
     remove_row(table, template_row)
 
@@ -342,46 +374,34 @@ def _fill_options_template_table(table, options: list[dict[str, Any]]) -> None:
 
 def _fill_specs_template_table(table, specs: list[dict[str, Any]]) -> None:
     template_row = None
-
     for row in table.rows:
-        if row_contains_tags(
-            row,
-            ["{{technical_specs_parameter}}", "{{technical_specs_value}}"],
-        ):
+        if row_contains_tags(row, ["{{technical_specs_parameter}}", "{{technical_specs_value}}"]):
             template_row = row
             break
-
     if template_row is None:
         return
 
     insert_after = template_row
-
     for spec in specs:
         new_row = clone_row_after(table, template_row, insert_after)
         insert_after = new_row
 
         parameter = spec.get("name", "")
         value = "" if spec.get("is_section") else spec.get("value", "")
-
         values = {
             "{{technical_specs_parameter}}": parameter,
             "{{technical_specs_value}}": value,
         }
-
         is_bold = parameter.strip() in BOLD_SPEC_ROWS
 
         for cell in new_row.cells:
             for paragraph in cell.paragraphs:
                 replace_in_paragraph(paragraph, values)
-
                 for run in paragraph.runs:
                     run.bold = is_bold
-
-            remaining = cell.text
             for tag, replacement_value in values.items():
-                if tag in remaining:
+                if tag in cell.text:
                     set_cell_keep_style(cell, replacement_value)
-
                     for paragraph in cell.paragraphs:
                         for run in paragraph.runs:
                             run.bold = is_bold
@@ -412,28 +432,35 @@ def insert_stulz_specification_blocks(doc: Document, spec_blocks: list[dict[str,
 
     anchor = specs_table._tbl
     created_elements = []
-    for block in spec_blocks:
-        page_break_before_el = _make_page_break_paragraph_element()
+    for block_index, block in enumerate(spec_blocks):
+        # Структура блока как в примере:
+        # заголовок опций -> таблица опций -> пустые строки -> заголовок ТХ -> таблица ТХ -> пустые строки перед следующим блоком.
         option_title_el = deepcopy(option_title_p._p)
-        empty_after_option_title_el = _make_empty_paragraph_element()
         option_table_el = deepcopy(option_table._tbl)
-        empty_after_option_table_el = _make_empty_paragraph_element()
+        empty_after_option_table_1 = _make_empty_paragraph_element()
+        empty_after_option_table_2 = _make_empty_paragraph_element()
         specs_title_el = deepcopy(specs_title_p._p)
-        empty_after_specs_title_el = _make_empty_paragraph_element()
         specs_table_el = deepcopy(specs_table._tbl)
-        page_break_after_specs_el = _make_page_break_paragraph_element()
 
-        for el in (
-            page_break_before_el,
+        elements = [
             option_title_el,
-            empty_after_option_title_el,
             option_table_el,
-            empty_after_option_table_el,
+            empty_after_option_table_1,
+            empty_after_option_table_2,
             specs_title_el,
-            empty_after_specs_title_el,
             specs_table_el,
-            page_break_after_specs_el,
-        ):
+        ]
+
+        # Между блоками кондиционеров оставляем несколько пустых строк.
+        # После последнего блока лишние пустые строки не добавляем.
+        if block_index < len(spec_blocks) - 1:
+            elements.extend([
+                _make_empty_paragraph_element(),
+                _make_empty_paragraph_element(),
+                _make_empty_paragraph_element(),
+            ])
+
+        for el in elements:
             anchor = _insert_element_after(anchor, el)
             created_elements.append(el)
 
