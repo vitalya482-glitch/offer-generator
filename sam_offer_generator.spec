@@ -10,6 +10,7 @@ hiddenimports = [
     'gui.path_helpers',
     'gui.settings_dialog',
     'gui.reference_table_dialog',
+    'gui.spec_preview_dialog',
     'gui.pages',
     'gui.pages.stulz_page',
     'gui.pages.riello_page',
