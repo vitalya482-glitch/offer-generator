@@ -373,28 +373,68 @@ def load_calc(context: OfferContext) -> CalcData:
 
 
 def _selected_spec_models(context: OfferContext, calc: CalcData) -> list[dict[str, Any]]:
-    selected = []
+    """Return models for STULZ specification blocks.
+
+    Important: the calculation parser is the source of truth. Earlier versions
+    returned only the rows currently present in the GUI selection table. If that
+    table was stale or had only one row, the offer was generated for only one
+    model even though the Excel parser had found all models.
+
+    This function now always starts from calc.items and uses context.spec_models
+    only as overrides for enabled/disabled state and quantity.
+    """
+    overrides: dict[str, dict[str, Any]] = {}
+    extra_rows: list[dict[str, Any]] = []
+
     for row in getattr(context, "spec_models", []) or []:
-        if not row.get("enabled", True):
-            continue
         model = str(row.get("model", "")).strip()
         if not model:
             continue
-        qty_value = row.get("qty_value", row.get("qty", 0))
+        overrides[model] = row
+
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # Source of truth: every equipment item detected in the Excel calculation.
+    for item in calc.items:
+        model = str(item.name or "").strip()
+        if not model or model in seen:
+            continue
+
+        row = overrides.get(model, {})
+        if row and not row.get("enabled", True):
+            seen.add(model)
+            continue
+
+        qty_value = row.get("qty_value", row.get("qty", item.qty)) if row else item.qty
         try:
             qty = float(str(qty_value).replace(",", "."))
         except Exception:
-            qty = 0.0
+            qty = float(item.qty or 1.0)
         if qty <= 0:
-            match_item = next((item for item in calc.items if item.name == model), None)
-            qty = float(match_item.qty) if match_item else 1.0
+            qty = float(item.qty or 1.0)
+
         selected.append({"model": model, "qty": qty})
+        seen.add(model)
 
-    if selected:
-        return selected
+    # Keep manually added rows, but only if they are not duplicates.
+    for model, row in overrides.items():
+        if model in seen:
+            continue
+        if not row.get("enabled", True):
+            continue
+        qty_value = row.get("qty_value", row.get("qty", 1))
+        try:
+            qty = float(str(qty_value).replace(",", "."))
+        except Exception:
+            qty = 1.0
+        if qty <= 0:
+            qty = 1.0
+        extra_rows.append({"model": model, "qty": qty})
+        seen.add(model)
 
-    return [{"model": item.name, "qty": float(item.qty)} for item in calc.items if item.name]
-
+    selected.extend(extra_rows)
+    return selected
 
 def _calc_for_spec_model(calc: CalcData, model_name: str, qty: float) -> CalcData:
     source_item = next((item for item in calc.items if item.name == model_name), None)
