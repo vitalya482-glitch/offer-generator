@@ -74,6 +74,29 @@ class StulzPage(QWidget):
         spec_card.layout().addWidget(owner.spec_models_table)
 
         owner.spec_preview_button = QPushButton("Предпросмотр спецификаций")
+
+        owner.spec_preview_button.setMinimumHeight(42)
+
+        owner.spec_preview_button.setStyleSheet("""
+        QPushButton {
+            background-color: #dc2626;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            padding: 8px 18px;
+        }
+
+        QPushButton:hover {
+            background-color: #b91c1c;
+        }
+
+        QPushButton:pressed {
+            background-color: #991b1b;
+        }
+        """)
+        
         owner.spec_preview_button.clicked.connect(self.open_spec_preview)
         spec_card.layout().addWidget(owner.spec_preview_button)
         spec_card.layout().addWidget(owner.status_label)

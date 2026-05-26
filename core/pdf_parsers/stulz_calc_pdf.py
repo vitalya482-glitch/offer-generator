@@ -46,7 +46,6 @@ def _normalize(value: str) -> str:
 
 def _strip_price_tail(value: str) -> str:
     value = _clean_text(value)
-    # Remove common trailing price fragments copied from PDF tables.
     value = re.sub(r"\s+\d[\d\s]*[\.,]\d{2}\s*(?:EUR|USD|KZT)?\s*$", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+(?:EUR|USD|KZT)\s+\d[\d\s]*[\.,]\d{2}\s*(?:EUR|USD|KZT)?\s*$", "", value, flags=re.IGNORECASE)
     return _clean_text(value)
@@ -58,7 +57,31 @@ def _build_option_lookup() -> tuple[dict[str, dict[str, str]], list[dict[str, st
     return by_code, rows
 
 
-def _lookup_description(code: str, source_name: str, by_code: dict[str, dict[str, str]], rows: list[dict[str, str]]) -> tuple[str, bool]:
+def _auto_translate_condenser_option(source_name: str) -> str | None:
+    text = source_name or ""
+
+    if "condenser" not in text.lower():
+        return None
+
+    match = re.search(r"\b(KSV[0-9A-Z]+p?)\b", text, re.IGNORECASE)
+    if not match:
+        return None
+
+    condenser_model = match.group(1)
+
+    return (
+        f"Конденсатор воздушного охлаждения {condenser_model} (для одного контура хладагента).\n"
+        "Предназначается для наружного монтажа. Может монтироваться как горизонтально, "
+        "так и вертикально к плоскости монтажа. Каркас устойчив к коррозии, сделан из алюминия."
+    )
+
+
+def _lookup_description(
+    code: str,
+    source_name: str,
+    by_code: dict[str, dict[str, str]],
+    rows: list[dict[str, str]],
+) -> tuple[str, bool]:
     row = by_code.get(code)
     if row:
         description = (row.get("ru_description") or "").strip()
@@ -73,6 +96,10 @@ def _lookup_description(code: str, source_name: str, by_code: dict[str, dict[str
             description = (candidate.get("ru_description") or "").strip()
             if description:
                 return description, True
+
+    condenser_description = _auto_translate_condenser_option(source_name)
+    if condenser_description:
+        return condenser_description, True
 
     return source_name, False
 
@@ -105,6 +132,7 @@ def _parse_normal_rows(text: str) -> Iterable[tuple[str, str, str]]:
         line = raw_line.strip()
         if not line:
             continue
+
         low = line.lower()
         if low.startswith("total per device") or low.startswith("quantity:") or low.startswith("basic unit"):
             if current:
@@ -116,10 +144,13 @@ def _parse_normal_rows(text: str) -> Iterable[tuple[str, str, str]]:
         if match:
             if current:
                 rows.append(current)
-            current = (match.group("qty").replace(",", ".").strip(), match.group("code").strip(), [match.group("name").strip()])
+            current = (
+                match.group("qty").replace(",", ".").strip(),
+                match.group("code").strip(),
+                [match.group("name").strip()],
+            )
             continue
 
-        # continuation line for wrapped option name
         if current and not re.match(r"^(?:EUR|USD|KZT)\b", line, re.IGNORECASE):
             current[2].append(line)
 
@@ -134,10 +165,8 @@ def _parse_normal_rows(text: str) -> Iterable[tuple[str, str, str]]:
 
 
 def _parse_raw_options(text: str) -> Iterable[tuple[str, str, str]]:
-    # Two PDF text-layer formats are common:
-    # 1) qty code name price
-    # 2) qty prices EURcode name price
     yielded: set[tuple[str, str, str]] = set()
+
     for parser in (_parse_normal_rows, _parse_weird_price_before_code_rows):
         for qty, code, name in parser(text):
             key = (qty, code, _normalize(name))
@@ -169,14 +198,20 @@ def parse_stulz_calc_options(path: str | Path, equipment_qty: float | int = 1) -
     result: list[StulzOptionRow] = []
 
     seen: set[str] = set()
+
     for raw_qty, code, source_name in _parse_raw_options(text):
         code = code.strip()
+
         if code in seen:
             continue
+
         seen.add(code)
+
         description, translated = _lookup_description(code, source_name, by_code, rows)
+
         if not translated:
             _remember_missing_option(code, source_name)
+
         result.append(
             StulzOptionRow(
                 code=code,
