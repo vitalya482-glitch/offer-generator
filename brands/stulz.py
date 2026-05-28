@@ -466,8 +466,9 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
 def make_offer(context: OfferContext) -> Path:
     calc = load_calc(context)
     spec_blocks, _warnings = build_specification_blocks(context, calc)
-    if not spec_blocks:
-        raise ValueError("Спецификации не найдены")
+    # The offer may be generated without specification blocks.
+    # Missing specifications are shown as a warning in the UI, but they must
+    # not block creation of the commercial offer.
     offer_version = find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)
     replacements = build_replacements(context, calc, offer_version=offer_version)
     items = [item_to_template_dict(item, calc) for item in calc.items]
