@@ -8,7 +8,7 @@ import re
 from core.docx_renderer import render_docx
 from core.excel_reader import parse_stulz_calc
 from core.models import CalcData, OfferContext, OfferItem
-from core.stulz_specification import build_stulz_specification
+from core.stulz_specification import build_stulz_specification, list_stulz_specification_models
 from config.stulz_series import AIRFLOW_TEXT, DEFAULT_STULZ_SERIES, STULZ_SERIES
 
 BRAND_NAME = "Stulz"
@@ -375,53 +375,23 @@ def load_calc(context: OfferContext) -> CalcData:
 def _selected_spec_models(context: OfferContext, calc: CalcData) -> list[dict[str, Any]]:
     """Return models for STULZ specification blocks.
 
-    Important: the calculation parser is the source of truth. Earlier versions
-    returned only the rows currently present in the GUI selection table. If that
-    table was stale or had only one row, the offer was generated for only one
-    model even though the Excel parser had found all models.
-
-    This function now always starts from calc.items and uses context.spec_models
-    only as overrides for enabled/disabled state and quantity.
+    Source of truth is the selected specifications folder / GUI table, not the
+    Excel rows of the commercial offer. If no specification models were found
+    in the selected folder, return an empty list instead of using Excel rows.
     """
-    overrides: dict[str, dict[str, Any]] = {}
-    extra_rows: list[dict[str, Any]] = []
-
-    for row in getattr(context, "spec_models", []) or []:
-        model = str(row.get("model", "")).strip()
-        if not model:
-            continue
-        overrides[model] = row
-
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    # Source of truth: every equipment item detected in the Excel calculation.
-    for item in calc.items:
-        model = str(item.name or "").strip()
-        if not model or model in seen:
-            continue
+    raw_rows = list(getattr(context, "spec_models", []) or [])
+    if not raw_rows:
+        raw_rows = [
+            {"enabled": True, "model": model, "qty": qty, "qty_value": qty}
+            for model, qty in list_stulz_specification_models(context.pdf_dir)
+        ]
 
-        row = overrides.get(model, {})
-        if row and not row.get("enabled", True):
-            seen.add(model)
-            continue
-
-        qty_value = row.get("qty_value", row.get("qty", item.qty)) if row else item.qty
-        try:
-            qty = float(str(qty_value).replace(",", "."))
-        except Exception:
-            qty = float(item.qty or 1.0)
-        if qty <= 0:
-            qty = float(item.qty or 1.0)
-
-        selected.append({"model": model, "qty": qty})
-        seen.add(model)
-
-    # Keep manually added rows, but only if they are not duplicates.
-    for model, row in overrides.items():
-        if model in seen:
-            continue
-        if not row.get("enabled", True):
+    for row in raw_rows:
+        model = str(row.get("model", "")).strip()
+        if not model or model in seen or not row.get("enabled", True):
             continue
         qty_value = row.get("qty_value", row.get("qty", 1))
         try:
@@ -430,10 +400,9 @@ def _selected_spec_models(context: OfferContext, calc: CalcData) -> list[dict[st
             qty = 1.0
         if qty <= 0:
             qty = 1.0
-        extra_rows.append({"model": model, "qty": qty})
+        selected.append({"model": model, "qty": qty})
         seen.add(model)
 
-    selected.extend(extra_rows)
     return selected
 
 def _calc_for_spec_model(calc: CalcData, model_name: str, qty: float) -> CalcData:
@@ -465,7 +434,12 @@ def _calc_for_spec_model(calc: CalcData, model_name: str, qty: float) -> CalcDat
 def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[list[dict[str, Any]], list[str]]:
     blocks: list[dict[str, Any]] = []
     warnings: list[str] = []
-    for selected in _selected_spec_models(context, calc):
+    selected_models = _selected_spec_models(context, calc)
+    if not selected_models:
+        warnings.append("Спецификации не найдены")
+        return blocks, warnings
+
+    for selected in selected_models:
         model = selected["model"]
         qty = selected["qty"]
         model_calc = _calc_for_spec_model(calc, model, qty)
@@ -492,6 +466,8 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
 def make_offer(context: OfferContext) -> Path:
     calc = load_calc(context)
     spec_blocks, _warnings = build_specification_blocks(context, calc)
+    if not spec_blocks:
+        raise ValueError("Спецификации не найдены")
     offer_version = find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)
     replacements = build_replacements(context, calc, offer_version=offer_version)
     items = [item_to_template_dict(item, calc) for item in calc.items]

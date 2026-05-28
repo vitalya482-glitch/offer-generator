@@ -65,6 +65,83 @@ def _score_file(path: Path, tokens: list[str], kind: str) -> int:
     return score
 
 
+
+def _canonical_model(prefix: str, number: str, suffix: str = "") -> str:
+    return f"{prefix}{number}{suffix}".upper().replace(" ", "").replace("-", "")
+
+
+def extract_stulz_models_from_text(text: str) -> list[str]:
+    """Extract STULZ model codes from a file/folder name.
+
+    The specification folder is the source of truth for Word specification
+    blocks. Folder names often look like ``...@ASU-211A-...@ASU 211 A``;
+    PDF names may be ``ASD712A WinPlan.pdf``. This helper accepts both
+    compact and spaced/dashed variants and keeps only known STULZ prefixes.
+    """
+    prefixes = {"ASU", "ASD", "CRS", "SXL", "CCD", "CSD", "CWS", "CWD"}
+    result: list[str] = []
+    seen: set[str] = set()
+    source = text or ""
+    pattern = re.compile(r"\b([A-ZА-Я]{2,5})[\s_-]*([0-9]{2,4})[\s_-]*([A-ZА-Я]{0,3})\b", re.IGNORECASE)
+    for match in pattern.finditer(source):
+        prefix, number, suffix = match.groups()
+        prefix = prefix.upper()
+        suffix = suffix.upper()
+        if prefix not in prefixes:
+            continue
+        model = _canonical_model(prefix, number, suffix)
+        if model not in seen:
+            result.append(model)
+            seen.add(model)
+    return result
+
+
+def list_stulz_specification_models(pdf_dir: str | Path | None) -> list[tuple[str, int]]:
+    """Return models found in the selected specification folder.
+
+    The GUI must not fill the specification table from the commercial offer
+    Excel rows. It must use the actual contents of the selected
+    specifications folder: first model-specific subfolders, then PDFs directly
+    in the selected folder if there are no subfolders with model codes.
+    Quantity is the number of matching model folders/files and can still be
+    edited by the user in the table.
+    """
+    if not pdf_dir:
+        return []
+    root = Path(pdf_dir)
+    if not root.exists():
+        return []
+
+    counts: dict[str, int] = {}
+    order: list[str] = []
+
+    def add(model: str) -> None:
+        if model not in counts:
+            counts[model] = 0
+            order.append(model)
+        counts[model] += 1
+
+    # Prefer immediate subfolders: in the customer's structure each supplier
+    # folder represents one specification set for a concrete model.
+    for child in sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name.lower()):
+        models = extract_stulz_models_from_text(child.name)
+        if not models:
+            # If the model is not in the folder name, inspect PDF names inside.
+            for pdf in sorted(child.rglob("*.pdf"), key=lambda p: str(p).lower()):
+                models.extend(extract_stulz_models_from_text(pdf.stem))
+        for model in dict.fromkeys(models):
+            add(model)
+
+    if counts:
+        return [(model, counts[model]) for model in order]
+
+    # Fallback for a flat folder with PDFs.
+    for pdf in sorted(root.rglob("*.pdf"), key=lambda p: str(p).lower()):
+        for model in extract_stulz_models_from_text(pdf.stem):
+            add(model)
+
+    return [(model, counts[model]) for model in order]
+
 def find_stulz_pdf_pair(pdf_dir: str | Path | None, calc: CalcData) -> tuple[Path | None, Path | None]:
     if not pdf_dir:
         return None, None
