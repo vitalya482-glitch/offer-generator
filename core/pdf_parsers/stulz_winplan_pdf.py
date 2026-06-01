@@ -20,6 +20,23 @@ def extract_pdf_text(path: str | Path) -> str:
     reader = PdfReader(str(path))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     # Fix common WinPlan PDF text-layer inversions.
+    # Some WinPlan PDFs split fan model digits into the neighbouring Power consumption field.
+    # Examples from the PDF text layer:
+    #   "Fan type: R3G595 0,5Power consumption: kW"
+    #   "Fan type: R3GPower consumption: 595 0,5 kW"
+    # Both must become: "Fan type: R3G595 Power consumption: 0,5 kW".
+    text = re.sub(
+        r"Fan type:\s*([A-Z]+\d+[A-Z]*\d{2,4})\s+([0-9][0-9\s,.]*)Power consumption:\s*kW",
+        r"Fan type: \1 Power consumption: \2 kW",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"Fan type:\s*([A-Z]+\d+[A-Z]*)Power consumption:\s*(\d{2,4})\s+([0-9][0-9\s,.]*)\s*kW",
+        r"Fan type: \1\2 Power consumption: \3 kW",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"([0-9][0-9\s,.]*)Power consumption:\s*kW", r"Power consumption: \1 kW", text)
     text = re.sub(r"V([0-9][0-9\s,.]*)Control voltage:", r"Control voltage: \1 V", text)
     text = re.sub(r"Heat rejection:\s*kW([0-9][0-9\s,.]*)", r"Heat rejection: \1 kW", text)

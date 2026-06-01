@@ -8,7 +8,7 @@ import re
 from core.docx_renderer import render_docx
 from core.excel_reader import parse_stulz_calc
 from core.models import CalcData, OfferContext, OfferItem
-from core.stulz_specification import build_stulz_specification, list_stulz_specification_models
+from core.stulz_specification import build_stulz_specification
 from config.stulz_series import AIRFLOW_TEXT, DEFAULT_STULZ_SERIES, STULZ_SERIES
 
 BRAND_NAME = "Stulz"
@@ -284,13 +284,43 @@ def _equipment_type(calc: CalcData, profile: dict[str, str]) -> str:
     return profile.get(key) or DEFAULT_STULZ_SERIES[key]
 
 
+def _model_airflow_group(model: str) -> str:
+    text = _norm_model_text(model)
+
+    # Common STULZ model-code hints. For Mini-Space/CyberAir old model codes:
+    # CCU/ASU generally indicate upflow, CCD/ASD generally indicate downflow.
+    if re.search(r"\b(ccd|asd)[a-z0-9]*\b", text):
+        return "downflow"
+    if re.search(r"\b(ccu|asu)[a-z0-9]*\b", text):
+        return "upflow"
+
+    return ""
+
+
+def detect_offer_airflow_text(calc: CalcData, profile: dict[str, str] | None = None) -> str:
+    groups = {_model_airflow_group(item.name) for item in calc.items if item.name}
+    groups.discard("")
+
+    # If the offer contains different unit types, for example ASD + ASU,
+    # do not write a common air-supply direction in the intro text.
+    if len(groups) > 1:
+        return ""
+
+    if groups == {"downflow"}:
+        return "с нижней подачей охлажденного воздуха под фальшпол"
+    if groups == {"upflow"}:
+        return "с верхней подачей охлажденного воздуха"
+
+    return detect_airflow_text(calc, profile)
+
+
 def build_intro_text(calc: CalcData) -> str:
     profile = detect_stulz_profile(calc)
     equipment_type = _equipment_type(calc, profile)
     line = profile.get("line") or DEFAULT_STULZ_SERIES["line"]
     install_type = profile.get("install_type") or DEFAULT_STULZ_SERIES["install_type"]
     cooling_type = detect_cooling_type_text(calc)
-    airflow = detect_airflow_text(calc, profile)
+    airflow = detect_offer_airflow_text(calc, profile)
     quantity = format_qty(calc.quantity)
 
     details = [part for part in (cooling_type, install_type, airflow, f"в количестве {quantity} шт") if part]
@@ -303,12 +333,24 @@ def build_intro_text(calc: CalcData) -> str:
         "указаны в спецификации коммерческого предложения."
     )
 
-
 def build_total_price_block(calc: CalcData) -> str:
+    vat = 0.0
+
+    try:
+        vat = float(calc.vat_percent or 0)
+    except Exception:
+        pass
+
+    vat_text = (
+        "без учета НДС"
+        if abs(vat) < 0.001
+        else f"с учетом НДС {format_qty(vat)}%"
+    )
+
     return (
         f"{format_money(calc.total_price)} {currency_name(calc.currency)} "
         f"({money_in_words(calc.total_price, calc.currency)}), "
-        f"с учетом НДС {format_qty(calc.vat_percent)}%."
+        f"{vat_text}."
     )
 
 
@@ -375,23 +417,53 @@ def load_calc(context: OfferContext) -> CalcData:
 def _selected_spec_models(context: OfferContext, calc: CalcData) -> list[dict[str, Any]]:
     """Return models for STULZ specification blocks.
 
-    Source of truth is the selected specifications folder / GUI table, not the
-    Excel rows of the commercial offer. If no specification models were found
-    in the selected folder, return an empty list instead of using Excel rows.
+    Important: the calculation parser is the source of truth. Earlier versions
+    returned only the rows currently present in the GUI selection table. If that
+    table was stale or had only one row, the offer was generated for only one
+    model even though the Excel parser had found all models.
+
+    This function now always starts from calc.items and uses context.spec_models
+    only as overrides for enabled/disabled state and quantity.
     """
+    overrides: dict[str, dict[str, Any]] = {}
+    extra_rows: list[dict[str, Any]] = []
+
+    for row in getattr(context, "spec_models", []) or []:
+        model = str(row.get("model", "")).strip()
+        if not model:
+            continue
+        overrides[model] = row
+
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    raw_rows = list(getattr(context, "spec_models", []) or [])
-    if not raw_rows:
-        raw_rows = [
-            {"enabled": True, "model": model, "qty": qty, "qty_value": qty}
-            for model, qty in list_stulz_specification_models(context.pdf_dir)
-        ]
+    # Source of truth: every equipment item detected in the Excel calculation.
+    for item in calc.items:
+        model = str(item.name or "").strip()
+        if not model or model in seen:
+            continue
 
-    for row in raw_rows:
-        model = str(row.get("model", "")).strip()
-        if not model or model in seen or not row.get("enabled", True):
+        row = overrides.get(model, {})
+        if row and not row.get("enabled", True):
+            seen.add(model)
+            continue
+
+        qty_value = row.get("qty_value", row.get("qty", item.qty)) if row else item.qty
+        try:
+            qty = float(str(qty_value).replace(",", "."))
+        except Exception:
+            qty = float(item.qty or 1.0)
+        if qty <= 0:
+            qty = float(item.qty or 1.0)
+
+        selected.append({"model": model, "qty": qty})
+        seen.add(model)
+
+    # Keep manually added rows, but only if they are not duplicates.
+    for model, row in overrides.items():
+        if model in seen:
+            continue
+        if not row.get("enabled", True):
             continue
         qty_value = row.get("qty_value", row.get("qty", 1))
         try:
@@ -400,9 +472,10 @@ def _selected_spec_models(context: OfferContext, calc: CalcData) -> list[dict[st
             qty = 1.0
         if qty <= 0:
             qty = 1.0
-        selected.append({"model": model, "qty": qty})
+        extra_rows.append({"model": model, "qty": qty})
         seen.add(model)
 
+    selected.extend(extra_rows)
     return selected
 
 def _calc_for_spec_model(calc: CalcData, model_name: str, qty: float) -> CalcData:
@@ -434,19 +507,22 @@ def _calc_for_spec_model(calc: CalcData, model_name: str, qty: float) -> CalcDat
 def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[list[dict[str, Any]], list[str]]:
     blocks: list[dict[str, Any]] = []
     warnings: list[str] = []
-    selected_models = _selected_spec_models(context, calc)
-    if not selected_models:
-        warnings.append("Спецификации не найдены")
-        return blocks, warnings
-
-    for selected in selected_models:
+    for selected in _selected_spec_models(context, calc):
         model = selected["model"]
         qty = selected["qty"]
         model_calc = _calc_for_spec_model(calc, model, qty)
         specification = build_stulz_specification(context.pdf_dir, model_calc)
         warnings.extend(f"{model}: {warning}" for warning in specification.warnings)
+        totals = specification.totals
         blocks.append({
             "model": model,
+            "calc_model": getattr(totals, "model", "") if totals else "",
+            "quantity": getattr(totals, "quantity", None) if totals else qty,
+            "total_list_price": getattr(totals, "total_list_price", None) if totals else None,
+            "total_purchase_price": getattr(totals, "total_purchase_price", None) if totals else None,
+            "unit_list_price": getattr(totals, "unit_list_price", None) if totals else None,
+            "unit_purchase_price": getattr(totals, "unit_purchase_price", None) if totals else None,
+            "currency": getattr(totals, "currency", "") if totals else "",
             "options_title": f"Опции, включенные в комплектацию кондиционеров {model}:",
             "options": [
                 {"description": option.description, "qty": option.qty, "code": option.code, "source_name": option.source_name, "translated": option.translated}
@@ -466,9 +542,6 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
 def make_offer(context: OfferContext) -> Path:
     calc = load_calc(context)
     spec_blocks, _warnings = build_specification_blocks(context, calc)
-    # The offer may be generated without specification blocks.
-    # Missing specifications are shown as a warning in the UI, but they must
-    # not block creation of the commercial offer.
     offer_version = find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)
     replacements = build_replacements(context, calc, offer_version=offer_version)
     items = [item_to_template_dict(item, calc) for item in calc.items]

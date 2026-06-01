@@ -10,6 +10,19 @@ from pypdf import PdfReader
 from core.stulz_reference import load_stulz_options, load_missing_options, save_missing_options
 
 
+
+
+@dataclass
+class StulzCalcTotals:
+    model: str = ""
+    quantity: float | None = None
+    total_list_price: float | None = None
+    total_purchase_price: float | None = None
+    unit_list_price: float | None = None
+    unit_purchase_price: float | None = None
+    currency: str = ""
+
+
 @dataclass
 class StulzOptionRow:
     code: str
@@ -223,3 +236,114 @@ def parse_stulz_calc_options(path: str | Path, equipment_qty: float | int = 1) -
         )
 
     return result
+
+MONEY_RE = re.compile(r"(?P<amount>\d[\d\s\u00a0]*[\.,]\d{2})\s*(?P<currency>EUR|USD|KZT)", re.IGNORECASE)
+
+
+def _parse_money_value(value: str) -> float | None:
+    try:
+        cleaned = (value or "").replace("\u00a0", " ").replace(" ", "").replace(",", ".")
+        return float(cleaned)
+    except Exception:
+        return None
+
+
+def _fmt_model_from_code_row(text: str) -> str:
+    # Main equipment row can be extracted in different orders by PDF readers:
+    # 1401862 ASD 211 A 26 860,00 EUR ...
+    # ASD 211 A1401862 9 401,00 EUR ...
+    code_re = r"\b\d{6,8}\b"
+    money_re = r"\d[\d\s\u00a0]*[\.,]\d{2}\s*(?:EUR|USD|KZT)"
+    patterns = (
+        re.compile(rf"(?m)^\s*{code_re}\s+(?P<model>.+?)\s+{money_re}", re.IGNORECASE),
+        re.compile(r"(?m)^\s*(?P<model>[A-Z]{2,5}\s*\d{2,4}\s*[A-Z]{0,3})\s*\d{6,8}\s+", re.IGNORECASE),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            model = _clean_text(match.group("model"))
+            if not model:
+                continue
+            low = model.lower()
+            if any(skip in low for skip in ("controller", "condenser", "display", "cable", "power supply", "shutdown", "unit-base")):
+                continue
+            return model
+    return ""
+
+
+def _line_amounts_for_label(text: str, label: str) -> list[tuple[float, str]]:
+    for line in text.splitlines():
+        if label.lower() not in line.lower():
+            continue
+        result: list[tuple[float, str]] = []
+        for match in MONEY_RE.finditer(line):
+            value = _parse_money_value(match.group("amount"))
+            if value is not None:
+                result.append((value, match.group("currency").upper()))
+        return result
+    return []
+
+
+def _final_star_amount(text: str) -> tuple[float, str] | None:
+    matches = list(MONEY_RE.finditer(text))
+    for match in reversed(matches):
+        tail = text[match.end(): match.end() + 5]
+        if "*" in tail:
+            value = _parse_money_value(match.group("amount"))
+            if value is not None:
+                return value, match.group("currency").upper()
+    return None
+
+
+
+def parse_stulz_calc_totals(path: str | Path) -> StulzCalcTotals:
+    """Parse final commercial totals from STULZ Calc.pdf.
+
+    The important values for offer calculation are taken from the
+    "Total per quantity" line, because it already includes the selected
+    options, condensers and discounts.
+    """
+    text = extract_pdf_text(path)
+    totals = StulzCalcTotals(model=_fmt_model_from_code_row(text))
+
+    quantity_match = re.search(r"Quantity:\s*(\d+(?:[\.,]\d+)?)", text, re.IGNORECASE)
+    if not quantity_match:
+        # Some Calc PDFs are extracted as "79 960,002Quantity".
+        quantity_match = re.search(r"(?:\d[\d\s\u00a0]*[\.,]\d{2})(\d+)Quantity", text, re.IGNORECASE)
+    if quantity_match:
+        try:
+            totals.quantity = float(quantity_match.group(1).replace(",", "."))
+            if float(totals.quantity).is_integer():
+                totals.quantity = int(totals.quantity)
+        except Exception:
+            totals.quantity = None
+
+    per_device_amounts = _line_amounts_for_label(text, "Total per device:")
+    if per_device_amounts:
+        totals.unit_list_price = per_device_amounts[0][0]
+        totals.unit_purchase_price = per_device_amounts[-1][0]
+        if not totals.currency:
+            totals.currency = per_device_amounts[-1][1]
+
+    per_quantity_amounts = _line_amounts_for_label(text, "Total per quantity:")
+    if len(per_quantity_amounts) >= 2:
+        totals.total_list_price = per_quantity_amounts[0][0]
+        totals.total_purchase_price = per_quantity_amounts[-1][0]
+        totals.currency = per_quantity_amounts[-1][1]
+    elif len(per_quantity_amounts) == 1:
+        totals.total_purchase_price = per_quantity_amounts[0][0]
+        totals.currency = per_quantity_amounts[0][1]
+
+    final_amount = _final_star_amount(text)
+    if final_amount and totals.total_purchase_price is None:
+        totals.total_purchase_price, totals.currency = final_amount
+
+    if totals.quantity and totals.unit_list_price is not None and totals.total_list_price is None:
+        totals.total_list_price = totals.unit_list_price * float(totals.quantity)
+    if totals.quantity and totals.unit_purchase_price is not None and totals.total_purchase_price is None:
+        totals.total_purchase_price = totals.unit_purchase_price * float(totals.quantity)
+    if totals.quantity and totals.total_list_price is not None and totals.unit_list_price is None:
+        totals.unit_list_price = totals.total_list_price / float(totals.quantity)
+    if totals.quantity and totals.total_purchase_price is not None and totals.unit_purchase_price is None:
+        totals.unit_purchase_price = totals.total_purchase_price / float(totals.quantity)
+
+    return totals

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.models import OfferContext
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -55,28 +56,17 @@ class StulzPage(QWidget):
         spec_card = owner._card("Спецификации")
         spec_hint = QLabel(
             "Модели берутся из выбранной папки спецификаций, а не из Excel КП. "
-            "Можно отключать позиции и менять количество."
+            "Количество берется из Calc.pdf. Можно отключать позиции и менять количество."
         )
         spec_hint.setObjectName("Hint")
         spec_hint.setWordWrap(True)
         spec_card.layout().addWidget(spec_hint)
-
-        owner.spec_error_label = QLabel("")
-        owner.spec_error_label.setStyleSheet("color: #dc2626; font-weight: 700;")
-        owner.spec_error_label.setWordWrap(True)
-        owner.spec_error_label.setVisible(False)
-        spec_card.layout().addWidget(owner.spec_error_label)
 
         owner.spec_models_table = QTableWidget(0, 3)
         owner.spec_models_table.setHorizontalHeaderLabels(["Вкл", "Модель", "Кол-во"])
         owner.spec_models_table.verticalHeader().setVisible(False)
         owner.spec_models_table.setAlternatingRowColors(True)
         owner.spec_models_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        owner.spec_models_table.setEditTriggers(
-            QAbstractItemView.DoubleClicked
-            | QAbstractItemView.EditKeyPressed
-            | QAbstractItemView.SelectedClicked
-        )
         owner.spec_models_table.setMinimumHeight(170)
         owner.spec_models_table.setColumnWidth(0, 52)
         owner.spec_models_table.setColumnWidth(2, 80)
@@ -132,11 +122,6 @@ class StulzPage(QWidget):
 
     def clear_spec_models(self) -> None:
         self.owner.spec_models_table.setRowCount(0)
-        if hasattr(self.owner, "spec_error_label"):
-            self.owner.spec_error_label.setVisible(False)
-            self.owner.spec_error_label.setText("")
-        if hasattr(self.owner, "spec_preview_button"):
-            self.owner.spec_preview_button.setEnabled(False)
 
     def current_spec_model_state(self) -> dict[str, tuple[bool, str]]:
         state: dict[str, tuple[bool, str]] = {}
@@ -157,52 +142,72 @@ class StulzPage(QWidget):
 
 
     def selected_spec_models(self) -> list[dict[str, object]]:
-        """Return enabled specification models from the table.
-
-        The UI shows one row per model. If a user or an older saved state still
-        leaves duplicate rows in the table, this method merges them before the
-        context is passed to the offer generator. This prevents duplicate Excel
-        positions from being silently reduced to the first quantity.
-        """
-        merged: dict[str, dict[str, object]] = {}
-        order: list[str] = []
+        models: list[dict[str, object]] = []
         table = self.owner.spec_models_table
-
         for row in range(table.rowCount()):
             enabled_item = table.item(row, 0)
             model_item = table.item(row, 1)
             qty_item = table.item(row, 2)
             if not model_item:
                 continue
-
             model = model_item.text().strip()
             if not model:
                 continue
-
             enabled = enabled_item.checkState() == Qt.Checked if enabled_item else True
             qty_text = qty_item.text().strip() if qty_item else ""
             try:
                 qty = float(qty_text.replace(",", ".")) if qty_text else 0.0
             except Exception:
                 qty = 0.0
+            models.append({"enabled": enabled, "model": model, "qty": qty_text, "qty_value": qty})
+        return models
 
-            if model not in merged:
-                merged[model] = {"enabled": enabled, "model": model, "qty_value": 0.0}
-                order.append(model)
+    def _format_model_for_table(self, model: str) -> str:
+        # In the list we show compact model codes, but the source is still Calc.pdf.
+        return (model or "").replace(" ", "").strip()
 
-            # If at least one duplicate row is enabled, keep the model enabled;
-            # quantities from enabled duplicate rows are summed.
-            merged[model]["enabled"] = bool(merged[model].get("enabled")) or enabled
-            if enabled:
-                merged[model]["qty_value"] = float(merged[model].get("qty_value", 0.0)) + qty
+    def _format_qty_for_table(self, value: object) -> str:
+        try:
+            number = float(str(value).replace(",", "."))
+            return str(int(number)) if number.is_integer() else str(number).replace(".", ",")
+        except Exception:
+            return str(value or "")
 
-        result: list[dict[str, object]] = []
-        for model in order:
-            row = merged[model]
-            qty = float(row.get("qty_value", 0.0))
-            qty_text = str(int(qty)) if qty.is_integer() else str(qty)
-            result.append({"enabled": row.get("enabled", True), "model": model, "qty": qty_text, "qty_value": qty})
-        return result
+    def _scan_calc_pdf_models(self, spec_dir: str | Path) -> list[dict[str, object]]:
+        from core.pdf_parsers.stulz_calc_pdf import parse_stulz_calc_totals
+
+        root = Path(spec_dir)
+        if not root.exists():
+            return []
+
+        grouped: dict[str, dict[str, object]] = {}
+        for pdf_path in sorted(root.rglob("*.pdf")):
+            if "calc" not in pdf_path.stem.lower():
+                continue
+            try:
+                totals = parse_stulz_calc_totals(pdf_path)
+            except Exception:
+                continue
+
+            # Important: model is accepted only from the equipment row inside Calc.pdf.
+            # We intentionally do not use project/file/folder names here, because they
+            # can contain misleading codes like ASD221A.
+            model = self._format_model_for_table(totals.model)
+            if not model:
+                continue
+
+            qty = totals.quantity if totals.quantity not in (None, "") else 1
+            try:
+                qty_value = float(qty)
+            except Exception:
+                qty_value = 1.0
+
+            if model not in grouped:
+                grouped[model] = {"model": model, "qty": 0.0, "files": []}
+            grouped[model]["qty"] = float(grouped[model]["qty"]) + qty_value
+            grouped[model]["files"].append(str(pdf_path))
+
+        return list(grouped.values())
 
     def refresh_spec_models(self, context: OfferContext | None = None) -> None:
         owner = self.owner
@@ -219,22 +224,15 @@ class StulzPage(QWidget):
             if context.brand != "Stulz":
                 return
 
-            from core.stulz_specification import list_stulz_specification_models
+            models = self._scan_calc_pdf_models(context.pdf_dir)
+            if not models:
+                return
 
-            spec_models = list_stulz_specification_models(context.pdf_dir)
+            for entry in models:
+                model = str(entry.get("model") or "").strip()
+                if not model:
+                    continue
 
-            if hasattr(owner, "spec_error_label"):
-                if spec_models:
-                    owner.spec_error_label.setVisible(False)
-                    owner.spec_error_label.setText("")
-                else:
-                    owner.spec_error_label.setText("Спецификации не найдены")
-                    owner.spec_error_label.setVisible(True)
-
-            if hasattr(owner, "spec_preview_button"):
-                owner.spec_preview_button.setEnabled(bool(spec_models))
-
-            for model, default_qty_value in spec_models:
                 row = table.rowCount()
                 table.insertRow(row)
 
@@ -245,8 +243,11 @@ class StulzPage(QWidget):
 
                 model_item = QTableWidgetItem(model)
                 model_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                files = entry.get("files") or []
+                if files:
+                    model_item.setToolTip("\n".join(files))
 
-                default_qty = str(int(default_qty_value)) if float(default_qty_value).is_integer() else str(default_qty_value)
+                default_qty = self._format_qty_for_table(entry.get("qty"))
                 qty_text = previous.get(model, (True, ""))[1] or default_qty
                 qty_item = QTableWidgetItem(qty_text)
                 qty_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
@@ -258,11 +259,6 @@ class StulzPage(QWidget):
             table.resizeRowsToContents()
         except Exception:
             table.setRowCount(0)
-            if hasattr(owner, "spec_error_label"):
-                owner.spec_error_label.setText("Спецификации не найдены")
-                owner.spec_error_label.setVisible(True)
-            if hasattr(owner, "spec_preview_button"):
-                owner.spec_preview_button.setEnabled(False)
         finally:
             table.blockSignals(False)
             self._updating_spec_models = False

@@ -53,6 +53,7 @@ class SpecPreviewDialog(QDialog):
         layout.addWidget(self.tabs, stretch=1)
 
         if spec_blocks:
+            self.tabs.addTab(self._make_total_tab(spec_blocks), "Total")
             for block in spec_blocks:
                 self.tabs.addTab(self._make_model_tab(block), _to_text(block.get("model") or "Модель"))
         else:
@@ -63,6 +64,128 @@ class SpecPreviewDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+
+    def _make_total_tab(self, spec_blocks: list[dict[str, Any]]) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+
+        title = QLabel("Итоговые цены из Calc.pdf")
+        title.setStyleSheet("font-weight: 700;")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "В этой вкладке показаны финальные суммы из строки Total per quantity. "
+            "Именно эти значения уже учитывают выбранные опции, конденсаторы и скидки STULZ."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        table = QTableWidget(0, 8)
+        table.setHorizontalHeaderLabels([
+            "Модель в КП",
+            "Модель в Calc",
+            "Кол-во",
+            "List total",
+            "Purchase total",
+            "Purchase / unit",
+            "Валюта",
+            "Файл Calc",
+        ])
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(True)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.verticalHeader().setVisible(False)
+        table.setRowCount(len(spec_blocks))
+
+        total_purchase = 0.0
+        total_list = 0.0
+        purchase_found = False
+        list_found = False
+        currencies: list[str] = []
+
+        for row, block in enumerate(spec_blocks):
+            currency = _to_text(block.get("currency"))
+            if currency and currency not in currencies:
+                currencies.append(currency)
+
+            list_total = block.get("total_list_price")
+            purchase_total = block.get("total_purchase_price")
+            if isinstance(list_total, (int, float)):
+                total_list += float(list_total)
+                list_found = True
+            if isinstance(purchase_total, (int, float)):
+                total_purchase += float(purchase_total)
+                purchase_found = True
+
+            calc_pdf = block.get("calc_pdf")
+            calc_name = Path(calc_pdf).name if calc_pdf else "не найден"
+            values = [
+                _to_text(block.get("model")),
+                _to_text(block.get("calc_model")),
+                self._format_qty(block.get("quantity")),
+                self._format_money(list_total),
+                self._format_money(purchase_total),
+                self._format_money(block.get("unit_purchase_price")),
+                currency,
+                calc_name,
+            ]
+
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col in (2, 3, 4, 5, 6):
+                    item.setTextAlignment(Qt.AlignCenter)
+                else:
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                if col in (3, 4, 5) and not value:
+                    item.setBackground(Qt.yellow)
+                    item.setToolTip("Цена не найдена в Calc.pdf")
+                table.setItem(row, col, item)
+
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        for col in range(2, 7):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.Stretch)
+
+        table.resizeRowsToContents()
+        layout.addWidget(table, stretch=1)
+
+        currency_text = ", ".join(currencies) if currencies else ""
+        summary = QLabel(
+            "Итого List: "
+            f"{self._format_money(total_list) if list_found else '-'} {currency_text}\n"
+            "Итого Purchase: "
+            f"{self._format_money(total_purchase) if purchase_found else '-'} {currency_text}"
+        )
+        summary.setStyleSheet("font-weight: 700;")
+        layout.addWidget(summary)
+
+        return widget
+
+    def _format_money(self, value: Any) -> str:
+        if value is None or value == "":
+            return ""
+        try:
+            s = f"{float(value):,.2f}"
+            s = s.replace(",", "TEMP").replace(".", ",").replace("TEMP", " ")
+            return s
+        except Exception:
+            return _to_text(value)
+
+    def _format_qty(self, value: Any) -> str:
+        if value is None or value == "":
+            return ""
+        try:
+            number = float(value)
+            return str(int(number)) if number.is_integer() else str(number).replace(".", ",")
+        except Exception:
+            return _to_text(value)
 
     def _make_model_tab(self, block: dict[str, Any]) -> QWidget:
         widget = QWidget()
