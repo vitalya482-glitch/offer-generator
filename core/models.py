@@ -63,3 +63,4 @@ class OfferContext:
     signer_name: str = "Сания Санаткызы"
     signer_position: str = "Коммерческий директор"
     spec_models: list[dict[str, Any]] = field(default_factory=list)
+    description_options: dict[str, bool] = field(default_factory=dict)

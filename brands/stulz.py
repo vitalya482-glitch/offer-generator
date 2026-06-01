@@ -514,12 +514,156 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
         })
     return blocks, warnings
 
+
+DESCRIPTION_OPTION_DEFAULTS: dict[str, bool] = {
+    "stulz_unit": True,
+    "cooling_capacity": True,
+    "unit_dimensions": True,
+    "condenser": True,
+}
+
+
+def _description_options(context: OfferContext) -> dict[str, bool]:
+    options = dict(DESCRIPTION_OPTION_DEFAULTS)
+    raw = getattr(context, "description_options", None) or {}
+    if isinstance(raw, dict):
+        options.update({key: bool(value) for key, value in raw.items() if key in options})
+    return options
+
+
+def _text_key(value: str) -> str:
+    value = (value or "").lower().replace("ё", "е")
+    value = re.sub(r"[^a-zа-я0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _row_section_name(value: str) -> str:
+    text = _text_key(value)
+    return text or "unit"
+
+
+def _find_spec_block_for_item(item: OfferItem, spec_blocks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    item_key = _spec_model_key(item.name)
+    if not item_key:
+        return None
+
+    for block in spec_blocks:
+        candidates = [block.get("model"), block.get("calc_model")]
+        for candidate in candidates:
+            if _spec_model_key(str(candidate or "")) == item_key:
+                return block
+    return None
+
+
+def _tech_value(
+    block: dict[str, Any],
+    name_terms: tuple[str, ...],
+    section_terms: tuple[str, ...] | None = None,
+) -> str:
+    current_section = "unit"
+    wanted_names = tuple(_text_key(term) for term in name_terms)
+    wanted_sections = tuple(_text_key(term) for term in (section_terms or ()))
+
+    for row in block.get("technical_specs") or []:
+        name = _text_key(str(row.get("name") or ""))
+        value = str(row.get("value") or "").strip()
+        if row.get("is_section"):
+            current_section = _row_section_name(str(row.get("name") or ""))
+            continue
+        if not value:
+            continue
+        if wanted_sections:
+            section_ok = any(term and term in current_section for term in wanted_sections)
+            if not section_ok:
+                continue
+        if all(term and term in name for term in wanted_names):
+            return value
+    return ""
+
+
+def _unit_dimensions_text(block: dict[str, Any]) -> str:
+    direct = _tech_value(block, ("габарит",), ("unit",))
+    if direct:
+        return direct
+
+    height = _tech_value(block, ("высота",), ("unit",))
+    width = _tech_value(block, ("ширина",), ("unit",))
+    depth = _tech_value(block, ("глубина",), ("unit",))
+    values = [value for value in (height, width, depth) if value]
+    if len(values) == 3:
+        cleaned = [re.sub(r"\s*мм\b", "", value, flags=re.IGNORECASE).strip() for value in values]
+        return "x".join(cleaned) + " мм"
+    return ""
+
+
+def _cooling_capacity_text(block: dict[str, Any]) -> str:
+    return (
+        _tech_value(block, ("холодопроизводительность", "общ"), ("unit",))
+        or _tech_value(block, ("cooling capacity", "total"), ("unit",))
+        or _tech_value(block, ("холодопроизводительность",), ("unit",))
+    )
+
+
+def _condenser_text(block: dict[str, Any]) -> str:
+    return (
+        _tech_value(block, ("тип модуля",), ("конденсор",))
+        or _tech_value(block, ("unit type",), ("condenser",))
+    )
+
+
+def _build_offer_item_description(item: OfferItem, block: dict[str, Any] | None, options: dict[str, bool]) -> str:
+    if not block:
+        return item.name
+
+    model = str(block.get("calc_model") or block.get("model") or item.name).strip() or item.name
+    parts: list[str] = []
+
+    if options.get("stulz_unit", True):
+        parts.append(f"Прецизионный кондиционер Stulz {model}")
+    else:
+        parts.append(model)
+
+    if options.get("cooling_capacity", True):
+        cooling = _cooling_capacity_text(block)
+        if cooling:
+            parts.append(f"хладопроизводительность {cooling}")
+
+    if options.get("unit_dimensions", True):
+        dimensions = _unit_dimensions_text(block)
+        if dimensions:
+            parts.append(f"размеры внутреннего блока {dimensions}")
+
+    if options.get("condenser", True):
+        condenser = _condenser_text(block)
+        if condenser:
+            parts.append(f"конденсор {condenser}")
+
+    return ", ".join(parts)
+
+
+def build_offer_items(context: OfferContext, calc: CalcData, spec_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    options = _description_options(context)
+    result: list[dict[str, Any]] = []
+
+    for item in calc.items:
+        block = _find_spec_block_for_item(item, spec_blocks)
+        item_name = _build_offer_item_description(item, block, options)
+        result.append({
+            "item_no": item.no,
+            "item_name": item_name,
+            "item_qty": format_qty(item.qty),
+            "item_unit_price": format_money(item.unit_price),
+            "item_total": format_money(item.total_price),
+        })
+
+    return result
+
 def make_offer(context: OfferContext) -> Path:
     calc = load_calc(context)
     spec_blocks, _warnings = build_specification_blocks(context, calc)
     offer_version = find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)
     replacements = build_replacements(context, calc, offer_version=offer_version)
-    items = [item_to_template_dict(item, calc) for item in calc.items]
+    items = build_offer_items(context, calc, spec_blocks)
 
     filename = build_offer_filename(context.client_name, offer_version)
     output_path = context.output_dir / filename

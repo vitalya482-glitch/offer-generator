@@ -7,7 +7,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
+    QCheckBox,
     QDialogButtonBox,
+    QGroupBox,
     QHeaderView,
     QLabel,
     QTabWidget,
@@ -24,13 +26,39 @@ def _to_text(value: Any) -> str:
     return str(value)
 
 
+DESCRIPTION_OPTION_LABELS: dict[str, str] = {
+    "stulz_unit": "Прецизионный кондиционер/неры Stulz",
+    "cooling_capacity": "Хладопроизводительность",
+    "unit_dimensions": "Размеры внутреннего блока",
+    "condenser": "Конденсор",
+}
+
+
+def default_description_options() -> dict[str, bool]:
+    return {key: True for key in DESCRIPTION_OPTION_LABELS}
+
+
 class SpecPreviewDialog(QDialog):
     """Preview parsed STULZ specification data before inserting it into Word."""
 
-    def __init__(self, spec_blocks: list[dict[str, Any]], warnings: list[str] | None = None, parent=None) -> None:
+    def __init__(
+        self,
+        spec_blocks: list[dict[str, Any]],
+        warnings: list[str] | None = None,
+        parent=None,
+        description_options: dict[str, bool] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Предпросмотр спецификаций")
         self.resize(1200, 760)
+        self._description_checkboxes: dict[str, QCheckBox] = {}
+        self._initial_description_options = default_description_options()
+        if description_options:
+            self._initial_description_options.update({
+                key: bool(value)
+                for key, value in description_options.items()
+                if key in self._initial_description_options
+            })
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
@@ -49,6 +77,8 @@ class SpecPreviewDialog(QDialog):
             warning_label.setStyleSheet("color: #b45309; font-weight: 600;")
             layout.addWidget(warning_label)
 
+        layout.addWidget(self._make_description_options_group())
+
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, stretch=1)
 
@@ -64,6 +94,26 @@ class SpecPreviewDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _make_description_options_group(self) -> QGroupBox:
+        group = QGroupBox("Текст для включения в описание в КП")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        for key, label in DESCRIPTION_OPTION_LABELS.items():
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(bool(self._initial_description_options.get(key, True)))
+            self._description_checkboxes[key] = checkbox
+            layout.addWidget(checkbox)
+
+        return group
+
+    def description_options(self) -> dict[str, bool]:
+        options = default_description_options()
+        for key, checkbox in self._description_checkboxes.items():
+            options[key] = checkbox.isChecked()
+        return options
 
 
     def _make_total_tab(self, spec_blocks: list[dict[str, Any]]) -> QWidget:

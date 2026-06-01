@@ -19,6 +19,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+STULZ_DESCRIPTION_OPTION_DEFAULTS: dict[str, bool] = {
+    "stulz_unit": True,
+    "cooling_capacity": True,
+    "unit_dimensions": True,
+    "condenser": True,
+}
+
+STULZ_DESCRIPTION_OPTION_SETTINGS_PREFIX = "stulz_description_options/"
+
+
+def _settings_bool(value: object, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
 
 class StulzPage(QWidget):
     """Страница STULZ: файлы КП, проверка данных и список моделей спецификации."""
@@ -27,6 +49,8 @@ class StulzPage(QWidget):
         super().__init__(owner)
         self.owner = owner
         self._updating_spec_models = False
+        if not hasattr(owner, "stulz_description_options"):
+            owner.stulz_description_options = self._load_description_options()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -106,6 +130,31 @@ class StulzPage(QWidget):
         layout.addLayout(bottom)
 
 
+    def _load_description_options(self) -> dict[str, bool]:
+        options = dict(STULZ_DESCRIPTION_OPTION_DEFAULTS)
+        settings = getattr(self.owner, "settings", None)
+        if settings is None:
+            return options
+
+        for key, default in STULZ_DESCRIPTION_OPTION_DEFAULTS.items():
+            value = settings.value(STULZ_DESCRIPTION_OPTION_SETTINGS_PREFIX + key, default)
+            options[key] = _settings_bool(value, default)
+        return options
+
+    def _save_description_options(self, options: dict[str, bool]) -> None:
+        normalized = dict(STULZ_DESCRIPTION_OPTION_DEFAULTS)
+        normalized.update({key: bool(value) for key, value in options.items() if key in normalized})
+        self.owner.stulz_description_options = normalized
+
+        settings = getattr(self.owner, "settings", None)
+        if settings is None:
+            return
+
+        for key, value in normalized.items():
+            settings.setValue(STULZ_DESCRIPTION_OPTION_SETTINGS_PREFIX + key, bool(value))
+        settings.sync()
+
+
     def open_spec_preview(self) -> None:
         try:
             from brands.stulz import build_specification_blocks, load_calc
@@ -115,8 +164,14 @@ class StulzPage(QWidget):
             self.owner._validate_context(context)
             calc = load_calc(context)
             spec_blocks, warnings = build_specification_blocks(context, calc)
-            dialog = SpecPreviewDialog(spec_blocks, warnings, self)
+            dialog = SpecPreviewDialog(
+                spec_blocks,
+                warnings,
+                self,
+                description_options=self.description_options(),
+            )
             dialog.exec()
+            self._save_description_options(dialog.description_options())
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть предпросмотр спецификаций:\n{exc}")
 
@@ -140,6 +195,15 @@ class StulzPage(QWidget):
             state[model] = (enabled, qty)
         return state
 
+
+    def description_options(self) -> dict[str, bool]:
+        defaults = dict(STULZ_DESCRIPTION_OPTION_DEFAULTS)
+        current = getattr(self.owner, "stulz_description_options", None)
+        if not current:
+            current = self._load_description_options()
+            self.owner.stulz_description_options = current
+        defaults.update({key: bool(value) for key, value in current.items() if key in defaults})
+        return defaults
 
     def selected_spec_models(self) -> list[dict[str, object]]:
         models: list[dict[str, object]] = []

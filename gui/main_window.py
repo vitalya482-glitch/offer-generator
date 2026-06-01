@@ -839,6 +839,7 @@ def run_gui() -> None:
                 signer_name=self._selected_signer()["name"],
                 signer_position=self._selected_signer()["position"],
                 spec_models=self._selected_spec_models(),
+                description_options=self._description_options(),
             )
 
         def _validate_context(self, context: OfferContext) -> None:
@@ -862,6 +863,11 @@ def run_gui() -> None:
             if hasattr(self, "stulz_page"):
                 return self.stulz_page.selected_spec_models()
             return []
+
+        def _description_options(self) -> dict[str, bool]:
+            if hasattr(self, "stulz_page"):
+                return self.stulz_page.description_options()
+            return {}
 
         def _refresh_spec_models(self, context: OfferContext | None = None) -> None:
             if hasattr(self, "stulz_page"):
