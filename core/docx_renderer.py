@@ -87,6 +87,33 @@ def set_cell_keep_style(cell, value: Any) -> None:
             run.text = ""
 
 
+
+
+def split_option_description(text: Any) -> tuple[str, str]:
+    """Split option description into title and body for Word template tags.
+
+    Title is the first sentence up to the first dot, or text before the first
+    line break when the line break comes earlier. The rest goes to opt_name_2.
+    """
+    text = to_text(text).strip()
+    if not text:
+        return "", ""
+
+    newline_positions = [pos for pos in (text.find("\r"), text.find("\n")) if pos >= 0]
+    newline_pos = min(newline_positions) if newline_positions else -1
+    dot_pos = text.find(".")
+
+    if dot_pos >= 0 and (newline_pos < 0 or dot_pos < newline_pos):
+        split_at = dot_pos + 1
+    elif newline_pos >= 0:
+        split_at = newline_pos
+    else:
+        return text, ""
+
+    title = text[:split_at].strip()
+    body = text[split_at:].strip()
+    return title, body
+
 def row_contains_tags(row, tags: list[str]) -> bool:
     row_text = "\n".join(cell.text for cell in row.cells)
     return any(tag in row_text for tag in tags)
@@ -440,14 +467,28 @@ def _fill_template_row_table(table, row_tags: list[str], rows: list[dict[str, An
 
 
 def _fill_options_template_table(table, options: list[dict[str, Any]]) -> None:
+    has_opt_name_2 = any(row_contains_tags(row, ["{{opt_name_2}}"]) for row in table.rows)
+
     rows = []
     for idx, option in enumerate(options, start=1):
+        description = option.get("description", "")
+        opt_name, opt_name_2 = split_option_description(description)
+
         rows.append({
             "{{opt_no}}": str(idx),
-            "{{opt_name}}": option.get("description", ""),
+            # New templates use {{opt_name}} for the first sentence and
+            # {{opt_name_2}} for the remaining description. Older templates
+            # have only {{opt_name}}, so keep the full text there.
+            "{{opt_name}}": opt_name if has_opt_name_2 else description,
+            "{{opt_name_2}}": opt_name_2,
             "{{opt_qty}}": option.get("qty", ""),
         })
-    _fill_template_row_table(table, ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"], rows)
+
+    row_tags = ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"]
+    if has_opt_name_2:
+        row_tags.insert(2, "{{opt_name_2}}")
+
+    _fill_template_row_table(table, row_tags, rows)
 
 
 def _fill_specs_template_table(table, specs: list[dict[str, Any]]) -> None:
@@ -565,6 +606,7 @@ def remove_empty_service_tags(doc: Document) -> None:
         "{{options_title}}": "",
         "{{opt_no}}": "",
         "{{opt_name}}": "",
+        "{{opt_name_2}}": "",
         "{{opt_qty}}": "",
         "{{technical_specs_title}}": "",
         "{{technical_specs_parameter}}": "",
