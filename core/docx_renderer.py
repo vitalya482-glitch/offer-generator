@@ -25,36 +25,73 @@ def to_text(value: Any) -> str:
     return str(value)
 
 
+def _paragraph_full_text(paragraph) -> str:
+    return "".join(run.text for run in paragraph.runs)
+
+
+def _replace_tag_across_runs(paragraph, tag: str, value: Any) -> bool:
+    """Replace one tag even if Word split it across several runs.
+
+    The inserted value is written into the run where the tag starts, so the
+    formatting of that tag is preserved instead of inheriting formatting from
+    the beginning of the paragraph/cell.
+    """
+    if not paragraph.runs or not tag:
+        return False
+
+    full_text = _paragraph_full_text(paragraph)
+    start = full_text.find(tag)
+    if start < 0:
+        return False
+
+    end = start + len(tag)
+    spans: list[tuple[int, int, Any]] = []
+    pos = 0
+    for run in paragraph.runs:
+        run_start = pos
+        run_end = pos + len(run.text)
+        spans.append((run_start, run_end, run))
+        pos = run_end
+
+    involved = [item for item in spans if item[1] > start and item[0] < end]
+    if not involved:
+        return False
+
+    first_start, first_end, first_run = involved[0]
+    last_start, last_end, last_run = involved[-1]
+
+    prefix = first_run.text[: max(0, start - first_start)]
+    suffix = last_run.text[max(0, end - last_start) :]
+    replacement = to_text(value)
+
+    if first_run is last_run:
+        first_run.text = prefix + replacement + suffix
+    else:
+        first_run.text = prefix + replacement
+        for _, _, middle_run in involved[1:-1]:
+            middle_run.text = ""
+        last_run.text = suffix
+
+    return True
+
+
 def replace_in_paragraph(paragraph, replacements: dict[str, Any]) -> None:
-    """Replace tags while preserving Word formatting where possible."""
+    """Replace tags while preserving Word run formatting.
+
+    This intentionally avoids assigning to paragraph.text or replacing the
+    whole paragraph in the first run. That old approach made several tags in
+    one line inherit the formatting of the line start.
+    """
     if not paragraph.runs:
         return
 
-    changed = False
-    for run in paragraph.runs:
-        original = run.text
-        updated = original
+    # Repeat because replacing one tag changes run lengths and positions.
+    changed = True
+    while changed:
+        changed = False
         for key, value in replacements.items():
-            updated = updated.replace(key, to_text(value))
-        if updated != original:
-            run.text = updated
-            changed = True
-
-    if changed:
-        return
-
-    full_text = "".join(run.text for run in paragraph.runs)
-    if "{{" not in full_text:
-        return
-
-    updated_full = full_text
-    for key, value in replacements.items():
-        updated_full = updated_full.replace(key, to_text(value))
-
-    if updated_full != full_text:
-        paragraph.runs[0].text = updated_full
-        for run in paragraph.runs[1:]:
-            run.text = ""
+            if key and key in _paragraph_full_text(paragraph):
+                changed = _replace_tag_across_runs(paragraph, key, value) or changed
 
 
 def replace_tags(doc: Document, replacements: dict[str, Any]) -> None:
@@ -86,33 +123,6 @@ def set_cell_keep_style(cell, value: Any) -> None:
         for run in extra_paragraph.runs:
             run.text = ""
 
-
-
-
-def split_option_description(text: Any) -> tuple[str, str]:
-    """Split option description into title and body for Word template tags.
-
-    Title is the first sentence up to the first dot, or text before the first
-    line break when the line break comes earlier. The rest goes to opt_name_2.
-    """
-    text = to_text(text).strip()
-    if not text:
-        return "", ""
-
-    newline_positions = [pos for pos in (text.find("\r"), text.find("\n")) if pos >= 0]
-    newline_pos = min(newline_positions) if newline_positions else -1
-    dot_pos = text.find(".")
-
-    if dot_pos >= 0 and (newline_pos < 0 or dot_pos < newline_pos):
-        split_at = dot_pos + 1
-    elif newline_pos >= 0:
-        split_at = newline_pos
-    else:
-        return text, ""
-
-    title = text[:split_at].strip()
-    body = text[split_at:].strip()
-    return title, body
 
 def row_contains_tags(row, tags: list[str]) -> bool:
     row_text = "\n".join(cell.text for cell in row.cells)
@@ -333,6 +343,35 @@ def _replace_tags_in_table(table, replacements: dict[str, Any]) -> None:
                     set_cell_keep_style(cell, value)
 
 
+def split_option_description(text: Any) -> tuple[str, str]:
+    """Split option description into title and body.
+
+    Title is the text before the first full stop or line break. The delimiter
+    stays in the title. The rest goes to {{opt_name_2}}.
+    """
+    raw = to_text(text).replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return "", ""
+
+    newline_pos = raw.find("\n")
+    dot_pos = raw.find(".")
+
+    candidates = []
+    if newline_pos >= 0:
+        candidates.append((newline_pos, 0))
+    if dot_pos >= 0:
+        candidates.append((dot_pos, 1))
+
+    if not candidates:
+        return raw, ""
+
+    pos, include_chars = min(candidates, key=lambda item: item[0])
+    split_at = pos + include_chars
+    title = raw[:split_at].strip()
+    body = raw[split_at:].strip()
+    return title, body
+
+
 def set_option_name_cell_text(cell, text: str) -> None:
     """
     Форматирование ячейки опции:
@@ -467,27 +506,21 @@ def _fill_template_row_table(table, row_tags: list[str], rows: list[dict[str, An
 
 
 def _fill_options_template_table(table, options: list[dict[str, Any]]) -> None:
-    has_opt_name_2 = any(row_contains_tags(row, ["{{opt_name_2}}"]) for row in table.rows)
+    table_text = "\n".join(cell.text for row in table.rows for cell in row.cells)
+    supports_second_name = "{{opt_name_2}}" in table_text
 
     rows = []
     for idx, option in enumerate(options, start=1):
         description = option.get("description", "")
-        opt_name, opt_name_2 = split_option_description(description)
-
+        title, body = split_option_description(description)
         rows.append({
             "{{opt_no}}": str(idx),
-            # New templates use {{opt_name}} for the first sentence and
-            # {{opt_name_2}} for the remaining description. Older templates
-            # have only {{opt_name}}, so keep the full text there.
-            "{{opt_name}}": opt_name if has_opt_name_2 else description,
-            "{{opt_name_2}}": opt_name_2,
+            "{{opt_name}}": title if supports_second_name else description,
+            "{{opt_name_2}}": body if supports_second_name else "",
             "{{opt_qty}}": option.get("qty", ""),
         })
 
-    row_tags = ["{{opt_no}}", "{{opt_name}}", "{{opt_qty}}"]
-    if has_opt_name_2:
-        row_tags.insert(2, "{{opt_name_2}}")
-
+    row_tags = ["{{opt_no}}", "{{opt_name}}", "{{opt_name_2}}", "{{opt_qty}}"]
     _fill_template_row_table(table, row_tags, rows)
 
 
