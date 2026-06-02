@@ -542,17 +542,46 @@ def _row_section_name(value: str) -> str:
     return text or "unit"
 
 
-def _find_spec_block_for_item(item: OfferItem, spec_blocks: list[dict[str, Any]]) -> dict[str, Any] | None:
-    item_key = _spec_model_key(item.name)
-    if not item_key:
-        return None
+def _spec_block_keys(block: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for candidate in (block.get("model"), block.get("calc_model")):
+        key = _spec_model_key(str(candidate or ""))
+        if key:
+            keys.add(key)
+    return keys
 
-    for block in spec_blocks:
-        candidates = [block.get("model"), block.get("calc_model")]
-        for candidate in candidates:
-            if _spec_model_key(str(candidate or "")) == item_key:
-                return block
-    return None
+
+def _find_spec_block_for_item(
+    item: OfferItem,
+    spec_blocks: list[dict[str, Any]],
+    item_index: int,
+    used_block_indexes: set[int],
+) -> tuple[int | None, dict[str, Any] | None]:
+    """Find specification data for a commercial offer row.
+
+    First try strict normalized model matching, for example:
+    ASD211A == ASD 211 A == ASD-211-A.
+
+    If Excel contains a typo in the model name, but the user has already selected
+    the correct specifications in the same order as the offer rows, use a safe
+    positional fallback. This keeps prices and quantities from Excel, but builds
+    the extended description from the matched specification block.
+    """
+    item_key = _spec_model_key(item.name)
+
+    if item_key:
+        for index, block in enumerate(spec_blocks):
+            if index in used_block_indexes:
+                continue
+            if item_key in _spec_block_keys(block):
+                return index, block
+
+    # Fallback for Excel/model-name typos: use the specification row at the same
+    # position if it has not already been consumed by another offer row.
+    if 0 <= item_index < len(spec_blocks) and item_index not in used_block_indexes:
+        return item_index, spec_blocks[item_index]
+
+    return None, None
 
 
 def _tech_value(
@@ -644,9 +673,13 @@ def _build_offer_item_description(item: OfferItem, block: dict[str, Any] | None,
 def build_offer_items(context: OfferContext, calc: CalcData, spec_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     options = _description_options(context)
     result: list[dict[str, Any]] = []
+    used_block_indexes: set[int] = set()
 
-    for item in calc.items:
-        block = _find_spec_block_for_item(item, spec_blocks)
+    for item_index, item in enumerate(calc.items):
+        block_index, block = _find_spec_block_for_item(item, spec_blocks, item_index, used_block_indexes)
+        if block_index is not None:
+            used_block_indexes.add(block_index)
+
         item_name = _build_offer_item_description(item, block, options)
         result.append({
             "item_no": item.no,
