@@ -45,12 +45,19 @@ class SettingsDialog(QDialog):
             owner._add_path_item(self.template_combo, current_template, is_file=True)
             self.template_combo.setCurrentIndex(0)
 
-        template_card = owner._card("Шаблон КП")
+        self.calc_template_combo = QComboBox()
+        self.calc_template_combo.setEditable(True)
+        current_calc_template = str(owner.settings.value("calc_template_path", "") or "")
+        if current_calc_template:
+            owner._add_path_item(self.calc_template_combo, current_calc_template, is_file=True)
+            self.calc_template_combo.setCurrentIndex(0)
+
+        template_card = owner._card("Шаблоны")
         template_grid = QGridLayout()
         template_card.layout().addLayout(template_grid)
         template_grid.setColumnStretch(1, 1)
 
-        lab = QLabel("Word-шаблон")
+        lab = QLabel("Word-шаблон КП")
         lab.setObjectName("FormLabel")
         template_grid.addWidget(lab, 0, 0)
         template_grid.addWidget(self.template_combo, 0, 1)
@@ -59,6 +66,17 @@ class SettingsDialog(QDialog):
         template_btn.setObjectName("GhostButton")
         template_btn.clicked.connect(self._browse_template)
         template_grid.addWidget(template_btn, 0, 2)
+
+        calc_lab = QLabel("Excel-шаблон расчёта")
+        calc_lab.setObjectName("FormLabel")
+        template_grid.addWidget(calc_lab, 1, 0)
+        template_grid.addWidget(self.calc_template_combo, 1, 1)
+
+        calc_template_btn = QPushButton("Обзор")
+        calc_template_btn.setObjectName("GhostButton")
+        calc_template_btn.clicked.connect(self._browse_calc_template)
+        template_grid.addWidget(calc_template_btn, 1, 2)
+
         layout.addWidget(template_card)
 
         self.manager_edits = {
@@ -169,6 +187,20 @@ class SettingsDialog(QDialog):
             self.template_combo.setCurrentIndex(index)
             owner.settings.setValue("template_dir", str(Path(path).parent))
 
+
+    def _browse_calc_template(self) -> None:
+        owner = self.owner
+        selected = str(self.calc_template_combo.currentData() or self.calc_template_combo.currentText()).strip()
+        start_dir = str(Path(selected).parent) if selected else owner._saved("calc_template_dir", owner._project_path_text())
+        path, _ = QFileDialog.getOpenFileName(self, "Выберите Excel-шаблон расчёта", start_dir, "Excel (*.xlsx)")
+        if path:
+            index = owner._find_combo_path(self.calc_template_combo, path)
+            if index < 0:
+                owner._add_path_item(self.calc_template_combo, path, is_file=True)
+                index = self.calc_template_combo.count() - 1
+            self.calc_template_combo.setCurrentIndex(index)
+            owner.settings.setValue("calc_template_dir", str(Path(path).parent))
+
     def apply_to_owner(self) -> None:
         owner = self.owner
         template_path = str(self.template_combo.currentData() or self.template_combo.currentText()).strip()
@@ -178,6 +210,11 @@ class SettingsDialog(QDialog):
             owner._add_path_item(owner.template_combo, template_path, is_file=True)
             owner.template_combo.setCurrentIndex(0)
             owner.template_combo.blockSignals(False)
+
+        calc_template_path = str(self.calc_template_combo.currentData() or self.calc_template_combo.currentText()).strip()
+        owner.settings.setValue("calc_template_path", calc_template_path)
+        if calc_template_path:
+            owner.settings.setValue("calc_template_dir", str(Path(calc_template_path).parent))
 
         owner.manager_name_edit.setText(self.manager_edits["manager_name"].text().strip())
         owner.manager_position_edit.setText(self.manager_edits["manager_position"].text().strip())

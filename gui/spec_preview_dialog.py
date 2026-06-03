@@ -10,8 +10,10 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialogButtonBox,
     QGroupBox,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -64,12 +66,24 @@ class SpecPreviewDialog(QDialog):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
+        header = QHBoxLayout()
+        header.setSpacing(10)
+
         intro = QLabel(
             "Здесь показано, что программа прочитала из Calc.pdf и WinPlan.pdf. "
             "Проверьте коды, переводы, количество и технические характеристики перед генерацией КП."
         )
         intro.setWordWrap(True)
-        layout.addWidget(intro)
+        header.addWidget(intro, stretch=1)
+
+        self._spec_blocks = spec_blocks
+        calc_btn = QPushButton("Сформировать расчёт")
+        calc_btn.setObjectName("PrimaryButton")
+        calc_btn.setEnabled(bool(spec_blocks))
+        calc_btn.clicked.connect(self._open_calc_builder)
+        header.addWidget(calc_btn, alignment=Qt.AlignTop | Qt.AlignRight)
+
+        layout.addLayout(header)
 
         if warnings:
             warning_label = QLabel("⚠ " + "\n⚠ ".join(warnings))
@@ -94,6 +108,24 @@ class SpecPreviewDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+
+    def _open_calc_builder(self) -> None:
+        from gui.calc_builder_dialog import CalcBuilderDialog
+
+        page = self.parent()
+        owner = getattr(page, "owner", None)
+        settings = getattr(owner, "settings", None)
+        template_path = ""
+        if settings is not None:
+            template_path = str(settings.value("calc_template_path", "") or "")
+
+        dialog = CalcBuilderDialog(
+            self._spec_blocks,
+            parent=self,
+            template_path=template_path,
+        )
+        dialog.exec()
 
     def _make_description_options_group(self) -> QGroupBox:
         group = QGroupBox("Текст для включения в описание в КП")
