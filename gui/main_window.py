@@ -27,7 +27,7 @@ from core.excel_reader import list_sheets
 from core.models import OfferContext
 from core.manager_profile import ManagerProfile, find_manager_in_project
 from core.project_scanner import clear_scan_cache, scan_project_files
-from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir, infer_specifications_dir
+from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir, infer_output_dir, infer_specifications_dir
 from gui.ui_style import stylesheet, ui_scale
 
 
@@ -771,12 +771,13 @@ def run_gui() -> None:
                     self.spec_dir_path = ""
                     self._set_line_path(self.spec_edit, "", is_file=False)
 
-                # Keep a custom result folder. Update it only when it was empty
-                # or previously pointed to the old project folder.
-                current_output = self._output_path_text().strip()
-                if not current_output or current_output == old_project:
-                    self.output_dir_path = path
-                    self._set_line_path(self.output_edit, path, is_file=False)
+                # Папка результата зависит от выбранного проекта.
+                # При смене проекта сбрасываем старый путь всегда: дальше
+                # _scan_project() автоматически найдет *Sales docs*.
+                # Ручной выбор сохраняется до следующей смены папки проекта.
+                if path != old_project:
+                    self.output_dir_path = ""
+                    self._set_line_path(self.output_edit, "", is_file=False)
 
                 self._autofill_client_from_project_dir(force=True)
                 self._autofill_brand_from_project_dir()
@@ -860,8 +861,9 @@ def run_gui() -> None:
             self.template_combo.blockSignals(False)
 
             if not self._output_path_text().strip():
-                self.output_dir_path = str(project_dir)
-                self._set_line_path(self.output_edit, str(project_dir), is_file=False)
+                guessed_output_dir = infer_output_dir(str(project_dir))
+                self.output_dir_path = guessed_output_dir
+                self._set_line_path(self.output_edit, guessed_output_dir, is_file=False)
 
             old_spec = self._spec_path_text().strip()
             should_update_spec = not old_spec

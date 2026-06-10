@@ -1,3 +1,4 @@
-.github/workflows/main.yml
-INSTALL_AUTO_RELEASE_PATCH.md
+gui/main_window.py
+gui/path_helpers.py
+INSTALL_AUTOOUTPUT_PATCH.md
 FILE_LIST.txt

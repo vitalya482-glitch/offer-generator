@@ -73,6 +73,63 @@ def extract_brand_from_project_dir(path_text: str, available_brands: list[str] |
     return ''
 
 
+
+
+def _is_sales_docs_dir_name(name: str) -> bool:
+    clean = name.lower().replace('-', '_').replace(' ', '_')
+    return 'sales_docs' in clean or ('sales' in clean and 'docs' in clean)
+
+
+def infer_output_dir(project_dir_text: str) -> str:
+    """Guess the result/output folder inside the selected project.
+
+    Standard SAM folders are usually named like 02_Sales docs,
+    03_sales docs, Sales docs, etc. The number may change, but the
+    words sales docs usually stay.
+
+    If no matching folder is found, return the project folder itself.
+    """
+    from pathlib import Path
+
+    project_text = str(project_dir_text or '').strip().strip('"')
+    if not project_text:
+        return ''
+
+    project_dir = Path(project_text)
+    if not project_dir.exists() or not project_dir.is_dir():
+        return project_text
+
+    direct_matches: list[Path] = []
+    nested_matches: list[Path] = []
+
+    try:
+        for item in project_dir.iterdir():
+            if item.is_dir() and _is_sales_docs_dir_name(item.name):
+                direct_matches.append(item)
+    except OSError:
+        return str(project_dir)
+
+    if direct_matches:
+        # Prefer direct project subfolders like 02_Sales docs / 03_sales docs.
+        return str(sorted(direct_matches, key=lambda p: p.name.lower())[0])
+
+    # Fallback: shallow-safe nested scan. This helps if user selected a folder
+    # one level above/below the expected project root.
+    try:
+        for item in project_dir.rglob('*'):
+            try:
+                if item.is_dir() and _is_sales_docs_dir_name(item.name):
+                    nested_matches.append(item)
+            except OSError:
+                continue
+    except OSError:
+        nested_matches = []
+
+    if not nested_matches:
+        return str(project_dir)
+
+    return str(sorted(nested_matches, key=lambda p: (len(p.parts), p.name.lower()))[0])
+
 def _is_suppliers_dir_name(name: str) -> bool:
     clean = name.lower().replace('-', '_').replace(' ', '_')
     return 'supplier' in clean or 'suppliers' in clean
