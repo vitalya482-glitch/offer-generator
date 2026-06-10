@@ -1,12 +1,4 @@
-REPLACE:
-.github/workflows/main.yml
-gui/main_window.py
-sam_offer_generator.spec
-
-ADD:
 core/update_client.py
 updater.py
-config/update.json
-INSTALL_UPDATER_PATCH.md
-UPDATE_SYSTEM.md
+INSTALL_UPDATER_DIAGNOSTICS_PATCH.md
 FILE_LIST.txt

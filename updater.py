@@ -1,13 +1,35 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import shutil
 import subprocess
 import sys
 import time
+import traceback
 import zipfile
 from pathlib import Path
+
+
+def show_error(title: str, message: str) -> None:
+    """Show a simple Windows error dialog; fallback to console on other systems."""
+    try:
+        if os.name == "nt":
+            ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
+            return
+    except Exception:
+        pass
+    print(f"{title}\n{message}", file=sys.stderr)
+
+
+def write_log(app_dir: Path, message: str) -> None:
+    try:
+        log_dir = app_dir / "updates"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "update_error.log").write_text(message, encoding="utf-8")
+    except Exception:
+        pass
 
 
 def wait_for_process(pid: int, timeout_sec: int = 60) -> None:
@@ -18,6 +40,12 @@ def wait_for_process(pid: int, timeout_sec: int = 60) -> None:
         if not is_process_running(pid):
             return
         time.sleep(0.5)
+    raise TimeoutError(
+        "Основная программа не закрылась за 60 секунд.\n\n"
+        "Что сделать:\n"
+        "1. Закройте SAM Offer Generator вручную.\n"
+        "2. Запустите обновление ещё раз."
+    )
 
 
 def is_process_running(pid: int) -> bool:
@@ -50,6 +78,11 @@ def find_payload_root(extract_dir: Path) -> Path:
 
 
 def copy_tree_merge(src: Path, dst: Path, running_updater: Path) -> None:
+    if not src.exists():
+        raise FileNotFoundError(
+            "В архиве обновления не найдена папка с файлами приложения.\n\n"
+            f"Ожидали:\n{src}"
+        )
     dst.mkdir(parents=True, exist_ok=True)
     for item in src.iterdir():
         target = dst / item.name
@@ -75,15 +108,38 @@ def copy_tree_merge(src: Path, dst: Path, running_updater: Path) -> None:
                         backup.unlink(missing_ok=True)
                     except Exception:
                         pass
-                    target.rename(backup)
+                    try:
+                        target.rename(backup)
+                    except PermissionError as exc:
+                        raise PermissionError(
+                            "Не удалось заменить файл, потому что он занят или нет прав доступа.\n\n"
+                            f"Файл:\n{target}\n\n"
+                            "Что сделать:\n"
+                            "1. Закройте SAM Offer Generator.\n"
+                            "2. Закройте Excel/Word, если они открыли файлы из папки программы.\n"
+                            "3. Проверьте, что программа не лежит в Program Files."
+                        ) from exc
             shutil.copy2(item, target)
 
 
 def apply_update(package: Path, app_dir: Path) -> None:
     if not package.exists():
-        raise FileNotFoundError(f"Update package not found: {package}")
+        raise FileNotFoundError(
+            "Файл обновления не найден.\n\n"
+            f"Путь:\n{package}"
+        )
     if not zipfile.is_zipfile(package):
-        raise ValueError(f"Update package is not a ZIP file: {package}")
+        raise ValueError(
+            "Файл обновления не является ZIP-архивом или повреждён.\n\n"
+            f"Файл:\n{package}\n\n"
+            "Что сделать:\n"
+            "Скачайте обновление заново."
+        )
+    if not app_dir.exists():
+        raise FileNotFoundError(
+            "Папка приложения не найдена.\n\n"
+            f"Путь:\n{app_dir}"
+        )
 
     running_updater = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
     temp_dir = app_dir / "updates" / "_apply_temp"
@@ -93,6 +149,14 @@ def apply_update(package: Path, app_dir: Path) -> None:
 
     try:
         with zipfile.ZipFile(package, "r") as zf:
+            bad_file = zf.testzip()
+            if bad_file:
+                raise ValueError(
+                    "ZIP-архив обновления повреждён.\n\n"
+                    f"Повреждённый файл внутри архива:\n{bad_file}\n\n"
+                    "Что сделать:\n"
+                    "Скачайте обновление заново."
+                )
             zf.extractall(temp_dir)
         payload_root = find_payload_root(temp_dir)
         copy_tree_merge(payload_root, app_dir, running_updater)
@@ -111,15 +175,35 @@ def main(argv: list[str] | None = None) -> int:
     package = Path(args.package).resolve()
     app_dir = Path(args.app_dir).resolve()
 
-    wait_for_process(args.pid)
-    time.sleep(0.7)
-    apply_update(package, app_dir)
+    try:
+        wait_for_process(args.pid)
+        time.sleep(0.7)
+        apply_update(package, app_dir)
 
-    if args.restart:
-        restart = Path(args.restart)
-        if restart.exists():
-            subprocess.Popen([str(restart)], cwd=str(app_dir), close_fds=True)
-    return 0
+        if args.restart:
+            restart = Path(args.restart)
+            if restart.exists():
+                subprocess.Popen([str(restart)], cwd=str(app_dir), close_fds=True)
+            else:
+                show_error(
+                    "Обновление установлено",
+                    "Обновление установлено, но не удалось автоматически запустить программу.\n\n"
+                    f"Файл запуска не найден:\n{restart}\n\n"
+                    "Запустите SAM-Offer-Generator.exe вручную.",
+                )
+        return 0
+    except Exception as exc:
+        message = (
+            "Не удалось применить обновление.\n\n"
+            f"Причина:\n{type(exc).__name__}: {exc}\n\n"
+            f"Архив обновления:\n{package}\n\n"
+            f"Папка приложения:\n{app_dir}\n\n"
+            "Подробности записаны в updates/update_error.log"
+        )
+        details = message + "\n\n" + traceback.format_exc()
+        write_log(app_dir, details)
+        show_error("Ошибка обновления", message)
+        return 1
 
 
 if __name__ == "__main__":
