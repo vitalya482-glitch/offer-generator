@@ -6,6 +6,36 @@
 
 ---
 
+## Модульные релизы на GitHub
+
+Проект подготовлен для модульной публикации:
+
+- исходный код уже разделен на независимые папки `core/`, `brands/`, `gui/`, `config/`, `mcp/`, `prices/`;
+- `sam_offer_generator.spec` собирает Windows-приложение в режиме PyInstaller `onedir`, то есть не в один монолитный EXE, а в папку `SAM-Offer-Generator/`;
+- GitHub Actions публикует основной архив `SAM-Offer-Generator-windows-portable.zip` и отдельные ZIP-архивы модулей;
+- `MODULES_MANIFEST.json` описывает состав модулей и зависимости между ними;
+- `tools/package_modules.py` собирает отдельные архивы `offer-generator-core.zip`, `offer-generator-brands.zip`, `offer-generator-gui.zip` и другие;
+- `tools/prepare_portable_release.py` добавляет в релиз редактируемый `config/`, README и копии исходных модулей в `modules/source/`.
+
+Подробная инструкция по релизам находится в `GITHUB_RELEASES.md`.
+
+Типовая структура Windows-релиза:
+
+```text
+SAM-Offer-Generator/
+  SAM-Offer-Generator.exe
+  run_gui.cmd
+  README_RELEASE.txt
+  config/
+  modules/source/
+  prices/
+  _internal/
+```
+
+Важно: переносить отдельно только `SAM-Offer-Generator.exe` нельзя. Нужно скачивать и распаковывать всю папку релиза.
+
+---
+
 ## Быстрый контекст для ChatGPT / разработчика
 
 Если нужно быстро разобраться в проекте, начинай с этих файлов:
@@ -66,6 +96,7 @@ core/                   # общая логика
   docx_renderer.py      # заполнение Word и таблиц
   project_scanner.py    # поиск файлов в папке проекта + кеш сканирования
   utils.py              # общие функции
+  runtime_paths.py      # пути в source/onedir-сборке, внешний editable config
 brands/                 # логика направлений
   stulz.py              # основная рабочая логика Stulz
   riello.py             # заготовка / логика Riello
@@ -79,6 +110,10 @@ gui/
 config/
   managers.json         # менеджеры
   signers.json          # подписанты
+tools/                  # упаковка модулей и подготовка portable-релиза
+scripts/                # локальные PowerShell-команды сборки
+MODULES_MANIFEST.json   # описание модульных архивов
+GITHUB_RELEASES.md      # инструкция по GitHub Actions/Releases
 ```
 
 ---

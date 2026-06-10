@@ -6,8 +6,15 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from zipfile import ZipFile
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-CONFIG_DIR = ROOT_DIR / "config"
+from core.runtime_paths import app_root, ensure_editable_config
+
+ROOT_DIR = app_root()
+CONFIG_DIR = ensure_editable_config((
+    "stulz_options.json",
+    "stulz_winplan.json",
+    "managers.json",
+    "signers.json",
+))
 STULZ_OPTIONS_PATH = CONFIG_DIR / "stulz_options.json"
 STULZ_WINPLAN_PATH = CONFIG_DIR / "stulz_winplan.json"
 STULZ_MISSING_OPTIONS_PATH = CONFIG_DIR / "stulz_missing_options.json"

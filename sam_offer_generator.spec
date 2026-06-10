@@ -11,6 +11,7 @@ hiddenimports = [
     'gui.settings_dialog',
     'gui.reference_table_dialog',
     'gui.spec_preview_dialog',
+    'gui.calc_builder_dialog',
     'gui.pages',
     'gui.pages.stulz_page',
     'gui.pages.riello_page',
@@ -25,9 +26,13 @@ hiddenimports = [
 
     'core.docx_renderer',
     'core.excel_reader',
+    'core.manager_profile',
+    'core.models',
     'core.project_scanner',
+    'core.runtime_paths',
     'core.stulz_reference',
     'core.stulz_specification',
+    'core.utils',
     'core.pdf_parsers',
     'core.pdf_parsers.stulz_calc_pdf',
     'core.pdf_parsers.stulz_winplan_pdf',
@@ -74,16 +79,28 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# One-dir build: the EXE stays small and dependencies/data are collected into
+# dist/SAM-Offer-Generator/ instead of being embedded into one monolithic file.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='SAM-Offer-Generator',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=False,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='SAM-Offer-Generator',
 )

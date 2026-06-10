@@ -62,6 +62,19 @@ samples/Calc_23-12-24 PAC.xlsx
 - итоговые суммы;
 - EXW/DDP или условия поставки.
 
+
+## Текущее модульное состояние
+
+Проект подготовлен к модульной публикации на GitHub:
+
+- PyInstaller spec переведен на `onedir` через `COLLECT(...)`;
+- GitHub Actions собирает папку `SAM-Offer-Generator/`, а не один монолитный exe;
+- добавлен `MODULES_MANIFEST.json`;
+- добавлены `tools/package_modules.py` и `tools/prepare_portable_release.py`;
+- добавлены PowerShell-скрипты локальной сборки в `scripts/`;
+- релизные инструкции находятся в `GITHUB_RELEASES.md`;
+- редактируемые JSON-конфиги в frozen/onedir-режиме теперь берутся из папки рядом с EXE через `core/runtime_paths.py`.
+
 ## Текущее состояние проекта
 
 Создан стартовый проект `kp-generator-project.zip`.

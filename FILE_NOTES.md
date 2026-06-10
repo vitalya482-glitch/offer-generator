@@ -92,6 +92,32 @@ Excel-калькулятор пользователя.
 output/КП_ТОО_Ромашка.docx
 ```
 
+## `sam_offer_generator.spec`
+
+Теперь собирает приложение в режиме PyInstaller `onedir`:
+
+```text
+dist/SAM-Offer-Generator/
+  SAM-Offer-Generator.exe
+  _internal/
+  config/
+  modules/source/
+```
+
+Ключевое изменение: `a.binaries`, `a.zipfiles` и `a.datas` передаются в `COLLECT(...)`, а не в `EXE(...)`. Поэтому релиз получается папкой, а не одним большим EXE.
+
+## `MODULES_MANIFEST.json`
+
+Описывает, какие папки входят в отдельные модульные ZIP-архивы для GitHub Actions/Releases.
+
+## `tools/package_modules.py`
+
+Создает отдельные архивы модулей и файл `MODULES_INDEX.md`.
+
+## `tools/prepare_portable_release.py`
+
+После PyInstaller-сборки добавляет в portable-папку README, editable `config/`, source-копии модулей и служебный `release_info.json`.
+
 ## `requirements.txt`
 
 Зависимости Python:

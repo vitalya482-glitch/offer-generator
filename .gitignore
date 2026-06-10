@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 *.pyo
+*.zip
 *.docx
 *.xlsx
 *.xlsm
@@ -9,3 +10,4 @@ dist/
 build/
 .venv/
 .env
+config/stulz_missing_options.json

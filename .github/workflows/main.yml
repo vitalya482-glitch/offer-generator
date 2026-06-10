@@ -1,14 +1,18 @@
-name: Build Windows EXE
+name: Build Windows portable release
 
 on:
   push:
     branches:
       - main
-
+    tags:
+      - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-windows-portable:
     runs-on: windows-latest
 
     steps:
@@ -27,17 +31,127 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Build EXE
+      - name: Check Python syntax
         run: |
-          pyinstaller sam_offer_generator.spec --clean
+          python -m compileall app.py brands core gui config tools
 
-      - name: Show build files
+      - name: Build one-dir Windows app
         run: |
-          dir dist
-          dir build
+          pyinstaller sam_offer_generator.spec --clean --noconfirm
 
-      - name: Upload artifact
+      - name: Add editable files and source module copies to portable folder
+        run: |
+          python tools/prepare_portable_release.py --dist dist/SAM-Offer-Generator
+
+      - name: Build modular source ZIPs
+        run: |
+          python tools/package_modules.py --output dist/source-modules
+
+      - name: Zip portable Windows folder
+        shell: pwsh
+        run: |
+          if (Test-Path "dist/SAM-Offer-Generator-windows-portable.zip") {
+            Remove-Item "dist/SAM-Offer-Generator-windows-portable.zip" -Force
+          }
+          Compress-Archive -Path "dist/SAM-Offer-Generator/*" -DestinationPath "dist/SAM-Offer-Generator-windows-portable.zip" -Force
+
+      - name: Show release files
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse dist | Select-Object FullName, Length
+
+      - name: Upload portable folder artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sam-offer-generator-windows
-          path: dist/
+          name: SAM-Offer-Generator-windows-portable-folder
+          path: dist/SAM-Offer-Generator/
+          retention-days: 30
+
+      - name: Upload portable ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAM-Offer-Generator-windows-portable-zip
+          path: dist/SAM-Offer-Generator-windows-portable.zip
+          retention-days: 30
+
+      - name: Upload module index artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-modules-index
+          path: |
+            dist/source-modules/MODULES_INDEX.md
+            dist/source-modules/SHA256SUMS.txt
+          retention-days: 30
+
+      - name: Upload entrypoint module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-entrypoint-module
+          path: dist/source-modules/offer-generator-entrypoint.zip
+          retention-days: 30
+
+      - name: Upload core module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-core-module
+          path: dist/source-modules/offer-generator-core.zip
+          retention-days: 30
+
+      - name: Upload brands module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-brands-module
+          path: dist/source-modules/offer-generator-brands.zip
+          retention-days: 30
+
+      - name: Upload gui module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-gui-module
+          path: dist/source-modules/offer-generator-gui.zip
+          retention-days: 30
+
+      - name: Upload config module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-config-module
+          path: dist/source-modules/offer-generator-config.zip
+          retention-days: 30
+
+      - name: Upload MCP assistant module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-mcp-sam-assistant-module
+          path: dist/source-modules/offer-generator-mcp-sam-assistant.zip
+          retention-days: 30
+
+      - name: Upload prices module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-prices-module
+          path: dist/source-modules/offer-generator-prices.zip
+          retention-days: 30
+
+      - name: Upload GitHub build module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-github-build-module
+          path: dist/source-modules/offer-generator-github-build.zip
+          retention-days: 30
+
+      - name: Upload all source modules artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-source-modules-all
+          path: dist/source-modules/offer-generator-source-modules.zip
+          retention-days: 30
+
+      - name: Publish GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/SAM-Offer-Generator-windows-portable.zip
+            dist/source-modules/*.zip
+            dist/source-modules/MODULES_INDEX.md
+            dist/source-modules/SHA256SUMS.txt

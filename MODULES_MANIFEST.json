@@ -1,0 +1,105 @@
+{
+  "project": "SAM Offer Generator",
+  "layout_version": 1,
+  "description": "Source modules and release assets for modular GitHub downloads.",
+  "modules": [
+    {
+      "id": "entrypoint",
+      "title": "Entry point and project docs",
+      "description": "Application entry point, dependency list, README files and base project metadata.",
+      "depends_on": [],
+      "paths": [
+        "app.py",
+        "requirements.txt",
+        "README.md",
+        "PROJECT_ANALYSIS.md",
+        "CHATGPT_CONTEXT.md",
+        "FILE_NOTES.md",
+        "config.example.json",
+        ".gitignore"
+      ]
+    },
+    {
+      "id": "core",
+      "title": "Core engine",
+      "description": "Shared business logic: Excel reading, DOCX rendering, project scanning, runtime paths and STULZ specification parsing.",
+      "depends_on": [
+        "entrypoint"
+      ],
+      "paths": [
+        "core"
+      ]
+    },
+    {
+      "id": "brands",
+      "title": "Brand modules",
+      "description": "Brand-specific offer generation modules: Stulz, Riello, DC Eltek and Generator.",
+      "depends_on": [
+        "core",
+        "config"
+      ],
+      "paths": [
+        "brands"
+      ]
+    },
+    {
+      "id": "gui",
+      "title": "Desktop GUI",
+      "description": "PySide6 windows, dialogs, pages and GUI helpers.",
+      "depends_on": [
+        "core",
+        "brands",
+        "config"
+      ],
+      "paths": [
+        "gui"
+      ]
+    },
+    {
+      "id": "config",
+      "title": "Editable configuration",
+      "description": "JSON settings and reference tables used by the GUI and STULZ parsers.",
+      "depends_on": [],
+      "paths": [
+        "config",
+        "config.example.json"
+      ]
+    },
+    {
+      "id": "mcp-sam-assistant",
+      "title": "MCP assistant",
+      "description": "Optional local assistant server for SAM Offer Generator project operations.",
+      "depends_on": [
+        "core"
+      ],
+      "paths": [
+        "mcp/sam_assistant"
+      ]
+    },
+    {
+      "id": "prices",
+      "title": "Reference price files",
+      "description": "PDF and other reference price/material files stored in the prices folder.",
+      "depends_on": [],
+      "paths": [
+        "prices"
+      ]
+    },
+    {
+      "id": "github-build",
+      "title": "GitHub build and release automation",
+      "description": "GitHub Actions workflow, PyInstaller spec and helper scripts for modular releases.",
+      "depends_on": [
+        "entrypoint"
+      ],
+      "paths": [
+        ".github",
+        "sam_offer_generator.spec",
+        "MODULES_MANIFEST.json",
+        "GITHUB_RELEASES.md",
+        "tools",
+        "scripts"
+      ]
+    }
+  ]
+}
