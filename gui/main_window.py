@@ -227,6 +227,71 @@ def run_gui() -> None:
             if dialog.exec() == QDialog.Accepted:
                 dialog.apply_to_owner()
 
+        def _check_updates(self) -> None:
+            try:
+                from core.update_client import (
+                    UpdateError,
+                    check_app_update,
+                    download_asset,
+                    start_updater,
+                )
+
+                has_update, current, release = check_app_update()
+                latest = release.tag_name.lstrip("vV") or "неизвестно"
+
+                if not has_update:
+                    QMessageBox.information(
+                        self,
+                        "Обновления",
+                        f"Установлена актуальная версия: {current}",
+                    )
+                    return
+
+                if release.app_asset is None:
+                    QMessageBox.warning(
+                        self,
+                        "Обновления",
+                        "Новая версия найдена, но в GitHub Release нет App-модуля "
+                        "SAM-Offer-Generator-App-No-Runtime.zip",
+                    )
+                    return
+
+                size_mb = release.app_asset.size / 1024 / 1024 if release.app_asset.size else 0
+                question = (
+                    f"Доступна новая версия: {latest}\n"
+                    f"Текущая версия: {current}\n\n"
+                    f"Будет скачан App-модуль без runtime: {size_mb:.1f} MB.\n"
+                    "Папка _internal не будет обновляться.\n\n"
+                    "После скачивания программа закроется, updater заменит файлы "
+                    "и запустит программу снова. Продолжить?"
+                )
+                answer = QMessageBox.question(
+                    self,
+                    "Обновление программы",
+                    question,
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+
+                self.status_label.setText("Скачиваю обновление...")
+                QApplication.processEvents()
+                package_path = download_asset(release.app_asset)
+
+                QMessageBox.information(
+                    self,
+                    "Обновление",
+                    "Обновление скачано. Сейчас программа закроется, updater применит обновление "
+                    "и запустит программу снова.",
+                )
+                start_updater(package_path, restart=True)
+                QApplication.instance().quit()
+            except UpdateError as exc:
+                QMessageBox.warning(self, "Обновления", str(exc))
+            except Exception as exc:
+                QMessageBox.critical(self, "Обновления", f"Ошибка обновления: {exc}")
+
         def _saved(self, key: str, default: str) -> str:
             value = self.settings.value(key, default)
             return str(value) if value is not None else default
@@ -301,11 +366,17 @@ def run_gui() -> None:
             self.settings_btn.clicked.connect(self._open_settings_dialog)
             self._responsive_widgets.append(self.settings_btn)
 
+            self.update_btn = QPushButton("Обновления")
+            self.update_btn.setObjectName("Badge")
+            self.update_btn.clicked.connect(self._check_updates)
+            self._responsive_widgets.append(self.update_btn)
+
             side.addWidget(brand)
             side.addWidget(title)
             side.addWidget(subtitle)
             side.addSpacing(6)
             side.addWidget(self.settings_btn)
+            side.addWidget(self.update_btn)
             side.addSpacing(6)
             signer_title = QLabel("Подписант")
             signer_title.setObjectName("SidebarSectionTitle")

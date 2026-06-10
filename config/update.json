@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "github_owner": "OWNER",
+  "github_repo": "REPO",
+  "current_version": "0.0.0",
+  "app_asset_name": "SAM-Offer-Generator-App-No-Runtime.zip",
+  "runtime_asset_name": "SAM-Offer-Generator-Runtime-Win64.zip"
+}

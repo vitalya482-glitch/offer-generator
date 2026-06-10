@@ -33,7 +33,7 @@ jobs:
 
       - name: Check Python syntax
         run: |
-          python -m compileall app.py brands core gui config tools
+          python -m compileall app.py updater.py brands core gui config tools
 
       - name: Build one-dir Windows app
         run: |

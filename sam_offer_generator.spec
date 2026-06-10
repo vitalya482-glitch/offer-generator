@@ -32,6 +32,7 @@ hiddenimports = [
     'core.runtime_paths',
     'core.stulz_reference',
     'core.stulz_specification',
+    'core.update_client',
     'core.utils',
     'core.pdf_parsers',
     'core.pdf_parsers.stulz_calc_pdf',
@@ -56,6 +57,7 @@ datas = [
 ]
 datas += collect_data_files('openpyxl')
 
+# Main GUI/CLI application.
 a = Analysis(
     ['app.py'],
     pathex=[],
@@ -79,8 +81,6 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# One-dir build: the EXE stays small and dependencies/data are collected into
-# dist/SAM-Offer-Generator/ instead of being embedded into one monolithic file.
 exe = EXE(
     pyz,
     a.scripts,
@@ -94,11 +94,46 @@ exe = EXE(
     console=False,
 )
 
+# Small updater process. It is collected into the same one-dir folder.
+# It does not request administrator rights and only updates files inside the
+# current portable application directory.
+updater_a = Analysis(
+    ['updater.py'],
+    pathex=[],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=['PySide6', 'tkinter', 'matplotlib', 'pandas'],
+    noarchive=False,
+)
+
+updater_pyz = PYZ(updater_a.pure)
+
+updater_exe = EXE(
+    updater_pyz,
+    updater_a.scripts,
+    [],
+    exclude_binaries=True,
+    name='updater',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+)
+
 coll = COLLECT(
     exe,
+    updater_exe,
     a.binaries,
+    updater_a.binaries,
     a.zipfiles,
+    updater_a.zipfiles,
     a.datas,
+    updater_a.datas,
     strip=False,
     upx=True,
     upx_exclude=[],
