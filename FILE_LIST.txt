@@ -1,4 +1,3 @@
-gui/main_window.py
-gui/path_helpers.py
-INSTALL_AUTOOUTPUT_PATCH.md
+.github/workflows/main.yml
+INSTALL_RELEASE_CLEANUP_PATCH.md
 FILE_LIST.txt

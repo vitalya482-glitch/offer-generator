@@ -58,6 +58,27 @@ jobs:
           Write-Host "Release tag: $tag"
           Write-Host "Release title: $title"
 
+
+      - name: Write updater version into config/update.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $updatePath = "config/update.json"
+          if (!(Test-Path $updatePath)) {
+            throw "config/update.json was not found: $updatePath"
+          }
+
+          $json = Get-Content $updatePath -Raw | ConvertFrom-Json
+          $json | Add-Member -NotePropertyName "github_owner" -NotePropertyValue "${{ github.repository_owner }}" -Force
+          $json | Add-Member -NotePropertyName "github_repo" -NotePropertyValue "${{ github.event.repository.name }}" -Force
+          $json | Add-Member -NotePropertyName "current_version" -NotePropertyValue $env:RELEASE_TAG -Force
+          $json | Add-Member -NotePropertyName "app_asset_name" -NotePropertyValue "SAM-Offer-Generator-App-No-Runtime.zip" -Force
+          $json | Add-Member -NotePropertyName "runtime_asset_name" -NotePropertyValue "SAM-Offer-Generator-Runtime-Win64.zip" -Force
+          $json | ConvertTo-Json -Depth 20 | Set-Content $updatePath -Encoding UTF8
+
+          Write-Host "Updated config/update.json for this build:"
+          Get-Content $updatePath
+
       - name: Build one-dir Windows app
         run: |
           pyinstaller sam_offer_generator.spec --clean --noconfirm
@@ -290,3 +311,46 @@ jobs:
           } else {
             gh release create $tag @files --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "$title" --notes "$notes"
           }
+
+
+      - name: Cleanup old GitHub Releases and tags
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repo = "${{ github.repository }}"
+          $keep = 3
+          $currentTag = $env:RELEASE_TAG
+
+          Write-Host "Keeping last $keep releases in $repo. Current release: $currentTag"
+
+          $releaseJson = gh release list --repo $repo --limit 100 --json tagName,createdAt,isDraft,isPrerelease
+          $releases = $releaseJson | ConvertFrom-Json
+
+          if ($null -eq $releases -or $releases.Count -le $keep) {
+            Write-Host "Nothing to clean. Release count: $($releases.Count)"
+            exit 0
+          }
+
+          $sorted = $releases | Sort-Object { [datetime]$_.createdAt } -Descending
+          $toDelete = $sorted | Select-Object -Skip $keep
+
+          foreach ($release in $toDelete) {
+            $tagName = $release.tagName
+
+            if ([string]::IsNullOrWhiteSpace($tagName)) {
+              Write-Host "Skip release without tagName."
+              continue
+            }
+
+            if ($tagName -eq $currentTag) {
+              Write-Host "Skip current release: $tagName"
+              continue
+            }
+
+            Write-Host "Deleting old release and tag: $tagName"
+            gh release delete $tagName --repo $repo --yes --cleanup-tag
+          }
+
+          Write-Host "Release cleanup completed."
