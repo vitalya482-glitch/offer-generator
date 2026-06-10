@@ -762,10 +762,12 @@ def run_gui() -> None:
                 self.project_dir_path = path
                 self._set_line_path(self.project_edit, path, is_file=False)
 
-                # Папка спецификаций зависит от проекта, но пользователь может
-                # указать ее вручную. Автообновляем только пустой путь или путь
-                # внутри старой папки проекта.
-                if not old_spec or (old_project and old_spec.startswith(old_project)):
+                # Папка спецификаций зависит от выбранного проекта.
+                # При смене проекта сбрасываем старый путь всегда: дальше
+                # _scan_project() автоматически найдет *Suppliers* и папку
+                # с WinPlan/Calc PDF. Ручной выбор сохраняется до следующей
+                # смены папки проекта.
+                if path != old_project:
                     self.spec_dir_path = ""
                     self._set_line_path(self.spec_edit, "", is_file=False)
 
@@ -868,7 +870,11 @@ def run_gui() -> None:
                 self.spec_dir_path = guessed_spec_dir
                 self._set_line_path(self.spec_edit, guessed_spec_dir, is_file=False)
 
-            self.status_label.setText(f"Найдено Excel: {len(found['excel'])}, Word: {len(found['word'])}, папок PDF: {len(found['pdf_dirs'])}")
+            spec_hint = self._display_dir(self.spec_dir_path) if self.spec_dir_path else "не выбрана"
+            self.status_label.setText(
+                f"Найдено Excel: {len(found['excel'])}, Word: {len(found['word'])}, "
+                f"папок PDF: {len(found['pdf_dirs'])}. Спецификации: {spec_hint}"
+            )
             self._load_sheets()
             self._refresh_preview()
 
