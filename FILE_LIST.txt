@@ -1,4 +1,3 @@
-core/update_client.py
-updater.py
-INSTALL_UPDATER_DIAGNOSTICS_PATCH.md
+.github/workflows/main.yml
+INSTALL_AUTO_RELEASE_PATCH.md
 FILE_LIST.txt

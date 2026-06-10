@@ -35,6 +35,29 @@ jobs:
         run: |
           python -m compileall app.py updater.py brands core gui config tools
 
+      - name: Prepare release variables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+            $title = "SAM Offer Generator $tag"
+            $notes = "Automatic GitHub Release from tag $tag."
+          } else {
+            $date = Get-Date -Format "yyyy.MM.dd"
+            $tag = "v$date.${{ github.run_number }}"
+            $title = "SAM Offer Generator $tag"
+            $notes = "Automatic GitHub Release from main branch. Commit: ${{ github.sha }}"
+          }
+
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_TITLE=$title" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_NOTES=$notes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "Release tag: $tag"
+          Write-Host "Release title: $title"
+
       - name: Build one-dir Windows app
         run: |
           pyinstaller sam_offer_generator.spec --clean --noconfirm
@@ -42,6 +65,27 @@ jobs:
       - name: Add editable files and source module copies to portable folder
         run: |
           python tools/prepare_portable_release.py --dist dist/SAM-Offer-Generator
+
+      - name: Write release metadata for updater
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseInfoPath = "dist/SAM-Offer-Generator/release_info.json"
+          if (!(Test-Path $releaseInfoPath)) {
+            throw "release_info.json was not found: $releaseInfoPath"
+          }
+
+          $json = Get-Content $releaseInfoPath -Raw | ConvertFrom-Json
+          $json | Add-Member -NotePropertyName "app_version" -NotePropertyValue $env:RELEASE_TAG -Force
+          $json | Add-Member -NotePropertyName "version" -NotePropertyValue $env:RELEASE_TAG -Force
+          $json | Add-Member -NotePropertyName "tag_name" -NotePropertyValue $env:RELEASE_TAG -Force
+          $json | Add-Member -NotePropertyName "github_owner" -NotePropertyValue "${{ github.repository_owner }}" -Force
+          $json | Add-Member -NotePropertyName "github_repo" -NotePropertyValue "${{ github.event.repository.name }}" -Force
+          $json | Add-Member -NotePropertyName "github_repository" -NotePropertyValue "${{ github.repository }}" -Force
+          $json | ConvertTo-Json -Depth 10 | Set-Content $releaseInfoPath -Encoding UTF8
+
+          Write-Host "Updated release_info.json:"
+          Get-Content $releaseInfoPath
 
       - name: Build modular source ZIPs
         run: |
@@ -91,6 +135,27 @@ jobs:
 
           Get-ChildItem $moduleRoot -Filter "*.zip" | Select-Object FullName, Length
 
+      - name: Write release checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = @(
+            "dist/SAM-Offer-Generator-windows-portable.zip",
+            "dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip",
+            "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip"
+          )
+          if (Test-Path "dist/source-modules") {
+            $files += Get-ChildItem "dist/source-modules" -File | ForEach-Object { $_.FullName }
+          }
+          $lines = foreach ($file in $files) {
+            if (Test-Path $file) {
+              $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $(Split-Path $file -Leaf)"
+            }
+          }
+          $lines | Set-Content "dist/RELEASE_SHA256SUMS.txt" -Encoding UTF8
+          Get-Content "dist/RELEASE_SHA256SUMS.txt"
+
       - name: Show release files
         shell: pwsh
         run: |
@@ -131,6 +196,7 @@ jobs:
           path: |
             dist/source-modules/MODULES_INDEX.md
             dist/source-modules/SHA256SUMS.txt
+            dist/RELEASE_SHA256SUMS.txt
           retention-days: 30
 
       - name: Upload entrypoint module artifact
@@ -196,14 +262,31 @@ jobs:
           path: dist/source-modules/offer-generator-source-modules.zip
           retention-days: 30
 
-      - name: Publish GitHub Release for version tags
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/SAM-Offer-Generator-windows-portable.zip
-            dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip
-            dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip
-            dist/source-modules/*.zip
-            dist/source-modules/MODULES_INDEX.md
-            dist/source-modules/SHA256SUMS.txt
+      - name: Publish or update GitHub Release automatically
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = $env:RELEASE_TAG
+          $title = $env:RELEASE_TITLE
+          $notes = $env:RELEASE_NOTES
+
+          $files = @(
+            "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip",
+            "dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip",
+            "dist/SAM-Offer-Generator-windows-portable.zip",
+            "dist/RELEASE_SHA256SUMS.txt"
+          )
+
+          if (Test-Path "dist/source-modules") {
+            $files += Get-ChildItem "dist/source-modules" -File | ForEach-Object { $_.FullName }
+          }
+
+          Write-Host "Publishing release $tag"
+          if (gh release view $tag --repo "${{ github.repository }}" *> $null) {
+            Write-Host "Release already exists. Uploading assets with --clobber."
+            gh release upload $tag @files --repo "${{ github.repository }}" --clobber
+          } else {
+            gh release create $tag @files --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "$title" --notes "$notes"
+          }
