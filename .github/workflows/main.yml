@@ -55,6 +55,42 @@ jobs:
           }
           Compress-Archive -Path "dist/SAM-Offer-Generator/*" -DestinationPath "dist/SAM-Offer-Generator-windows-portable.zip" -Force
 
+      - name: Build distribution runtime and app modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = "dist/SAM-Offer-Generator"
+          $moduleRoot = "dist/distribution-modules"
+          $runtimeStage = Join-Path $moduleRoot "runtime"
+          $appStage = Join-Path $moduleRoot "app"
+          $runtimeZip = Join-Path $moduleRoot "SAM-Offer-Generator-Runtime-Win64.zip"
+          $appZip = Join-Path $moduleRoot "SAM-Offer-Generator-App-No-Runtime.zip"
+
+          if (!(Test-Path (Join-Path $dist "_internal"))) {
+            throw "Runtime folder was not found: $dist/_internal"
+          }
+
+          if (Test-Path $moduleRoot) {
+            Remove-Item $moduleRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $runtimeStage -Force | Out-Null
+          New-Item -ItemType Directory -Path $appStage -Force | Out-Null
+
+          $runtimeTarget = Join-Path $runtimeStage "SAM-Offer-Generator"
+          New-Item -ItemType Directory -Path $runtimeTarget -Force | Out-Null
+          Copy-Item -Path (Join-Path $dist "_internal") -Destination (Join-Path $runtimeTarget "_internal") -Recurse -Force
+
+          $appTarget = Join-Path $appStage "SAM-Offer-Generator"
+          New-Item -ItemType Directory -Path $appTarget -Force | Out-Null
+          Get-ChildItem -Path $dist | Where-Object { $_.Name -ne "_internal" } | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $appTarget $_.Name) -Recurse -Force
+          }
+
+          Compress-Archive -Path $runtimeTarget -DestinationPath $runtimeZip -Force
+          Compress-Archive -Path $appTarget -DestinationPath $appZip -Force
+
+          Get-ChildItem $moduleRoot -Filter "*.zip" | Select-Object FullName, Length
+
       - name: Show release files
         shell: pwsh
         run: |
@@ -72,6 +108,20 @@ jobs:
         with:
           name: SAM-Offer-Generator-windows-portable-zip
           path: dist/SAM-Offer-Generator-windows-portable.zip
+          retention-days: 30
+
+      - name: Upload runtime Win64 module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAM-Offer-Generator-runtime-win64-module
+          path: dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip
+          retention-days: 30
+
+      - name: Upload app without runtime module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAM-Offer-Generator-app-no-runtime-module
+          path: dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip
           retention-days: 30
 
       - name: Upload module index artifact
@@ -152,6 +202,8 @@ jobs:
         with:
           files: |
             dist/SAM-Offer-Generator-windows-portable.zip
+            dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip
+            dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip
             dist/source-modules/*.zip
             dist/source-modules/MODULES_INDEX.md
             dist/source-modules/SHA256SUMS.txt
