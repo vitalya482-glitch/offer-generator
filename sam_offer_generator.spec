@@ -54,6 +54,7 @@ hiddenimports += collect_submodules('num2words')
 datas = [
     ('config.example.json', '.'),
     ('config', 'config'),
+    ('assets', 'assets'),
 ]
 datas += collect_data_files('openpyxl')
 
@@ -92,6 +93,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon='assets/app_icon.ico',
 )
 
 # Small updater process. It is collected into the same one-dir folder.

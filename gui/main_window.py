@@ -27,6 +27,7 @@ from core.excel_reader import list_sheets
 from core.models import OfferContext
 from core.manager_profile import ManagerProfile, find_manager_in_project
 from core.project_scanner import clear_scan_cache, scan_project_files
+from core.runtime_paths import app_icon_path
 from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir, infer_output_dir, infer_specifications_dir
 from gui.ui_style import stylesheet, ui_scale
 
@@ -79,7 +80,7 @@ def run_gui() -> None:
             self.settings = QSettings("SAM Group", "SAM Offer Generator")
             self.setWindowTitle("SAM Offer Generator")
             self.setMinimumSize(900, 620)
-            self.setWindowIcon(QIcon())
+            self.setWindowIcon(QIcon(str(app_icon_path())))
 
             self._updating_path_display = False
             self.project_dir_path = self._saved("project_dir", "")

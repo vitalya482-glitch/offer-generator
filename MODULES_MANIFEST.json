@@ -52,6 +52,7 @@
         "config"
       ],
       "paths": [
+        "assets",
         "gui"
       ]
     },

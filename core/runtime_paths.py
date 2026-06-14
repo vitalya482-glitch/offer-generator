@@ -71,4 +71,12 @@ def ensure_editable_config(filenames: Iterable[str]) -> Path:
 
 def resource_path(relative_path: str | Path) -> Path:
     """Resolve a bundled resource path in both source and frozen modes."""
-    return bundled_root() / Path(relative_path)
+    relative = Path(relative_path)
+    external = app_root() / relative
+    if external.exists():
+        return external
+    return bundled_root() / relative
+
+
+def app_icon_path() -> Path:
+    return resource_path(Path("assets") / "app_icon.ico")

@@ -17,8 +17,8 @@ COPY_TO_ROOT = [
     "config.example.json",
     "requirements.txt",
 ]
-SOURCE_MODULE_DIRS = ["brands", "core", "gui", "config"]
-OPTIONAL_ROOT_DIRS = ["prices"]
+SOURCE_MODULE_DIRS = ["assets", "brands", "core", "gui", "config"]
+OPTIONAL_ROOT_DIRS = ["assets", "prices"]
 EXCLUDED_DIR_NAMES = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
