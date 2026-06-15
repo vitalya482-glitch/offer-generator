@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
 import shutil
 import socket
 import ssl
@@ -17,7 +18,9 @@ from typing import Any
 
 APP_MODULE_ASSET = "SAM-Offer-Generator-App-No-Runtime.zip"
 RUNTIME_MODULE_ASSET = "SAM-Offer-Generator-Runtime-Win64.zip"
+CHECKSUMS_ASSET = "RELEASE_SHA256SUMS.txt"
 CONFIG_RELATIVE_PATH = Path("config") / "update.json"
+UPDATE_STATE_RELATIVE_PATH = Path("config") / "update_state.json"
 
 
 class UpdateError(RuntimeError):
@@ -42,6 +45,28 @@ class ReleaseInfo:
     html_url: str
     app_asset: ReleaseAsset | None
     runtime_asset: ReleaseAsset | None
+    checksums: dict[str, str]
+
+
+@dataclass(frozen=True)
+class UpdatePackage:
+    kind: str
+    asset: ReleaseAsset
+    sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class UpdatePlan:
+    has_update: bool
+    current_version: str
+    latest_version: str
+    release: ReleaseInfo
+    packages: list[UpdatePackage]
+    runtime_required: bool
+
+    @property
+    def total_size(self) -> int:
+        return sum(package.asset.size for package in self.packages)
 
 
 def app_dir() -> Path:
@@ -64,6 +89,21 @@ def current_version() -> str:
             pass
     cfg = load_update_config()
     return normalize_version(str(cfg.get("current_version", "0.0.0")))
+
+
+def update_state_path() -> Path:
+    return app_dir() / UPDATE_STATE_RELATIVE_PATH
+
+
+def load_update_state() -> dict[str, Any]:
+    path = update_state_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def load_update_config() -> dict[str, Any]:
@@ -207,6 +247,8 @@ def fetch_latest_release() -> ReleaseInfo:
     runtime_asset_name = str(cfg.get("runtime_asset_name", RUNTIME_MODULE_ASSET)).strip()
     app_asset = _find_asset(assets, app_asset_name)
     runtime_asset = _find_asset(assets, runtime_asset_name)
+    checksum_asset = _find_asset(assets, CHECKSUMS_ASSET, forgiving=False)
+    checksums = fetch_release_checksums(checksum_asset) if checksum_asset else {}
 
     if app_asset is None:
         available = _format_available_assets(assets)
@@ -230,6 +272,7 @@ def fetch_latest_release() -> ReleaseInfo:
         html_url=str(data.get("html_url", "")),
         app_asset=app_asset,
         runtime_asset=runtime_asset,
+        checksums=checksums,
     )
 
 
@@ -429,8 +472,8 @@ def _candidate_asset_names(name: str) -> list[str]:
     return list(dict.fromkeys(c for c in candidates if c))
 
 
-def _find_asset(assets: list[Any], name: str) -> ReleaseAsset | None:
-    candidates = _candidate_asset_names(name)
+def _find_asset(assets: list[Any], name: str, *, forgiving: bool = True) -> ReleaseAsset | None:
+    candidates = _candidate_asset_names(name) if forgiving else [name.strip()]
     lower_candidates = {c.lower() for c in candidates}
 
     for item in assets:
@@ -453,6 +496,118 @@ def _find_asset(assets: list[Any], name: str) -> ReleaseAsset | None:
                 size=int(item.get("size") or 0),
             )
     return None
+
+
+def _read_text_url(url: str, *, context: str) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "SAM-Offer-Generator-Updater"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        raise UpdateError(
+            _format_http_error(exc, url=url, context=context, owner="", repo=""),
+            code=f"{context.upper()}_HTTP_{exc.code}",
+        ) from exc
+    except Exception as exc:
+        raise UpdateError(
+            "Не удалось скачать служебный файл обновления.\n\n"
+            f"URL:\n{url}\n\n"
+            f"Техническая ошибка:\n{type(exc).__name__}: {exc}",
+            code=f"{context.upper()}_DOWNLOAD_FAILED",
+        ) from exc
+
+
+def parse_sha256sums(text: str) -> dict[str, str]:
+    checksums: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts[0].lower(), parts[1].strip().lstrip("*")
+        if re.fullmatch(r"[0-9a-f]{64}", digest) and name:
+            checksums[Path(name).name] = digest
+    return checksums
+
+
+def fetch_release_checksums(asset: ReleaseAsset) -> dict[str, str]:
+    return parse_sha256sums(_read_text_url(asset.download_url, context="checksums"))
+
+
+def asset_sha256(release: ReleaseInfo, asset: ReleaseAsset | None) -> str | None:
+    if asset is None:
+        return None
+    return release.checksums.get(asset.name) or release.checksums.get(Path(asset.name).name)
+
+
+def installed_asset_sha256(asset_name: str) -> str | None:
+    state = load_update_state()
+    assets = state.get("assets")
+    if not isinstance(assets, dict):
+        return None
+    item = assets.get(asset_name)
+    if not isinstance(item, dict):
+        return None
+    value = item.get("sha256")
+    return str(value).lower() if value else None
+
+
+def build_update_plan() -> UpdatePlan:
+    release = fetch_latest_release()
+    current = current_version()
+    latest = normalize_version(release.tag_name)
+    packages: list[UpdatePackage] = []
+
+    app_needed = is_newer(latest, current)
+    runtime_required = False
+
+    if app_needed and release.app_asset is not None:
+        packages.append(UpdatePackage("app", release.app_asset, asset_sha256(release, release.app_asset)))
+
+    if release.runtime_asset is not None:
+        latest_runtime_sha = asset_sha256(release, release.runtime_asset)
+        installed_runtime_sha = installed_asset_sha256(release.runtime_asset.name)
+        runtime_required = bool(latest_runtime_sha and installed_runtime_sha != latest_runtime_sha)
+        if runtime_required:
+            packages.insert(0, UpdatePackage("runtime", release.runtime_asset, latest_runtime_sha))
+
+    return UpdatePlan(
+        has_update=bool(packages),
+        current_version=current,
+        latest_version=latest,
+        release=release,
+        packages=packages,
+        runtime_required=runtime_required,
+    )
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download_update_packages(plan: UpdatePlan) -> list[tuple[UpdatePackage, Path]]:
+    downloaded: list[tuple[UpdatePackage, Path]] = []
+    for package in plan.packages:
+        path = download_asset(package.asset)
+        if package.sha256:
+            actual = file_sha256(path)
+            if actual.lower() != package.sha256.lower():
+                path.unlink(missing_ok=True)
+                raise UpdateError(
+                    "Скачанный файл обновления не совпадает с RELEASE_SHA256SUMS.txt.\n\n"
+                    f"Файл:\n{package.asset.name}\n\n"
+                    f"Ожидали:\n{package.sha256}\n"
+                    f"Получили:\n{actual}",
+                    code="DOWNLOAD_CHECKSUM_MISMATCH",
+                )
+        downloaded.append((package, path))
+    return downloaded
 
 
 def download_asset(asset: ReleaseAsset, target_dir: Path | None = None) -> Path:
@@ -549,17 +704,21 @@ def updater_exe_path() -> Path:
     )
 
 
-def start_updater(package_path: Path, restart: bool = True) -> None:
+def start_updater(
+    package_path: Path | None = None,
+    *,
+    packages: list[tuple[UpdatePackage, Path]] | None = None,
+    restart: bool = True,
+) -> None:
     root = app_dir()
     updater = updater_exe_path()
     app_exe = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else root / "app.py"
 
-    if not package_path.exists():
-        raise UpdateError(
-            "Файл обновления не найден перед запуском updater.\n\n"
-            f"Путь:\n{package_path}",
-            code="PACKAGE_NOT_FOUND_BEFORE_APPLY",
-        )
+    package_items = packages or []
+    if not package_items and package_path is not None:
+        package_items = [(UpdatePackage("app", ReleaseAsset(package_path.name, "", 0)), package_path)]
+    if not package_items:
+        raise UpdateError("Нет файлов обновления для применения.", code="NO_UPDATE_PACKAGES")
 
     if updater.suffix.lower() == ".py":
         cmd = [sys.executable, str(updater)]
@@ -567,13 +726,32 @@ def start_updater(package_path: Path, restart: bool = True) -> None:
         cmd = [str(updater)]
 
     cmd += [
-        "--package",
-        str(package_path),
         "--app-dir",
         str(root),
         "--pid",
         str(os.getpid()),
     ]
+    asset_states: list[dict[str, str]] = []
+    for package, path in package_items:
+        if not path.exists():
+            raise UpdateError(
+                "Файл обновления не найден перед запуском updater.\n\n"
+                f"Путь:\n{path}",
+                code="PACKAGE_NOT_FOUND_BEFORE_APPLY",
+            )
+        cmd += ["--package", str(path)]
+        asset_states.append({
+            "kind": package.kind,
+            "name": package.asset.name,
+            "sha256": package.sha256 or file_sha256(path),
+        })
+    state_file = root / "updates" / "update_plan.json"
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({"assets": asset_states}, ensure_ascii=False, indent=2), encoding="utf-8")
+        cmd += ["--state-file", str(state_file)]
+    except Exception:
+        pass
     if restart:
         cmd += ["--restart", str(app_exe)]
 
@@ -599,7 +777,5 @@ def start_updater(package_path: Path, restart: bool = True) -> None:
 
 
 def check_app_update() -> tuple[bool, str, ReleaseInfo]:
-    release = fetch_latest_release()
-    current = current_version()
-    latest = normalize_version(release.tag_name)
-    return is_newer(latest, current), current, release
+    plan = build_update_plan()
+    return plan.has_update, plan.current_version, plan.release

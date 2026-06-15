@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import os
 import shutil
 import subprocess
@@ -164,21 +165,74 @@ def apply_update(package: Path, app_dir: Path) -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def write_update_state(app_dir: Path, asset_states: list[dict]) -> None:
+    if not asset_states:
+        return
+    config_dir = app_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    path = config_dir / "update_state.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    assets = data.get("assets")
+    if not isinstance(assets, dict):
+        assets = {}
+    for item in asset_states:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        assets[name] = {
+            "kind": str(item.get("kind") or ""),
+            "sha256": str(item.get("sha256") or "").lower(),
+            "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+    data["assets"] = assets
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def read_asset_states(raw_states: list[str], state_file: str) -> list[dict]:
+    asset_states: list[dict] = []
+    if state_file:
+        try:
+            data = json.loads(Path(state_file).read_text(encoding="utf-8"))
+            items = data.get("assets") if isinstance(data, dict) else None
+            if isinstance(items, list):
+                asset_states.extend(item for item in items if isinstance(item, dict))
+        except Exception:
+            pass
+    for raw_state in raw_states:
+        try:
+            item = json.loads(raw_state)
+            if isinstance(item, dict):
+                asset_states.append(item)
+        except Exception:
+            pass
+    return asset_states
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SAM Offer Generator updater")
-    parser.add_argument("--package", required=True, help="ZIP package to apply")
+    parser.add_argument("--package", action="append", required=True, help="ZIP package to apply")
+    parser.add_argument("--asset-state", action="append", default=[], help="Installed asset metadata as JSON")
+    parser.add_argument("--state-file", default="", help="Installed asset metadata JSON file")
     parser.add_argument("--app-dir", required=True, help="Application folder")
     parser.add_argument("--pid", type=int, default=0, help="PID of running main app")
     parser.add_argument("--restart", default="", help="Path to executable to start after update")
     args = parser.parse_args(argv)
 
-    package = Path(args.package).resolve()
+    packages = [Path(item).resolve() for item in args.package]
     app_dir = Path(args.app_dir).resolve()
+    asset_states = read_asset_states(args.asset_state, args.state_file)
 
     try:
         wait_for_process(args.pid)
         time.sleep(0.7)
-        apply_update(package, app_dir)
+        for package in packages:
+            apply_update(package, app_dir)
+        write_update_state(app_dir, asset_states)
 
         if args.restart:
             restart = Path(args.restart)
@@ -196,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         message = (
             "Не удалось применить обновление.\n\n"
             f"Причина:\n{type(exc).__name__}: {exc}\n\n"
-            f"Архив обновления:\n{package}\n\n"
+            f"Архивы обновления:\n" + "\n".join(str(p) for p in packages) + "\n\n"
             f"Папка приложения:\n{app_dir}\n\n"
             "Подробности записаны в updates/update_error.log"
         )

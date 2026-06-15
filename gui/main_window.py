@@ -80,7 +80,9 @@ def run_gui() -> None:
             self.settings = QSettings("SAM Group", "SAM Offer Generator")
             self.setWindowTitle("SAM Offer Generator")
             self.setMinimumSize(900, 620)
-            self.setWindowIcon(QIcon(str(app_icon_path())))
+            icon_path = app_icon_path()
+            if icon_path.exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
 
             self._updating_path_display = False
             self.project_dir_path = self._saved("project_dir", "")
@@ -232,15 +234,17 @@ def run_gui() -> None:
             try:
                 from core.update_client import (
                     UpdateError,
-                    check_app_update,
-                    download_asset,
+                    build_update_plan,
+                    download_update_packages,
                     start_updater,
                 )
 
-                has_update, current, release = check_app_update()
-                latest = release.tag_name.lstrip("vV") or "неизвестно"
+                plan = build_update_plan()
+                release = plan.release
+                current = plan.current_version
+                latest = plan.latest_version or "неизвестно"
 
-                if not has_update:
+                if not plan.has_update:
                     QMessageBox.information(
                         self,
                         "Обновления",
@@ -257,12 +261,22 @@ def run_gui() -> None:
                     )
                     return
 
-                size_mb = release.app_asset.size / 1024 / 1024 if release.app_asset.size else 0
+                size_mb = plan.total_size / 1024 / 1024 if plan.total_size else 0
+                module_lines = "\n".join(
+                    f"- {package.asset.name}: {package.asset.size / 1024 / 1024:.1f} MB"
+                    for package in plan.packages
+                )
+                runtime_note = (
+                    "Runtime-модуль тоже будет обновлен, потому что его SHA256 отличается.\n\n"
+                    if plan.runtime_required
+                    else ""
+                )
                 question = (
                     f"Доступна новая версия: {latest}\n"
                     f"Текущая версия: {current}\n\n"
-                    f"Будет скачан App-модуль без runtime: {size_mb:.1f} MB.\n"
-                    "Папка _internal не будет обновляться.\n\n"
+                    f"Будет скачано: {size_mb:.1f} MB.\n"
+                    f"{module_lines}\n\n"
+                    f"{runtime_note}"
                     "После скачивания программа закроется, updater заменит файлы "
                     "и запустит программу снова. Продолжить?"
                 )
@@ -278,7 +292,7 @@ def run_gui() -> None:
 
                 self.status_label.setText("Скачиваю обновление...")
                 QApplication.processEvents()
-                package_path = download_asset(release.app_asset)
+                packages = download_update_packages(plan)
 
                 QMessageBox.information(
                     self,
@@ -286,7 +300,7 @@ def run_gui() -> None:
                     "Обновление скачано. Сейчас программа закроется, updater применит обновление "
                     "и запустит программу снова.",
                 )
-                start_updater(package_path, restart=True)
+                start_updater(packages=packages, restart=True)
                 QApplication.instance().quit()
             except UpdateError as exc:
                 QMessageBox.warning(self, "Обновления", str(exc))
