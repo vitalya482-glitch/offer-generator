@@ -583,10 +583,17 @@ def run_gui() -> None:
                 return
             index = self._tab_index_for_brand(brand)
             if self.brand_tabs.currentIndex() == index:
+                self._update_generate_button_text(brand)
                 return
             self.brand_tabs.blockSignals(True)
             self.brand_tabs.setCurrentIndex(index)
             self.brand_tabs.blockSignals(False)
+            self._update_generate_button_text(brand)
+
+        def _update_generate_button_text(self, brand: str | None = None) -> None:
+            brand = brand or self.brand_combo.currentText()
+            if hasattr(self, "generate_btn"):
+                self.generate_btn.setText("Сформировать Excel" if brand == "Riello" else "Сформировать КП")
 
         def _on_brand_tab_changed(self, index: int) -> None:
             brand = self._brand_for_tab_index(index)
@@ -594,6 +601,9 @@ def run_gui() -> None:
                 self.brand_combo.blockSignals(True)
                 self.brand_combo.setCurrentText(brand)
                 self.brand_combo.blockSignals(False)
+            if brand == "Riello" and hasattr(self, "riello_page"):
+                self.riello_page.ensure_default_excel_template()
+            self._update_generate_button_text(brand)
             self._remember_values()
             self._refresh_preview()
 
@@ -812,6 +822,19 @@ def run_gui() -> None:
                 self.spec_dir_path = path
                 self._set_line_path(self.spec_edit, path, is_file=False)
 
+        def _browse_calc_file(self) -> None:
+            current_calc = self._path_from_combo(self.calc_combo)
+            start_dir = str(Path(current_calc).parent) if current_calc else self._project_path_text()
+            path, _ = QFileDialog.getOpenFileName(self, "Выберите Excel-файл", start_dir, "Excel (*.xlsx *.xlsm)")
+            if path:
+                index = self._find_combo_path(self.calc_combo, path)
+                if index < 0:
+                    self._add_path_item(self.calc_combo, path, is_file=True)
+                    index = self.calc_combo.count() - 1
+                self.calc_combo.setCurrentIndex(index)
+                self._load_sheets()
+                self._remember_values()
+
         def _browse_template_file(self) -> None:
             current_template = self._path_from_combo(self.template_combo)
             start_dir = str(Path(current_template).parent) if current_template else self._saved("template_dir", self._project_path_text())
@@ -848,6 +871,8 @@ def run_gui() -> None:
             if old_calc_index >= 0:
                 self.calc_combo.setCurrentIndex(old_calc_index)
             self.calc_combo.blockSignals(False)
+            if self.brand_combo.currentText() == "Riello" and hasattr(self, "riello_page"):
+                self.riello_page.ensure_default_excel_template()
 
             self.template_combo.blockSignals(True)
             self.template_combo.clear()
@@ -917,11 +942,13 @@ def run_gui() -> None:
             output_dir = Path(self._output_path_text().strip() or project_dir)
             spec_text = self._spec_path_text().strip()
             pdf_dir = Path(spec_text) if spec_text else (project_dir if project_dir.exists() else None)
+            calc_text = self._path_from_combo(self.calc_combo).strip()
+            template_text = self._path_from_combo(self.template_combo).strip()
             return OfferContext(
                 brand=self.brand_combo.currentText(),
                 project_dir=project_dir,
-                template_path=Path(self._path_from_combo(self.template_combo)),
-                calc_path=Path(self._path_from_combo(self.calc_combo)),
+                template_path=Path(template_text) if template_text else Path("__template_not_selected__.docx"),
+                calc_path=Path(calc_text) if calc_text else Path("__calc_not_selected__.xlsx"),
                 output_dir=output_dir,
                 client_name=self.client_edit.text().strip() or "Client",
                 sheet_name=self.sheet_combo.currentText().strip() or None,
@@ -934,11 +961,20 @@ def run_gui() -> None:
                 signer_position=self._selected_signer()["position"],
                 spec_models=self._selected_spec_models(),
                 description_options=self._description_options(),
+                brand_options=self._brand_options(),
             )
 
         def _validate_context(self, context: OfferContext) -> None:
             if not context.project_dir.exists():
                 raise FileNotFoundError("Выберите существующую папку проекта.")
+
+            if context.brand == "Riello":
+                if not context.calc_path.exists():
+                    raise FileNotFoundError("Выберите существующий Excel-шаблон расчета Riello.")
+                if context.calc_path.suffix.lower() not in {".xlsx", ".xlsm"}:
+                    raise ValueError("Excel-шаблон Riello должен быть файлом .xlsx или .xlsm")
+                return
+
             if not context.calc_path.exists():
                 raise FileNotFoundError("Выберите существующий Excel-файл калькуляции.")
             if not context.template_path.exists():
@@ -963,6 +999,11 @@ def run_gui() -> None:
                 return self.stulz_page.description_options()
             return {}
 
+        def _brand_options(self) -> dict[str, object]:
+            if self.brand_combo.currentText() == "Riello" and hasattr(self, "riello_page"):
+                return self.riello_page.brand_options()
+            return {}
+
         def _refresh_spec_models(self, context: OfferContext | None = None) -> None:
             if hasattr(self, "stulz_page"):
                 self.stulz_page.refresh_spec_models(context)
@@ -971,7 +1012,7 @@ def run_gui() -> None:
             try:
                 context = self._make_context()
                 self._refresh_spec_models(context)
-                if not context.calc_path.exists():
+                if context.brand != "Riello" and not context.calc_path.exists():
                     self.preview.setPlainText("Excel-файл пока не выбран или не найден.")
                     return
                 module = get_brand_module(context.brand)
@@ -1003,6 +1044,9 @@ def run_gui() -> None:
                 QApplication.processEvents()
 
                 context = self._make_context()
+                if context.brand == "Riello":
+                    self.status_label.setText("Формирую Excel-расчет...")
+                    QApplication.processEvents()
                 self._validate_context(context)
                 module = get_brand_module(context.brand)
                 out = module.make_offer(context)
@@ -1013,10 +1057,10 @@ def run_gui() -> None:
                 msg = QMessageBox(self)
                 msg.setWindowTitle("SAM Offer Generator")
                 msg.setIcon(QMessageBox.Question)
-                msg.setText("Коммерческое предложение успешно сформировано.")
+                msg.setText("Excel-расчет успешно сформирован." if context.brand == "Riello" else "Коммерческое предложение успешно сформировано.")
                 msg.setInformativeText(str(out))
                 open_folder_btn = msg.addButton("Открыть папку", QMessageBox.ActionRole)
-                open_file_btn = msg.addButton("Открыть КП", QMessageBox.ActionRole)
+                open_file_btn = msg.addButton("Открыть расчет" if context.brand == "Riello" else "Открыть КП", QMessageBox.ActionRole)
                 msg.addButton("Закрыть", QMessageBox.RejectRole)
                 msg.exec()
                 clicked = msg.clickedButton()

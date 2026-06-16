@@ -80,10 +80,11 @@
     {
       "id": "prices",
       "title": "Reference price files",
-      "description": "PDF and other reference price/material files stored in the prices folder.",
+      "description": "PDF price files and Excel calculation templates used by brand modules.",
       "depends_on": [],
       "paths": [
-        "prices"
+        "prices",
+        "templates"
       ]
     },
     {

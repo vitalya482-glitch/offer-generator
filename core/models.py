@@ -64,3 +64,4 @@ class OfferContext:
     signer_position: str = "Коммерческий директор"
     spec_models: list[dict[str, Any]] = field(default_factory=list)
     description_options: dict[str, bool] = field(default_factory=dict)
+    brand_options: dict[str, Any] = field(default_factory=dict)

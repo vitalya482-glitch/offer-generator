@@ -26,6 +26,8 @@ hiddenimports = [
 
     'core.docx_renderer',
     'core.excel_reader',
+    'core.riello_price',
+    'core.riello_excel_exporter',
     'core.manager_profile',
     'core.models',
     'core.project_scanner',
@@ -50,11 +52,14 @@ hiddenimports += collect_submodules('openpyxl')
 hiddenimports += collect_submodules('pypdf')
 hiddenimports += collect_submodules('docx')
 hiddenimports += collect_submodules('num2words')
+hiddenimports += collect_submodules('fitz')
 
 datas = [
     ('config.example.json', '.'),
     ('config', 'config'),
     ('assets', 'assets'),
+    ('prices', 'prices'),
+    ('templates', 'templates'),
 ]
 datas += collect_data_files('openpyxl')
 
