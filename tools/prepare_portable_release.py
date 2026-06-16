@@ -17,7 +17,7 @@ COPY_TO_ROOT = [
     "config.example.json",
     "requirements.txt",
 ]
-SOURCE_MODULE_DIRS = ["assets", "brands", "core", "gui", "config"]
+SOURCE_MODULE_DIRS: list[str] = []
 OPTIONAL_ROOT_DIRS = ["assets", "prices", "templates"]
 EXCLUDED_DIR_NAMES = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
@@ -51,16 +51,16 @@ def copy_tree_if_exists(relative_path: str, target: Path) -> None:
 def write_release_readme(dist_dir: Path) -> None:
     text = """SAM Offer Generator - portable Windows release
 
-Run:
-  1. Extract the whole folder from SAM-Offer-Generator-windows-portable.zip.
-  2. Start SAM-Offer-Generator.exe or run_gui.cmd.
-  3. Keep _internal, config and other folders next to the EXE.
+Run / first install:
+  1. Extract SAM-Offer-Generator-Runtime-Win64.zip.
+  2. Extract SAM-Offer-Generator-App-No-Runtime.zip into the same folder with replacement.
+  3. Start SAM-Offer-Generator.exe or run_gui.cmd.
+  4. Keep _internal, config and other folders next to the EXE.
 
 Folder layout:
   SAM-Offer-Generator.exe  - launcher
   _internal/               - PyInstaller runtime files and Python dependencies
   config/                  - editable JSON configuration files
-  modules/source/          - source copies of project modules for review/reuse
   prices/                  - optional reference price files, when present
   templates/               - Excel/Word templates used by brand modules
 
@@ -68,9 +68,10 @@ Important:
   Do not move only the EXE to another folder. This is a one-dir build, so the
   EXE depends on the files and folders shipped with it.
 
-For developers:
-  GitHub Actions also publishes separate source module ZIPs. Use them when you
-  need to download or replace only one part of the project.
+Release modules:
+  GitHub Release publishes only two ZIP files:
+  - SAM-Offer-Generator-Runtime-Win64.zip
+  - SAM-Offer-Generator-App-No-Runtime.zip
 """
     (dist_dir / "README_RELEASE.txt").write_text(text, encoding="utf-8")
 
@@ -105,11 +106,6 @@ def main() -> int:
         copy_file_if_exists(relative_path, dist_dir)
 
     copy_tree_if_exists("config", dist_dir / "config")
-
-    source_modules_dir = dist_dir / "modules" / "source"
-    source_modules_dir.mkdir(parents=True, exist_ok=True)
-    for module_dir in SOURCE_MODULE_DIRS:
-        copy_tree_if_exists(module_dir, source_modules_dir / module_dir)
 
     for optional_dir in OPTIONAL_ROOT_DIRS:
         copy_tree_if_exists(optional_dir, dist_dir / optional_dir)

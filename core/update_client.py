@@ -42,6 +42,7 @@ class ReleaseAsset:
     name: str
     download_url: str
     size: int
+    sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -49,9 +50,11 @@ class ReleaseInfo:
     tag_name: str
     name: str
     html_url: str
+    body: str
     app_asset: ReleaseAsset | None
     runtime_asset: ReleaseAsset | None
     checksums: dict[str, str]
+    runtime_content_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -276,13 +279,17 @@ def fetch_latest_release() -> ReleaseInfo:
             code="APP_ASSET_NOT_FOUND",
         )
 
+    release_body = str(data.get("body", "") or "")
+
     return ReleaseInfo(
         tag_name=tag_name,
         name=str(data.get("name", "")),
         html_url=str(data.get("html_url", "")),
+        body=release_body,
         app_asset=app_asset,
         runtime_asset=runtime_asset,
         checksums=checksums,
+        runtime_content_sha256=parse_runtime_content_sha256(release_body),
     )
 
 
@@ -500,10 +507,17 @@ def _find_asset(assets: list[Any], name: str, *, forgiving: bool = True) -> Rele
                     "Проверьте, что это обычный файл GitHub Release, а не служебная запись API.",
                     code="ASSET_DOWNLOAD_URL_MISSING",
                 )
+            digest_value = str(item.get("digest") or "").strip().lower()
+            digest_sha256 = None
+            if digest_value.startswith("sha256:"):
+                digest_candidate = digest_value.split(":", 1)[1].strip()
+                if re.fullmatch(r"[0-9a-f]{64}", digest_candidate):
+                    digest_sha256 = digest_candidate
             return ReleaseAsset(
                 name=item_name,
                 download_url=str(url),
                 size=int(item.get("size") or 0),
+                sha256=digest_sha256,
             )
     return None
 
@@ -546,6 +560,25 @@ def fetch_release_checksums(asset: ReleaseAsset) -> dict[str, str]:
     return parse_sha256sums(_read_text_url(asset.download_url, context="checksums"))
 
 
+def parse_runtime_content_sha256(text: str) -> str | None:
+    """Read stable runtime signature from GitHub Release notes.
+
+    We keep only two public release assets now, so runtime metadata is published
+    in the release body instead of a separate RELEASE_SHA256SUMS.txt asset.
+    Expected marker example:
+    RUNTIME_CONTENT_SHA256=0123...abcd
+    """
+    patterns = (
+        r"RUNTIME_CONTENT_SHA256\s*[:=]\s*([0-9a-fA-F]{64})",
+        r"runtime_content_sha256\s*[:=]\s*([0-9a-fA-F]{64})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text or "")
+        if match:
+            return match.group(1).lower()
+    return None
+
+
 def _checksum_value(checksums: dict[str, str], *names: str) -> str | None:
     """Return checksum by exact or case-insensitive asset/name lookup."""
     lower_map = {str(key).lower(): value for key, value in checksums.items()}
@@ -564,11 +597,11 @@ def _checksum_value(checksums: dict[str, str], *names: str) -> str | None:
 def asset_sha256(release: ReleaseInfo, asset: ReleaseAsset | None) -> str | None:
     if asset is None:
         return None
-    return _checksum_value(release.checksums, asset.name, Path(asset.name).name)
+    return _checksum_value(release.checksums, asset.name, Path(asset.name).name) or asset.sha256
 
 
 def runtime_content_sha256_from_release(release: ReleaseInfo, asset: ReleaseAsset | None) -> str | None:
-    """Return stable runtime content signature published in RELEASE_SHA256SUMS.txt.
+    """Return stable runtime content signature from release notes or checksums.
 
     This is intentionally separate from the ZIP file SHA256. A ZIP can get a new SHA256
     just because file timestamps/order changed during the build. The content signature
@@ -576,6 +609,8 @@ def runtime_content_sha256_from_release(release: ReleaseInfo, asset: ReleaseAsse
     """
     if asset is None:
         return None
+    if release.runtime_content_sha256:
+        return release.runtime_content_sha256
     stem = Path(asset.name).stem
     return _checksum_value(
         release.checksums,
@@ -713,7 +748,7 @@ def download_update_packages(plan: UpdatePlan) -> list[tuple[UpdatePackage, Path
             if actual.lower() != package.sha256.lower():
                 path.unlink(missing_ok=True)
                 raise UpdateError(
-                    "Скачанный файл обновления не совпадает с RELEASE_SHA256SUMS.txt.\n\n"
+                    "Скачанный файл обновления не совпадает с опубликованной SHA256-подписью.\n\n"
                     f"Файл:\n{package.asset.name}\n\n"
                     f"Ожидали:\n{package.sha256}\n"
                     f"Получили:\n{actual}",

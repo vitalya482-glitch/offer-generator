@@ -1,4 +1,4 @@
-name: Build Windows portable release
+name: Build Windows modular release
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  build-windows-portable:
+  build-windows-modular-release:
     runs-on: windows-latest
 
     steps:
@@ -58,7 +58,6 @@ jobs:
           Write-Host "Release tag: $tag"
           Write-Host "Release title: $title"
 
-
       - name: Write updater version into config/update.json
         shell: pwsh
         run: |
@@ -83,9 +82,20 @@ jobs:
         run: |
           pyinstaller sam_offer_generator.spec --clean --noconfirm
 
-      - name: Add editable files and source module copies to portable folder
+      - name: Add editable files to portable folder
         run: |
           python tools/prepare_portable_release.py --dist dist/SAM-Offer-Generator
+
+      - name: Compute runtime content signature
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runtimeSha = (python tools/runtime_signature.py "dist/SAM-Offer-Generator/_internal").Trim()
+          if ($runtimeSha -notmatch '^[0-9a-f]{64}$') {
+            throw "Bad runtime content signature: $runtimeSha"
+          }
+          "RUNTIME_CONTENT_SHA256=$runtimeSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Runtime content SHA256: $runtimeSha"
 
       - name: Write release metadata for updater
         shell: pwsh
@@ -103,24 +113,13 @@ jobs:
           $json | Add-Member -NotePropertyName "github_owner" -NotePropertyValue "${{ github.repository_owner }}" -Force
           $json | Add-Member -NotePropertyName "github_repo" -NotePropertyValue "${{ github.event.repository.name }}" -Force
           $json | Add-Member -NotePropertyName "github_repository" -NotePropertyValue "${{ github.repository }}" -Force
+          $json | Add-Member -NotePropertyName "runtime_content_sha256" -NotePropertyValue $env:RUNTIME_CONTENT_SHA256 -Force
           $json | ConvertTo-Json -Depth 10 | Set-Content $releaseInfoPath -Encoding UTF8
 
           Write-Host "Updated release_info.json:"
           Get-Content $releaseInfoPath
 
-      - name: Build modular source ZIPs
-        run: |
-          python tools/package_modules.py --output dist/source-modules
-
-      - name: Zip portable Windows folder
-        shell: pwsh
-        run: |
-          if (Test-Path "dist/SAM-Offer-Generator-windows-portable.zip") {
-            Remove-Item "dist/SAM-Offer-Generator-windows-portable.zip" -Force
-          }
-          Compress-Archive -Path "dist/SAM-Offer-Generator/*" -DestinationPath "dist/SAM-Offer-Generator-windows-portable.zip" -Force
-
-      - name: Build distribution runtime and app modules
+      - name: Build only two distribution modules
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -154,139 +153,41 @@ jobs:
           Compress-Archive -Path $runtimeTarget -DestinationPath $runtimeZip -Force
           Compress-Archive -Path $appTarget -DestinationPath $appZip -Force
 
-          Get-ChildItem $moduleRoot -Filter "*.zip" | Select-Object FullName, Length
+          Get-ChildItem $moduleRoot -Filter "*.zip" | Select-Object Name, Length
 
-      - name: Write release checksums
+      - name: Verify release contains exactly two modules
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $files = @(
-            "dist/SAM-Offer-Generator-windows-portable.zip",
-            "dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip",
-            "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip"
+          $files = Get-ChildItem "dist/distribution-modules" -Filter "*.zip" | Sort-Object Name
+          $expected = @(
+            "SAM-Offer-Generator-App-No-Runtime.zip",
+            "SAM-Offer-Generator-Runtime-Win64.zip"
           )
-          if (Test-Path "dist/source-modules") {
-            $files += Get-ChildItem "dist/source-modules" -File | ForEach-Object { $_.FullName }
+          $actual = @($files | ForEach-Object { $_.Name })
+          if ($actual.Count -ne 2) {
+            throw "Expected exactly 2 release ZIPs, got $($actual.Count): $($actual -join ', ')"
           }
-          $lines = foreach ($file in $files) {
-            if (Test-Path $file) {
-              $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
-              "$hash  $(Split-Path $file -Leaf)"
+          foreach ($name in $expected) {
+            if ($actual -notcontains $name) {
+              throw "Missing release ZIP: $name"
             }
           }
+          Write-Host "Release ZIPs are OK:"
+          $files | Select-Object Name, Length
 
-          # Stable runtime signature: hash _internal by file paths + bytes, ignoring ZIP metadata/timestamps.
-          # The updater uses this line to avoid downloading the 60+ MB runtime module when only app/GUI changed.
-          $runtimeContentHash = python tools/runtime_signature.py "dist/SAM-Offer-Generator/_internal"
-          $lines += "$runtimeContentHash  SAM-Offer-Generator-Runtime-Win64.content.sha256"
-
-          $lines | Set-Content "dist/RELEASE_SHA256SUMS.txt" -Encoding UTF8
-          Get-Content "dist/RELEASE_SHA256SUMS.txt"
-
-      - name: Show release files
-        shell: pwsh
-        run: |
-          Get-ChildItem -Recurse dist | Select-Object FullName, Length
-
-      - name: Upload portable folder artifact
+      - name: Upload runtime module artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SAM-Offer-Generator-windows-portable-folder
-          path: dist/SAM-Offer-Generator/
-          retention-days: 30
-
-      - name: Upload portable ZIP artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SAM-Offer-Generator-windows-portable-zip
-          path: dist/SAM-Offer-Generator-windows-portable.zip
-          retention-days: 30
-
-      - name: Upload runtime Win64 module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SAM-Offer-Generator-runtime-win64-module
+          name: SAM-Offer-Generator-Runtime-Win64
           path: dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip
           retention-days: 30
 
-      - name: Upload app without runtime module artifact
+      - name: Upload app no-runtime module artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SAM-Offer-Generator-app-no-runtime-module
+          name: SAM-Offer-Generator-App-No-Runtime
           path: dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip
-          retention-days: 30
-
-      - name: Upload module index artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-modules-index
-          path: |
-            dist/source-modules/MODULES_INDEX.md
-            dist/source-modules/SHA256SUMS.txt
-            dist/RELEASE_SHA256SUMS.txt
-          retention-days: 30
-
-      - name: Upload entrypoint module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-entrypoint-module
-          path: dist/source-modules/offer-generator-entrypoint.zip
-          retention-days: 30
-
-      - name: Upload core module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-core-module
-          path: dist/source-modules/offer-generator-core.zip
-          retention-days: 30
-
-      - name: Upload brands module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-brands-module
-          path: dist/source-modules/offer-generator-brands.zip
-          retention-days: 30
-
-      - name: Upload gui module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-gui-module
-          path: dist/source-modules/offer-generator-gui.zip
-          retention-days: 30
-
-      - name: Upload config module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-config-module
-          path: dist/source-modules/offer-generator-config.zip
-          retention-days: 30
-
-      - name: Upload MCP assistant module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-mcp-sam-assistant-module
-          path: dist/source-modules/offer-generator-mcp-sam-assistant.zip
-          retention-days: 30
-
-      - name: Upload prices module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-prices-module
-          path: dist/source-modules/offer-generator-prices.zip
-          retention-days: 30
-
-      - name: Upload GitHub build module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-github-build-module
-          path: dist/source-modules/offer-generator-github-build.zip
-          retention-days: 30
-
-      - name: Upload all source modules artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: offer-generator-source-modules-all
-          path: dist/source-modules/offer-generator-source-modules.zip
           retention-days: 30
 
       - name: Publish or update GitHub Release automatically
@@ -297,27 +198,39 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tag = $env:RELEASE_TAG
           $title = $env:RELEASE_TITLE
-          $notes = $env:RELEASE_NOTES
+          $notesPath = "dist/RELEASE_NOTES.md"
+          $notes = @"
+          $env:RELEASE_NOTES
+
+          Release assets:
+          - SAM-Offer-Generator-Runtime-Win64.zip
+          - SAM-Offer-Generator-App-No-Runtime.zip
+
+          Updater metadata:
+          RUNTIME_CONTENT_SHA256=$env:RUNTIME_CONTENT_SHA256
+          "@
+          $notes | Set-Content $notesPath -Encoding UTF8
 
           $files = @(
-            "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip",
             "dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip",
-            "dist/SAM-Offer-Generator-windows-portable.zip",
-            "dist/RELEASE_SHA256SUMS.txt"
+            "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip"
           )
 
-          if (Test-Path "dist/source-modules") {
-            $files += Get-ChildItem "dist/source-modules" -File | ForEach-Object { $_.FullName }
-          }
-
-          Write-Host "Publishing release $tag"
+          Write-Host "Publishing release $tag with exactly two assets"
           if (gh release view $tag --repo "${{ github.repository }}" *> $null) {
-            Write-Host "Release already exists. Uploading assets with --clobber."
+            Write-Host "Release already exists. Removing old assets and uploading two clean modules."
+            $existingAssetsJson = gh release view $tag --repo "${{ github.repository }}" --json assets
+            $existingAssets = ($existingAssetsJson | ConvertFrom-Json).assets
+            foreach ($asset in $existingAssets) {
+              if (![string]::IsNullOrWhiteSpace($asset.name)) {
+                gh release delete-asset $tag $asset.name --repo "${{ github.repository }}" --yes
+              }
+            }
+            gh release edit $tag --repo "${{ github.repository }}" --title "$title" --notes-file $notesPath
             gh release upload $tag @files --repo "${{ github.repository }}" --clobber
           } else {
-            gh release create $tag @files --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "$title" --notes "$notes"
+            gh release create $tag @files --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "$title" --notes-file $notesPath
           }
-
 
       - name: Cleanup old GitHub Releases and tags
         shell: pwsh
