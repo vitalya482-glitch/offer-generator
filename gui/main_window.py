@@ -222,7 +222,10 @@ def run_gui() -> None:
 
             if hasattr(self, "stulz_page"):
                 self.stulz_page.clear_spec_models()
-            self.preview.setPlainText("Кэш очищен. Выберите папку проекта заново.")
+            if hasattr(self, "riello_page") and hasattr(self.riello_page, "clear_cache"):
+                self.riello_page.clear_cache()
+            if hasattr(self, "preview"):
+                self.preview.setPlainText("Кэш очищен. Выберите папку проекта заново.")
             self.status_label.setText("Кэш очищен. Выберите папку проекта заново.")
 
         def _open_settings_dialog(self) -> None:
@@ -580,6 +583,24 @@ def run_gui() -> None:
             }
             return brand_to_tab.get(brand, 0)
 
+        def _active_brand_page(self):
+            if not hasattr(self, "brand_tabs"):
+                return None
+            return self.brand_tabs.currentWidget()
+
+        def _update_primary_button_for_page(self) -> None:
+            page = self._active_brand_page()
+            text = "Сформировать КП"
+            if page is not None and hasattr(page, "primary_button_text"):
+                try:
+                    text = str(page.primary_button_text())
+                except Exception:
+                    text = "Сформировать КП"
+            elif self.brand_combo.currentText() == "Riello":
+                text = "Сформировать Excel"
+            if hasattr(self, "generate_btn"):
+                self.generate_btn.setText(text)
+
         def _select_tab_for_brand(self, brand: str) -> None:
             if not hasattr(self, "brand_tabs"):
                 return
@@ -590,6 +611,7 @@ def run_gui() -> None:
             self.brand_tabs.blockSignals(True)
             self.brand_tabs.setCurrentIndex(index)
             self.brand_tabs.blockSignals(False)
+            self._update_primary_button_for_page()
             self._update_generate_button_text(brand)
 
         def _update_generate_button_text(self, brand: str | None = None) -> None:
@@ -676,6 +698,9 @@ def run_gui() -> None:
             self._autofill_client_from_project_dir()
             self._autofill_brand_from_project_dir()
             self.status_label.setText("Папка изменена. Нажмите «Обновить» или выберите папку через кнопку.")
+            page = self._active_brand_page()
+            if page is not None and hasattr(page, "refresh_preview"):
+                page.refresh_preview()
 
         def _autofill_client_from_project_dir(self, force: bool = False) -> None:
             client = self._extract_client_from_project_dir(self._project_path_text())
@@ -716,6 +741,12 @@ def run_gui() -> None:
 
         def _on_signer_changed(self) -> None:
             self.settings.setValue("signer_key", self._selected_signer_key())
+            page = self._active_brand_page()
+            if page is not None and hasattr(page, "remember_values"):
+                try:
+                    page.remember_values()
+                except Exception:
+                    pass
             self.settings.sync()
             self._refresh_preview()
 
@@ -914,6 +945,15 @@ def run_gui() -> None:
                 self.spec_dir_path = guessed_spec_dir
                 self._set_line_path(self.spec_edit, guessed_spec_dir, is_file=False)
 
+            # Передаём результаты сканирования активным страницам.
+            # Так вкладки сами решают, какие файлы и папки им нужны.
+            for page in (getattr(self, "stulz_page", None), getattr(self, "riello_page", None), getattr(self, "battery_page", None), getattr(self, "genset_page", None)):
+                if page is not None and hasattr(page, "apply_scan_results"):
+                    try:
+                        page.apply_scan_results(project_dir, found, force=force)
+                    except Exception:
+                        pass
+
             spec_hint = self._display_dir(self.spec_dir_path) if self.spec_dir_path else "не выбрана"
             self.status_label.setText(
                 f"Найдено Excel: {len(found['excel'])}, Word: {len(found['word'])}, "
@@ -940,6 +980,10 @@ def run_gui() -> None:
             self._refresh_preview()
 
         def _make_context(self) -> OfferContext:
+            page = self._active_brand_page()
+            if page is not None and hasattr(page, "make_context"):
+                return page.make_context()
+
             project_dir = Path(self._project_path_text().strip())
             output_dir = Path(self._output_path_text().strip() or project_dir)
             spec_text = self._spec_path_text().strip()
@@ -967,6 +1011,10 @@ def run_gui() -> None:
             )
 
         def _validate_context(self, context: OfferContext) -> None:
+            page = self._active_brand_page()
+            if page is not None and hasattr(page, "validate_context"):
+                return page.validate_context(context)
+
             if not context.project_dir.exists():
                 raise FileNotFoundError("Выберите существующую папку проекта.")
 
@@ -1011,16 +1059,25 @@ def run_gui() -> None:
                 self.stulz_page.refresh_spec_models(context)
 
         def _refresh_preview(self) -> None:
+            page = self._active_brand_page()
+            if page is not None and hasattr(page, "refresh_preview"):
+                try:
+                    return page.refresh_preview()
+                except Exception:
+                    pass
             try:
                 context = self._make_context()
                 self._refresh_spec_models(context)
                 if context.brand != "Riello" and not context.calc_path.exists():
-                    self.preview.setPlainText("Excel-файл пока не выбран или не найден.")
+                    if hasattr(self, "preview"):
+                        self.preview.setPlainText("Excel-файл пока не выбран или не найден.")
                     return
                 module = get_brand_module(context.brand)
-                self.preview.setPlainText(module.preview(context))
+                if hasattr(self, "preview"):
+                    self.preview.setPlainText(module.preview(context))
             except Exception as exc:
-                self.preview.setPlainText(f"Не удалось прочитать данные: {exc}")
+                if hasattr(self, "preview"):
+                    self.preview.setPlainText(f"Не удалось прочитать данные: {exc}")
                 self._refresh_spec_models(None)
 
         def _remember_values(self) -> None:
@@ -1033,6 +1090,12 @@ def run_gui() -> None:
             self.settings.setValue("output_dir", self._output_path_text())
             self.settings.setValue("spec_dir", self._spec_path_text())
             self.settings.setValue("signer_key", self._selected_signer_key())
+            page = self._active_brand_page()
+            if page is not None and hasattr(page, "remember_values"):
+                try:
+                    page.remember_values()
+                except Exception:
+                    pass
             self.settings.sync()
 
         def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
@@ -1079,6 +1142,9 @@ def run_gui() -> None:
                 self._refresh_preview()
 
     app = QApplication.instance() or QApplication(sys.argv)
+    icon_path = app_icon_path()
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = OfferGeneratorWindow()
     window.show()
     app.exec()
