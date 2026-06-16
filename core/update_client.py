@@ -52,7 +52,11 @@ class ReleaseInfo:
 class UpdatePackage:
     kind: str
     asset: ReleaseAsset
+    # SHA256 of the downloadable ZIP asset. Used only to verify download integrity.
     sha256: str | None = None
+    # Stable installed-state signature. For runtime this is the content hash of _internal,
+    # not the ZIP hash, because GitHub/Compress-Archive can change ZIP bytes on every build.
+    state_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -536,10 +540,68 @@ def fetch_release_checksums(asset: ReleaseAsset) -> dict[str, str]:
     return parse_sha256sums(_read_text_url(asset.download_url, context="checksums"))
 
 
+def _checksum_value(checksums: dict[str, str], *names: str) -> str | None:
+    """Return checksum by exact or case-insensitive asset/name lookup."""
+    lower_map = {str(key).lower(): value for key, value in checksums.items()}
+    for name in names:
+        if not name:
+            continue
+        value = checksums.get(name) or checksums.get(Path(name).name)
+        if value:
+            return value
+        value = lower_map.get(name.lower()) or lower_map.get(Path(name).name.lower())
+        if value:
+            return value
+    return None
+
+
 def asset_sha256(release: ReleaseInfo, asset: ReleaseAsset | None) -> str | None:
     if asset is None:
         return None
-    return release.checksums.get(asset.name) or release.checksums.get(Path(asset.name).name)
+    return _checksum_value(release.checksums, asset.name, Path(asset.name).name)
+
+
+def runtime_content_sha256_from_release(release: ReleaseInfo, asset: ReleaseAsset | None) -> str | None:
+    """Return stable runtime content signature published in RELEASE_SHA256SUMS.txt.
+
+    This is intentionally separate from the ZIP file SHA256. A ZIP can get a new SHA256
+    just because file timestamps/order changed during the build. The content signature
+    is calculated from paths + file bytes inside dist/SAM-Offer-Generator/_internal.
+    """
+    if asset is None:
+        return None
+    stem = Path(asset.name).stem
+    return _checksum_value(
+        release.checksums,
+        f"{asset.name}.content.sha256",
+        f"{stem}.content.sha256",
+        "SAM-Offer-Generator-Runtime-Win64.content.sha256",
+        "runtime-content.sha256",
+    )
+
+
+def directory_content_sha256(root: Path) -> str | None:
+    """Hash directory contents in a stable way: relative paths + file bytes, no timestamps."""
+    if not root.exists() or not root.is_dir():
+        return None
+    digest = hashlib.sha256()
+    files = sorted((p for p in root.rglob("*") if p.is_file()), key=lambda p: p.relative_to(root).as_posix().lower())
+    for file_path in files:
+        rel = file_path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(rel)
+        digest.update(b"\0")
+        try:
+            with file_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            return None
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def installed_runtime_content_sha256() -> str | None:
+    return directory_content_sha256(app_dir() / "_internal")
 
 
 def installed_asset_sha256(asset_name: str) -> str | None:
@@ -567,11 +629,33 @@ def build_update_plan() -> UpdatePlan:
         packages.append(UpdatePackage("app", release.app_asset, asset_sha256(release, release.app_asset)))
 
     if release.runtime_asset is not None:
-        latest_runtime_sha = asset_sha256(release, release.runtime_asset)
-        installed_runtime_sha = installed_asset_sha256(release.runtime_asset.name)
-        runtime_required = bool(latest_runtime_sha and installed_runtime_sha != latest_runtime_sha)
+        runtime_zip_sha = asset_sha256(release, release.runtime_asset)
+        latest_runtime_state_sha = runtime_content_sha256_from_release(release, release.runtime_asset)
+
+        # Backward compatible fallback for older releases without the stable content signature.
+        # New releases should publish *.content.sha256; otherwise ZIP SHA can cause false runtime updates.
+        if latest_runtime_state_sha:
+            # Prefer the real local _internal content signature. Older update_state.json files
+            # stored runtime ZIP SHA256, which must not be compared with *.content.sha256.
+            installed_runtime_sha = (
+                installed_runtime_content_sha256()
+                or installed_asset_sha256(release.runtime_asset.name)
+            )
+        else:
+            latest_runtime_state_sha = runtime_zip_sha
+            installed_runtime_sha = installed_asset_sha256(release.runtime_asset.name)
+
+        runtime_required = bool(latest_runtime_state_sha and installed_runtime_sha != latest_runtime_state_sha)
         if runtime_required:
-            packages.insert(0, UpdatePackage("runtime", release.runtime_asset, latest_runtime_sha))
+            packages.insert(
+                0,
+                UpdatePackage(
+                    "runtime",
+                    release.runtime_asset,
+                    runtime_zip_sha,
+                    latest_runtime_state_sha,
+                ),
+            )
 
     return UpdatePlan(
         has_update=bool(packages),
@@ -743,7 +827,7 @@ def start_updater(
         asset_states.append({
             "kind": package.kind,
             "name": package.asset.name,
-            "sha256": package.sha256 or file_sha256(path),
+            "sha256": package.state_sha256 or package.sha256 or file_sha256(path),
         })
     state_file = root / "updates" / "update_plan.json"
     try:
