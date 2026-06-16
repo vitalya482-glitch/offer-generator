@@ -40,7 +40,7 @@ class SettingsDialog(QDialog):
 
         self.template_combo = QComboBox()
         self.template_combo.setEditable(True)
-        current_template = owner._path_from_combo(owner.template_combo)
+        current_template = str(owner.settings.value("template_path", "") or "")
         if current_template:
             owner._add_path_item(self.template_combo, current_template, is_file=True)
             self.template_combo.setCurrentIndex(0)
@@ -177,7 +177,7 @@ class SettingsDialog(QDialog):
     def _browse_template(self) -> None:
         owner = self.owner
         selected = str(self.template_combo.currentData() or self.template_combo.currentText()).strip()
-        start_dir = str(Path(selected).parent) if selected else owner._saved("template_dir", owner._project_path_text())
+        start_dir = str(Path(selected).parent) if selected else owner._saved("template_dir", owner.current_project_dir())
         path, _ = QFileDialog.getOpenFileName(self, "Выберите Word-шаблон", start_dir, "Word (*.docx)")
         if path:
             index = owner._find_combo_path(self.template_combo, path)
@@ -191,7 +191,7 @@ class SettingsDialog(QDialog):
     def _browse_calc_template(self) -> None:
         owner = self.owner
         selected = str(self.calc_template_combo.currentData() or self.calc_template_combo.currentText()).strip()
-        start_dir = str(Path(selected).parent) if selected else owner._saved("calc_template_dir", owner._project_path_text())
+        start_dir = str(Path(selected).parent) if selected else owner._saved("calc_template_dir", owner.current_project_dir())
         path, _ = QFileDialog.getOpenFileName(self, "Выберите Excel-шаблон расчёта", start_dir, "Excel (*.xlsx)")
         if path:
             index = owner._find_combo_path(self.calc_template_combo, path)
@@ -205,11 +205,8 @@ class SettingsDialog(QDialog):
         owner = self.owner
         template_path = str(self.template_combo.currentData() or self.template_combo.currentText()).strip()
         if template_path:
-            owner.template_combo.blockSignals(True)
-            owner.template_combo.clear()
-            owner._add_path_item(owner.template_combo, template_path, is_file=True)
-            owner.template_combo.setCurrentIndex(0)
-            owner.template_combo.blockSignals(False)
+            owner.settings.setValue("template_path", template_path)
+            owner.settings.setValue("template_dir", str(Path(template_path).parent))
 
         calc_template_path = str(self.calc_template_combo.currentData() or self.calc_template_combo.currentText()).strip()
         owner.settings.setValue("calc_template_path", calc_template_path)
@@ -221,5 +218,4 @@ class SettingsDialog(QDialog):
         owner.manager_email_edit.setText(self.manager_edits["manager_email"].text().strip())
         owner.manager_phone_edit.setText(self.manager_edits["manager_phone"].text().strip())
         owner._save_manager_profile()
-        owner._remember_values()
-        owner._refresh_preview()
+        owner._notify_pages_settings_changed()

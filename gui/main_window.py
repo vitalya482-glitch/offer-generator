@@ -22,46 +22,35 @@ SIGNERS = {
 import sys
 from pathlib import Path
 
-from brands.registry import BRANDS, get_brand_module
-from core.excel_reader import list_sheets
-from core.models import OfferContext
-from core.manager_profile import ManagerProfile, find_manager_in_project
-from core.project_scanner import clear_scan_cache, scan_project_files
+from brands.registry import BRANDS
+from core.manager_profile import ManagerProfile
+from core.project_scanner import clear_scan_cache
 from core.runtime_paths import app_icon_path
-from gui.path_helpers import extract_brand_from_project_dir, extract_client_from_project_dir, infer_output_dir, infer_specifications_dir
 from gui.ui_style import stylesheet, ui_scale
 
 
 def run_gui() -> None:
     try:
-        from PySide6.QtCore import Qt, QSettings, QUrl
-        from PySide6.QtGui import QDesktopServices, QFont, QIcon
+        from PySide6.QtCore import Qt, QSettings
+        from PySide6.QtGui import QFont, QIcon
         from PySide6.QtWidgets import (
             QApplication,
-            QAbstractItemView,
+            QButtonGroup,
             QComboBox,
             QDialog,
-            QDialogButtonBox,
-            QFileDialog,
             QFrame,
             QGridLayout,
-            QGroupBox,
             QHBoxLayout,
             QLabel,
-            QHeaderView,
             QLineEdit,
             QMainWindow,
             QMessageBox,
-            QButtonGroup,
             QPushButton,
             QRadioButton,
             QScrollArea,
             QSizePolicy,
             QSpacerItem,
             QTabWidget,
-            QTableWidget,
-            QTableWidgetItem,
-            QTextEdit,
             QVBoxLayout,
             QWidget,
         )
@@ -75,110 +64,62 @@ def run_gui() -> None:
     from gui.pages.genset_page import GensetPage
 
     class OfferGeneratorWindow(QMainWindow):
+        """Главное окно: только каркас приложения и общие сервисы.
+
+        Вся рабочая область справа принадлежит страницам брендов. MainWindow не
+        хранит поля проекта, расчета, шаблонов и не формирует КП — страницы сами
+        собирают свои формы, контексты и кнопки действий.
+        """
+
         def __init__(self) -> None:
             super().__init__()
             self.settings = QSettings("SAM Group", "SAM Offer Generator")
             self.setWindowTitle("SAM Offer Generator")
             self.setMinimumSize(900, 620)
+
             icon_path = app_icon_path()
             if icon_path.exists():
                 self.setWindowIcon(QIcon(str(icon_path)))
 
             self._updating_path_display = False
-            self.project_dir_path = self._saved("project_dir", "")
-            self.output_dir_path = self._saved("output_dir", "")
-            self.spec_dir_path = self._saved("spec_dir", "")
-
-            self.project_edit = QLineEdit(self._display_dir(self.project_dir_path))
-            self.project_edit.setToolTip(self.project_dir_path)
-            self.spec_edit = QLineEdit(self._display_dir(self.spec_dir_path))
-            self.spec_edit.setToolTip(self.spec_dir_path)
-            self.client_edit = QLineEdit(self._saved("client", "ТОО Example"))
-            self.brand_combo = QComboBox()
-            self.brand_combo.addItems(BRANDS.keys())
-            self.brand_combo.setCurrentText(self._saved("brand", "Stulz"))
-            self.calc_combo = QComboBox()
-            self.calc_combo.setEditable(True)
-            saved_calc = self._saved("calc_path", "")
-            if saved_calc:
-                self._add_path_item(self.calc_combo, saved_calc, is_file=True)
-                self.calc_combo.setCurrentIndex(0)
-            self.template_combo = QComboBox()
-            self.template_combo.setEditable(True)
-            saved_template = self._saved("template_path", "")
-            if saved_template:
-                self._add_path_item(self.template_combo, saved_template, is_file=True)
-                self.template_combo.setCurrentIndex(0)
-            self.sheet_combo = QComboBox()
-            self.sheet_combo.setEditable(True)
-            saved_sheet = self._saved("sheet_name", "")
-            if saved_sheet:
-                self.sheet_combo.addItem(saved_sheet)
-                self.sheet_combo.setCurrentText(saved_sheet)
-            self.output_edit = QLineEdit(self._display_dir(self.output_dir_path))
-            self.output_edit.setToolTip(self.output_dir_path)
-            self.status_label = QLabel("Выберите папку проекта")
-            self._auto_client_value = ""
-
             self._base_font_size = 10
             self._last_scale = 0.0
             self._responsive_widgets: list[QWidget] = []
 
+            # Данные исполнителя — общие для всех страниц и редактируются в настройках.
             self.manager_name_edit = QLineEdit(self._saved("manager_name", ""))
             self.manager_position_edit = QLineEdit(self._saved("manager_position", ""))
             self.manager_email_edit = QLineEdit(self._saved("manager_email", ""))
             self.manager_phone_edit = QLineEdit(self._saved("manager_phone", ""))
-            for edit in (
-                self.manager_name_edit,
-                self.manager_position_edit,
-                self.manager_email_edit,
-                self.manager_phone_edit,
-            ):
-                edit.setObjectName("SidebarInput")
-                self._responsive_widgets.append(edit)
-            self.use_manager_btn = QPushButton("Использовать")
-            self.use_manager_btn.setObjectName("SidebarButton")
-            self.use_manager_btn.clicked.connect(self._save_manager_profile)
-            self._responsive_widgets.append(self.use_manager_btn)
 
             self.signer_group = QButtonGroup(self)
+            self.signer_saniya_radio = QRadioButton("Сания Санаткызы\nКоммерческий директор")
+            self.signer_alisher_radio = QRadioButton("Анаркулов Алишер\nИсполнительный директор")
+            for radio in (self.signer_saniya_radio, self.signer_alisher_radio):
+                radio.setObjectName("SidebarRadio")
+                self.signer_group.addButton(radio)
+                self._responsive_widgets.append(radio)
 
-            self.signer_saniya_radio = QRadioButton(
-                "Сания Санаткызы\nКоммерческий директор"
-            )
-            self.signer_saniya_radio.setObjectName("SidebarRadio")
-
-            self.signer_alisher_radio = QRadioButton(
-                "Анаркулов Алишер\nИсполнительный директор"
-            )
-            self.signer_alisher_radio.setObjectName("SidebarRadio")
-
-            self.signer_group.addButton(self.signer_saniya_radio)
-            self.signer_group.addButton(self.signer_alisher_radio)
-
-            saved_signer = self._saved("signer_key", "saniya")
-            if saved_signer == "alisher":
+            if self._saved("signer_key", "saniya") == "alisher":
                 self.signer_alisher_radio.setChecked(True)
             else:
                 self.signer_saniya_radio.setChecked(True)
-
             self.signer_saniya_radio.toggled.connect(self._on_signer_changed)
             self.signer_alisher_radio.toggled.connect(self._on_signer_changed)
 
-            self._responsive_widgets.append(self.signer_saniya_radio)
-            self._responsive_widgets.append(self.signer_alisher_radio)
-
             self._build_ui()
-            self._select_tab_for_brand(self.brand_combo.currentText())
             self._apply_style()
-            self._autofill_client_from_project_dir()
-            self._autofill_brand_from_project_dir()
-            self._scan_project(force=False)
-            self._autofill_manager_from_project(force=False)
-            self._refresh_preview()
+
+        # ------------------------- общие настройки -------------------------
+        def _saved(self, key: str, default: str) -> str:
+            value = self.settings.value(key, default)
+            return str(value) if value is not None else default
 
         def _clear_cache(self) -> None:
-            keys_to_clear = [
+            # Главный экран не знает, какие поля хранит бренд. Он сбрасывает
+            # общий кэш сканирования и просит каждую страницу очистить свои данные.
+            clear_scan_cache()
+            for key in (
                 "project_dir",
                 "output_dir",
                 "calc_path",
@@ -186,47 +127,17 @@ def run_gui() -> None:
                 "sheet_name",
                 "spec_dir",
                 "template_dir",
-            ]
-
-            for key in keys_to_clear:
+                "calc_template_path",
+                "calc_template_dir",
+            ):
                 self.settings.remove(key)
-
+            for page in self._all_brand_pages():
+                if hasattr(page, "clear_cache"):
+                    try:
+                        page.clear_cache()
+                    except Exception:
+                        pass
             self.settings.sync()
-            clear_scan_cache()
-
-            self.project_dir_path = ""
-            self.output_dir_path = ""
-            self.spec_dir_path = ""
-
-            self._updating_path_display = True
-            self.project_edit.clear()
-            self.output_edit.clear()
-            self.spec_edit.clear()
-            self._updating_path_display = False
-
-            self.project_edit.setToolTip("")
-            self.output_edit.setToolTip("")
-            self.spec_edit.setToolTip("")
-
-            self.calc_combo.blockSignals(True)
-            self.template_combo.blockSignals(True)
-            self.sheet_combo.blockSignals(True)
-
-            self.calc_combo.clear()
-            self.template_combo.clear()
-            self.sheet_combo.clear()
-
-            self.calc_combo.blockSignals(False)
-            self.template_combo.blockSignals(False)
-            self.sheet_combo.blockSignals(False)
-
-            if hasattr(self, "stulz_page"):
-                self.stulz_page.clear_spec_models()
-            if hasattr(self, "riello_page") and hasattr(self.riello_page, "clear_cache"):
-                self.riello_page.clear_cache()
-            if hasattr(self, "preview"):
-                self.preview.setPlainText("Кэш очищен. Выберите папку проекта заново.")
-            self.status_label.setText("Кэш очищен. Выберите папку проекта заново.")
 
         def _open_settings_dialog(self) -> None:
             dialog = SettingsDialog(self)
@@ -248,11 +159,7 @@ def run_gui() -> None:
                 latest = plan.latest_version or "неизвестно"
 
                 if not plan.has_update:
-                    QMessageBox.information(
-                        self,
-                        "Обновления",
-                        f"Установлена актуальная версия: {current}",
-                    )
+                    QMessageBox.information(self, "Обновления", f"Установлена актуальная версия: {current}")
                     return
 
                 if release.app_asset is None:
@@ -295,10 +202,7 @@ def run_gui() -> None:
                 if answer != QMessageBox.Yes:
                     return
 
-                self.status_label.setText("Скачиваю обновление...")
-                QApplication.processEvents()
                 packages = download_update_packages(plan)
-
                 QMessageBox.information(
                     self,
                     "Обновление",
@@ -312,10 +216,103 @@ def run_gui() -> None:
             except Exception as exc:
                 QMessageBox.critical(self, "Обновления", f"Ошибка обновления: {exc}")
 
-        def _saved(self, key: str, default: str) -> str:
-            value = self.settings.value(key, default)
-            return str(value) if value is not None else default
+        # ------------------------- общие данные -------------------------
+        def _manager_profile(self) -> ManagerProfile:
+            return ManagerProfile(
+                name=self.manager_name_edit.text().strip(),
+                position=self.manager_position_edit.text().strip(),
+                email=self.manager_email_edit.text().strip(),
+                phone=self.manager_phone_edit.text().strip(),
+            )
 
+        def _set_manager_profile(self, profile: ManagerProfile) -> None:
+            self.manager_name_edit.setText(profile.name)
+            self.manager_position_edit.setText(profile.position)
+            self.manager_email_edit.setText(profile.email)
+            self.manager_phone_edit.setText(profile.phone)
+
+        def _save_manager_profile(self) -> None:
+            profile = self._manager_profile()
+            self.settings.setValue("manager_name", profile.name)
+            self.settings.setValue("manager_position", profile.position)
+            self.settings.setValue("manager_email", profile.email)
+            self.settings.setValue("manager_phone", profile.phone)
+            self.settings.setValue("manager_profile_locked", "1")
+            self.settings.sync()
+            self._notify_pages_settings_changed()
+
+        def _has_saved_manager_profile(self) -> bool:
+            locked = self._saved("manager_profile_locked", "") == "1"
+            saved = any(
+                self._saved(key, "").strip()
+                for key in ("manager_name", "manager_position", "manager_email", "manager_phone")
+            )
+            return locked or saved
+
+        def _selected_signer_key(self) -> str:
+            return "alisher" if self.signer_alisher_radio.isChecked() else "saniya"
+
+        def _selected_signer(self) -> dict[str, str]:
+            return SIGNERS[self._selected_signer_key()]
+
+        def _on_signer_changed(self) -> None:
+            self.settings.setValue("signer_key", self._selected_signer_key())
+            self.settings.sync()
+            self._notify_pages_settings_changed()
+
+        # ------------------------- точки подключения страниц -------------------------
+        def _all_brand_pages(self) -> list[QWidget]:
+            return [
+                page
+                for page in (
+                    getattr(self, "stulz_page", None),
+                    getattr(self, "riello_page", None),
+                    getattr(self, "battery_page", None),
+                    getattr(self, "genset_page", None),
+                )
+                if page is not None
+            ]
+
+        def _active_brand_page(self):
+            if not hasattr(self, "brand_tabs"):
+                return None
+            return self.brand_tabs.currentWidget()
+
+        def _notify_pages_settings_changed(self) -> None:
+            for page in self._all_brand_pages():
+                if hasattr(page, "on_settings_changed"):
+                    try:
+                        page.on_settings_changed()
+                    except Exception:
+                        pass
+
+        def current_project_dir(self) -> str:
+            page = self._active_brand_page()
+            if page is not None and hasattr(page, "project_path_text"):
+                try:
+                    return str(page.project_path_text())
+                except Exception:
+                    pass
+            return self._saved("project_dir", "")
+
+        def _brand_for_tab_index(self, index: int) -> str:
+            names = list(BRANDS.keys())
+            return names[index] if 0 <= index < len(names) else "Stulz"
+
+        def _tab_index_for_brand(self, brand: str) -> int:
+            names = list(BRANDS.keys())
+            return names.index(brand) if brand in names else 0
+
+        def _select_tab_for_brand(self, brand: str) -> None:
+            if not hasattr(self, "brand_tabs"):
+                return
+            self.brand_tabs.setCurrentIndex(self._tab_index_for_brand(brand))
+
+        def _on_brand_tab_changed(self, index: int) -> None:
+            self.settings.setValue("brand", self._brand_for_tab_index(index))
+            self.settings.sync()
+
+        # ------------------------- UI helpers for pages -------------------------
         def _display_file(self, path_text: str) -> str:
             return Path(path_text).name if path_text else ""
 
@@ -350,169 +347,6 @@ def run_gui() -> None:
             line_edit.setText(display)
             self._updating_path_display = False
             line_edit.setToolTip(full)
-
-        def _project_path_text(self) -> str:
-            return self.project_dir_path or self.project_edit.text().strip()
-
-        def _output_path_text(self) -> str:
-            return self.output_dir_path or self.output_edit.text().strip()
-
-        def _spec_path_text(self) -> str:
-            return self.spec_dir_path or self.spec_edit.text().strip()
-
-        def _build_ui(self) -> None:
-            central = QWidget()
-            root = QHBoxLayout(central)
-            root.setContentsMargins(0, 0, 0, 0)
-            root.setSpacing(0)
-
-            self.sidebar = QFrame()
-            sidebar = self.sidebar
-            sidebar.setObjectName("Sidebar")
-            sidebar.setMinimumWidth(220)
-            side = QVBoxLayout(sidebar)
-            side.setContentsMargins(18, 16, 18, 14)
-            side.setSpacing(7)
-
-            brand = QLabel("SAM\nGROUP")
-            brand.setObjectName("Brand")
-            title = QLabel("Offer Generator")
-            title.setObjectName("SideTitle")
-            subtitle = QLabel("Папка проекта → расчет Excel → шаблон Word → готовое КП")
-            subtitle.setObjectName("SideSubtitle")
-            subtitle.setWordWrap(True)
-            self.settings_btn = QPushButton("Настройки")
-            self.settings_btn.setObjectName("Badge")
-            self.settings_btn.clicked.connect(self._open_settings_dialog)
-            self._responsive_widgets.append(self.settings_btn)
-
-            self.update_btn = QPushButton("Обновления")
-            self.update_btn.setObjectName("Badge")
-            self.update_btn.clicked.connect(self._check_updates)
-            self._responsive_widgets.append(self.update_btn)
-
-            side.addWidget(brand)
-            side.addWidget(title)
-            side.addWidget(subtitle)
-            side.addSpacing(6)
-            side.addWidget(self.settings_btn)
-            side.addWidget(self.update_btn)
-            side.addSpacing(6)
-            signer_title = QLabel("Подписант")
-            signer_title.setObjectName("SidebarSectionTitle")
-            side.addWidget(signer_title)
-            side.addWidget(self.signer_saniya_radio)
-            side.addWidget(self.signer_alisher_radio)
-
-            manager_hint = QLabel("Если поля пустые, программа попробует взять данные из Word-файла КП в папке проекта.")
-            manager_hint.setObjectName("SidebarHint")
-            manager_hint.setWordWrap(True)
-            side.addWidget(manager_hint)
-            side.addSpacerItem(QSpacerItem(20, 12, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-            footer = QLabel(APP_FOOTER)
-            footer.setObjectName("SidebarFooter")
-            footer.setWordWrap(True)
-            side.addWidget(footer)
-
-            self.content = QFrame()
-            content = self.content
-            content.setObjectName("Content")
-            content.setMinimumWidth(560)
-            content_layout = QVBoxLayout(content)
-            content_layout.setContentsMargins(34, 28, 34, 28)
-            content_layout.setSpacing(18)
-
-            header = QHBoxLayout()
-            h_text = QVBoxLayout()
-            page_title = QLabel("Новое коммерческое предложение")
-            page_title.setObjectName("PageTitle")
-            page_subtitle = QLabel("Сначала выберите папку проекта на сервере. Программа найдет Excel и Word внутри папки.")
-            page_subtitle.setObjectName("PageSubtitle")
-            h_text.addWidget(page_title)
-            h_text.addWidget(page_subtitle)
-            self.generate_btn = QPushButton("Сформировать КП")
-            self.generate_btn.setObjectName("PrimaryButton")
-            self.generate_btn.clicked.connect(self._generate)
-            header.addLayout(h_text, stretch=1)
-            header.addWidget(self.generate_btn, stretch=0, alignment=Qt.AlignTop)
-            content_layout.addLayout(header)
-
-            project_card = self._card("Папка проекта")
-            project_grid = QGridLayout()
-            project_card.layout().addLayout(project_grid)
-            project_grid.setColumnStretch(1, 1)
-            project_grid.setVerticalSpacing(12)
-            project_grid.setHorizontalSpacing(10)
-            self._add_row(project_grid, 0, "Папка проекта", self.project_edit, "Выбрать", self._browse_project_dir)
-            content_layout.addWidget(project_card)
-
-            self.brand_tabs = QTabWidget()
-            self.brand_tabs.setObjectName("BrandTabs")
-            self.brand_tabs.setDocumentMode(True)
-
-            self.stulz_page = StulzPage(self)
-            self.riello_page = RielloPage(self)
-            self.battery_page = BatteryPage(self)
-            self.genset_page = GensetPage(self)
-
-            self.brand_tabs.addTab(self.stulz_page, "Stulz")
-            self.brand_tabs.addTab(self.riello_page, "Riello")
-            self.brand_tabs.addTab(self.battery_page, "Battery")
-            self.brand_tabs.addTab(self.genset_page, "Genset")
-            self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
-            content_layout.addWidget(self.brand_tabs)
-
-            scroll = QScrollArea()
-            scroll.setObjectName("ContentScroll")
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QFrame.NoFrame)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            scroll.setWidget(content)
-
-            self.sidebar_scroll = QScrollArea()
-            self.sidebar_scroll.setObjectName("SidebarScroll")
-            self.sidebar_scroll.setWidgetResizable(True)
-            self.sidebar_scroll.setFrameShape(QFrame.NoFrame)
-            self.sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.sidebar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.sidebar_scroll.setWidget(sidebar)
-
-            root.addWidget(self.sidebar_scroll)
-            root.addWidget(scroll, stretch=1)
-            self.setCentralWidget(central)
-            self._apply_responsive_metrics(force=True)
-
-            self.project_edit.textChanged.connect(self._on_project_dir_changed)
-            self.calc_combo.currentTextChanged.connect(self._load_sheets)
-            self.calc_combo.currentTextChanged.connect(self._refresh_preview)
-            self.template_combo.currentTextChanged.connect(self._refresh_preview)
-            self.sheet_combo.currentTextChanged.connect(self._refresh_preview)
-            self.brand_combo.currentTextChanged.connect(self._refresh_preview)
-            self.client_edit.textChanged.connect(self._refresh_preview)
-            self.output_edit.textChanged.connect(self._on_output_dir_changed)
-            self.spec_edit.textChanged.connect(self._on_spec_dir_changed)
-            self.manager_name_edit.textChanged.connect(self._refresh_preview)
-            self.manager_position_edit.textChanged.connect(self._refresh_preview)
-            self.manager_email_edit.textChanged.connect(self._refresh_preview)
-            self.manager_phone_edit.textChanged.connect(self._refresh_preview)
-
-            # Save user input immediately, not only after successful generation.
-            self.project_edit.textChanged.connect(self._remember_values)
-            self.client_edit.textChanged.connect(self._remember_values)
-            self.output_edit.textChanged.connect(self._remember_values)
-            self.spec_edit.textChanged.connect(self._remember_values)
-            self.brand_combo.currentTextChanged.connect(self._remember_values)
-            self.calc_combo.currentTextChanged.connect(self._remember_values)
-            self.template_combo.currentTextChanged.connect(self._remember_values)
-            self.sheet_combo.currentTextChanged.connect(self._remember_values)
-
-        def _add_sidebar_field(self, layout, label: str, widget) -> None:
-            lab = QLabel(label)
-            lab.setObjectName("SidebarFormLabel")
-            layout.addWidget(lab)
-            layout.addWidget(widget)
 
         def _add_row(self, grid, row: int, label: str, widget, button_text: str | None, command) -> None:
             lab = QLabel(label)
@@ -552,84 +386,103 @@ def run_gui() -> None:
             layout.addWidget(label)
             return frame
 
-        def _placeholder_tab(self, title: str, text: str) -> QWidget:
-            tab = QWidget()
-            layout = QVBoxLayout(tab)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(12)
-            card = self._card(title)
-            label = QLabel(text)
-            label.setWordWrap(True)
-            card.layout().addWidget(label)
-            layout.addWidget(card)
-            layout.addStretch(1)
-            return tab
+        # ------------------------- layout/styling -------------------------
+        def _build_ui(self) -> None:
+            central = QWidget()
+            root = QHBoxLayout(central)
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(0)
 
-        def _brand_for_tab_index(self, index: int) -> str:
-            tab_to_brand = {
-                0: "Stulz",
-                1: "Riello",
-                2: "DC Eltek",
-                3: "Generator",
-            }
-            return tab_to_brand.get(index, "Stulz")
+            self.sidebar = QFrame()
+            self.sidebar.setObjectName("Sidebar")
+            self.sidebar.setMinimumWidth(220)
+            side = QVBoxLayout(self.sidebar)
+            side.setContentsMargins(18, 16, 18, 14)
+            side.setSpacing(7)
 
-        def _tab_index_for_brand(self, brand: str) -> int:
-            brand_to_tab = {
-                "Stulz": 0,
-                "Riello": 1,
-                "DC Eltek": 2,
-                "Generator": 3,
-            }
-            return brand_to_tab.get(brand, 0)
+            brand = QLabel("SAM\nGROUP")
+            brand.setObjectName("Brand")
+            title = QLabel("Offer Generator")
+            title.setObjectName("SideTitle")
+            subtitle = QLabel("Страницы брендов сами управляют своими расчетами и КП")
+            subtitle.setObjectName("SideSubtitle")
+            subtitle.setWordWrap(True)
 
-        def _active_brand_page(self):
-            if not hasattr(self, "brand_tabs"):
-                return None
-            return self.brand_tabs.currentWidget()
+            self.settings_btn = QPushButton("Настройки")
+            self.settings_btn.setObjectName("Badge")
+            self.settings_btn.clicked.connect(self._open_settings_dialog)
+            self._responsive_widgets.append(self.settings_btn)
 
-        def _update_primary_button_for_page(self) -> None:
-            page = self._active_brand_page()
-            text = "Сформировать КП"
-            if page is not None and hasattr(page, "primary_button_text"):
-                try:
-                    text = str(page.primary_button_text())
-                except Exception:
-                    text = "Сформировать КП"
-            elif self.brand_combo.currentText() == "Riello":
-                text = "Сформировать Excel"
-            if hasattr(self, "generate_btn"):
-                self.generate_btn.setText(text)
+            self.update_btn = QPushButton("Обновления")
+            self.update_btn.setObjectName("Badge")
+            self.update_btn.clicked.connect(self._check_updates)
+            self._responsive_widgets.append(self.update_btn)
 
-        def _select_tab_for_brand(self, brand: str) -> None:
-            if not hasattr(self, "brand_tabs"):
-                return
-            index = self._tab_index_for_brand(brand)
-            if self.brand_tabs.currentIndex() == index:
-                self._update_generate_button_text(brand)
-                return
-            self.brand_tabs.blockSignals(True)
-            self.brand_tabs.setCurrentIndex(index)
-            self.brand_tabs.blockSignals(False)
-            self._update_primary_button_for_page()
-            self._update_generate_button_text(brand)
+            side.addWidget(brand)
+            side.addWidget(title)
+            side.addWidget(subtitle)
+            side.addSpacing(6)
+            side.addWidget(self.settings_btn)
+            side.addWidget(self.update_btn)
+            side.addSpacing(6)
 
-        def _update_generate_button_text(self, brand: str | None = None) -> None:
-            brand = brand or self.brand_combo.currentText()
-            if hasattr(self, "generate_btn"):
-                self.generate_btn.setText("Сформировать Excel" if brand == "Riello" else "Сформировать КП")
+            signer_title = QLabel("Подписант")
+            signer_title.setObjectName("SidebarSectionTitle")
+            side.addWidget(signer_title)
+            side.addWidget(self.signer_saniya_radio)
+            side.addWidget(self.signer_alisher_radio)
+            side.addSpacerItem(QSpacerItem(20, 12, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        def _on_brand_tab_changed(self, index: int) -> None:
-            brand = self._brand_for_tab_index(index)
-            if self.brand_combo.currentText() != brand:
-                self.brand_combo.blockSignals(True)
-                self.brand_combo.setCurrentText(brand)
-                self.brand_combo.blockSignals(False)
-            if brand == "Riello" and hasattr(self, "riello_page"):
-                self.riello_page.ensure_default_excel_template()
-            self._update_generate_button_text(brand)
-            self._remember_values()
-            self._refresh_preview()
+            footer = QLabel(APP_FOOTER)
+            footer.setObjectName("SidebarFooter")
+            footer.setWordWrap(True)
+            side.addWidget(footer)
+
+            self.content = QFrame()
+            self.content.setObjectName("Content")
+            self.content.setMinimumWidth(560)
+            content_layout = QVBoxLayout(self.content)
+            content_layout.setContentsMargins(34, 28, 34, 28)
+            content_layout.setSpacing(18)
+
+            self.brand_tabs = QTabWidget()
+            self.brand_tabs.setObjectName("BrandTabs")
+            self.brand_tabs.setDocumentMode(True)
+
+            self.stulz_page = StulzPage(self)
+            self.riello_page = RielloPage(self)
+            self.battery_page = BatteryPage(self)
+            self.genset_page = GensetPage(self)
+
+            self.brand_tabs.addTab(self.stulz_page, "Stulz")
+            self.brand_tabs.addTab(self.riello_page, "Riello")
+            self.brand_tabs.addTab(self.battery_page, "Battery")
+            self.brand_tabs.addTab(self.genset_page, "Genset")
+            self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
+            self.brand_tabs.setCurrentIndex(self._tab_index_for_brand(self._saved("brand", "Stulz")))
+
+            content_layout.addWidget(self.brand_tabs)
+
+            scroll = QScrollArea()
+            scroll.setObjectName("ContentScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll.setWidget(self.content)
+
+            self.sidebar_scroll = QScrollArea()
+            self.sidebar_scroll.setObjectName("SidebarScroll")
+            self.sidebar_scroll.setWidgetResizable(True)
+            self.sidebar_scroll.setFrameShape(QFrame.NoFrame)
+            self.sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.sidebar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.sidebar_scroll.setWidget(self.sidebar)
+
+            root.addWidget(self.sidebar_scroll)
+            root.addWidget(scroll, stretch=1)
+            self.setCentralWidget(central)
+            self._apply_responsive_metrics(force=True)
 
         def _ui_scale(self) -> float:
             return ui_scale(self.width(), self.height())
@@ -650,13 +503,17 @@ def run_gui() -> None:
             self.content.layout().setContentsMargins(content_margin_x, content_margin_y, content_margin_x, content_margin_y)
             self.content.layout().setSpacing(int(16 * scale))
 
-            sidebar_input_h = int(28 * scale)
+            widget_h = int(28 * scale)
             for widget in self._responsive_widgets:
-                widget.setMinimumHeight(sidebar_input_h)
+                widget.setMinimumHeight(widget_h)
 
-            self.generate_btn.setMinimumWidth(int(220 * scale))
-            self.generate_btn.setMinimumHeight(int(42 * scale))
             self._apply_style(scale)
+            for page in self._all_brand_pages():
+                if hasattr(page, "apply_responsive_metrics"):
+                    try:
+                        page.apply_responsive_metrics(scale)
+                    except Exception:
+                        pass
 
         def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API name
             super().resizeEvent(event)
@@ -669,477 +526,16 @@ def run_gui() -> None:
                 app.setFont(QFont("Segoe UI", max(9, int(10 * scale))))
             self.setStyleSheet(stylesheet(scale))
 
-        def _extract_client_from_project_dir(self, path_text: str) -> str:
-            return extract_client_from_project_dir(path_text)
-
-        def _extract_brand_from_project_dir(self, path_text: str) -> str:
-            return extract_brand_from_project_dir(path_text, tuple(BRANDS.keys()))
-
-        def _autofill_brand_from_project_dir(self) -> None:
-            brand = self._extract_brand_from_project_dir(self._project_path_text())
-            if not brand:
-                return
-
-            changed = self.brand_combo.currentText() != brand
-            if changed:
-                self.brand_combo.blockSignals(True)
-                self.brand_combo.setCurrentText(brand)
-                self.brand_combo.blockSignals(False)
-            self._select_tab_for_brand(brand)
-            if changed:
-                self._refresh_preview()
-
-        def _on_project_dir_changed(self) -> None:
-            # Do not scan the project tree on every typed character.
-            # Scanning is done on startup, after folder selection, or via "Обновить".
-            if not self._updating_path_display:
-                self.project_dir_path = self.project_edit.text().strip()
-                self.project_edit.setToolTip(self.project_dir_path)
-            self._autofill_client_from_project_dir()
-            self._autofill_brand_from_project_dir()
-            self.status_label.setText("Папка изменена. Нажмите «Обновить» или выберите папку через кнопку.")
-            page = self._active_brand_page()
-            if page is not None and hasattr(page, "refresh_preview"):
-                page.refresh_preview()
-
-        def _autofill_client_from_project_dir(self, force: bool = False) -> None:
-            client = self._extract_client_from_project_dir(self._project_path_text())
-            if not client:
-                return
-
-            current = self.client_edit.text().strip()
-            should_update = (
-                force
-                or not current
-                or current == "ТОО Example"
-                or current == self._auto_client_value
-            )
-            if not should_update:
-                return
-
-            self.client_edit.blockSignals(True)
-            self.client_edit.setText(client)
-            self.client_edit.blockSignals(False)
-            self._auto_client_value = client
-            self._refresh_preview()
-
-        def _manager_profile(self) -> ManagerProfile:
-            return ManagerProfile(
-                name=self.manager_name_edit.text().strip(),
-                position=self.manager_position_edit.text().strip(),
-                email=self.manager_email_edit.text().strip(),
-                phone=self.manager_phone_edit.text().strip(),
-            )
-
-        def _selected_signer_key(self) -> str:
-            if self.signer_alisher_radio.isChecked():
-                return "alisher"
-            return "saniya"
-
-        def _selected_signer(self) -> dict[str, str]:
-            return SIGNERS[self._selected_signer_key()]
-
-        def _on_signer_changed(self) -> None:
-            self.settings.setValue("signer_key", self._selected_signer_key())
-            page = self._active_brand_page()
-            if page is not None and hasattr(page, "remember_values"):
-                try:
-                    page.remember_values()
-                except Exception:
-                    pass
-            self.settings.sync()
-            self._refresh_preview()
-
-        def _set_manager_profile(self, profile: ManagerProfile) -> None:
-            self.manager_name_edit.setText(profile.name)
-            self.manager_position_edit.setText(profile.position)
-            self.manager_email_edit.setText(profile.email)
-            self.manager_phone_edit.setText(profile.phone)
-
-        def _save_manager_profile(self) -> None:
-            profile = self._manager_profile()
-            self.settings.setValue("manager_name", profile.name)
-            self.settings.setValue("manager_position", profile.position)
-            self.settings.setValue("manager_email", profile.email)
-            self.settings.setValue("manager_phone", profile.phone)
-            self.settings.setValue("manager_profile_locked", "1")
-            self.settings.sync()
-            self.status_label.setText("Данные исполнителя сохранены")
-            self._refresh_preview()
-
-        def _has_saved_manager_profile(self) -> bool:
-            locked = self._saved("manager_profile_locked", "") == "1"
-            saved = any(
-                self._saved(key, "").strip()
-                for key in ("manager_name", "manager_position", "manager_email", "manager_phone")
-            )
-            return locked or saved
-
-        def _autofill_manager_from_project(self, force: bool = False) -> None:
-            if not force and self._has_saved_manager_profile():
-                return
-            if not force and not self._manager_profile().is_empty():
-                return
-
-            project_text = self._project_path_text().strip()
-            project_dir = Path(project_text) if project_text else None
-            if not project_dir or not project_dir.exists():
-                return
-
-            profile = find_manager_in_project(project_dir)
-            if profile.is_empty():
-                return
-
-            self._set_manager_profile(profile)
-            self.settings.setValue("manager_name", profile.name)
-            self.settings.setValue("manager_position", profile.position)
-            self.settings.setValue("manager_email", profile.email)
-            self.settings.setValue("manager_phone", profile.phone)
-            self.settings.sync()
-            self.status_label.setText("Данные исполнителя найдены в Word-файле проекта")
-
-        def _on_output_dir_changed(self) -> None:
-            if not self._updating_path_display:
-                self.output_dir_path = self.output_edit.text().strip()
-                self.output_edit.setToolTip(self.output_dir_path)
-            self._refresh_preview()
-
-        def _on_spec_dir_changed(self) -> None:
-            if not self._updating_path_display:
-                self.spec_dir_path = self.spec_edit.text().strip()
-                self.spec_edit.setToolTip(self.spec_dir_path)
-            self._refresh_preview()
-
-        def _browse_project_dir(self) -> None:
-            old_project = self._project_path_text().strip()
-            old_spec = self._spec_path_text().strip()
-            path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", old_project)
-            if path:
-                # Changing project must not reset the selected Word template.
-                # Templates are stored separately and are remembered in QSettings.
-                self.project_dir_path = path
-                self._set_line_path(self.project_edit, path, is_file=False)
-
-                # Папка спецификаций зависит от выбранного проекта.
-                # При смене проекта сбрасываем старый путь всегда: дальше
-                # _scan_project() автоматически найдет *Suppliers* и папку
-                # с WinPlan/Calc PDF. Ручной выбор сохраняется до следующей
-                # смены папки проекта.
-                if path != old_project:
-                    self.spec_dir_path = ""
-                    self._set_line_path(self.spec_edit, "", is_file=False)
-
-                # Папка результата зависит от выбранного проекта.
-                # При смене проекта сбрасываем старый путь всегда: дальше
-                # _scan_project() автоматически найдет *Sales docs*.
-                # Ручной выбор сохраняется до следующей смены папки проекта.
-                if path != old_project:
-                    self.output_dir_path = ""
-                    self._set_line_path(self.output_edit, "", is_file=False)
-
-                self._autofill_client_from_project_dir(force=True)
-                self._autofill_brand_from_project_dir()
-                self._scan_project(force=True)
-                self._autofill_manager_from_project(force=False)
-
-        def _browse_output_dir(self) -> None:
-            path = QFileDialog.getExistingDirectory(self, "Выберите папку результата", self._output_path_text() or self._project_path_text())
-            if path:
-                self.output_dir_path = path
-                self._set_line_path(self.output_edit, path, is_file=False)
-
-        def _browse_spec_dir(self) -> None:
-            start_dir = self._spec_path_text() or self._project_path_text()
-            path = QFileDialog.getExistingDirectory(self, "Выберите папку спецификаций", start_dir)
-            if path:
-                self.spec_dir_path = path
-                self._set_line_path(self.spec_edit, path, is_file=False)
-
-        def _browse_calc_file(self) -> None:
-            current_calc = self._path_from_combo(self.calc_combo)
-            start_dir = str(Path(current_calc).parent) if current_calc else self._project_path_text()
-            path, _ = QFileDialog.getOpenFileName(self, "Выберите Excel-файл", start_dir, "Excel (*.xlsx *.xlsm)")
-            if path:
-                index = self._find_combo_path(self.calc_combo, path)
-                if index < 0:
-                    self._add_path_item(self.calc_combo, path, is_file=True)
-                    index = self.calc_combo.count() - 1
-                self.calc_combo.setCurrentIndex(index)
-                self._load_sheets()
-                self._remember_values()
-
-        def _browse_template_file(self) -> None:
-            current_template = self._path_from_combo(self.template_combo)
-            start_dir = str(Path(current_template).parent) if current_template else self._saved("template_dir", self._project_path_text())
-            path, _ = QFileDialog.getOpenFileName(self, "Выберите Word-шаблон", start_dir, "Word (*.docx)")
-            if path:
-                index = self._find_combo_path(self.template_combo, path)
-                if index < 0:
-                    self._add_path_item(self.template_combo, path, is_file=True)
-                    index = self.template_combo.count() - 1
-                self.template_combo.setCurrentIndex(index)
-                self.settings.setValue("template_dir", str(Path(path).parent))
-                self._remember_values()
-
-        def _scan_project(self, force: bool = False) -> None:
-            project_text = self._project_path_text().strip()
-            project_dir = Path(project_text) if project_text else None
-            if not project_dir or not project_dir.exists():
-                self.status_label.setText("Папка проекта не выбрана")
-                return
-
-            if force:
-                clear_scan_cache()
-
-            found = scan_project_files(project_dir, use_cache=not force)
-
-            old_calc = self._path_from_combo(self.calc_combo)
-            old_template = self._path_from_combo(self.template_combo)
-
-            self.calc_combo.blockSignals(True)
-            self.calc_combo.clear()
-            for p in found["excel"]:
-                self._add_path_item(self.calc_combo, str(p), is_file=True)
-            old_calc_index = self._find_combo_path(self.calc_combo, old_calc) if old_calc else -1
-            if old_calc_index >= 0:
-                self.calc_combo.setCurrentIndex(old_calc_index)
-            self.calc_combo.blockSignals(False)
-            if self.brand_combo.currentText() == "Riello" and hasattr(self, "riello_page"):
-                self.riello_page.ensure_default_excel_template()
-
-            self.template_combo.blockSignals(True)
-            self.template_combo.clear()
-
-            # Word-шаблон не привязан к папке проекта. Поэтому при смене проекта
-            # сначала возвращаем текущий/сохраненный шаблон, даже если он лежит
-            # в другой папке, и только затем добавляем найденные в проекте DOCX.
-            if old_template and Path(old_template).exists():
-                self._add_path_item(self.template_combo, old_template, is_file=True)
-
-            for p in found["word"]:
-                if self._find_combo_path(self.template_combo, str(p)) < 0:
-                    self._add_path_item(self.template_combo, str(p), is_file=True)
-
-            selected_template_index = self._find_combo_path(self.template_combo, old_template) if old_template else -1
-
-            # Автовыбор шаблона делаем только если шаблон еще не выбран.
-            # Смена проекта не должна перезаписывать выбранный путь шаблона.
-            if selected_template_index < 0 and not old_template and found["word"]:
-                newest_template = max(found["word"], key=lambda p: p.stat().st_mtime)
-                selected_template_index = self._find_combo_path(self.template_combo, str(newest_template))
-
-            if selected_template_index >= 0:
-                self.template_combo.setCurrentIndex(selected_template_index)
-
-            self.template_combo.blockSignals(False)
-
-            if not self._output_path_text().strip():
-                guessed_output_dir = infer_output_dir(str(project_dir))
-                self.output_dir_path = guessed_output_dir
-                self._set_line_path(self.output_edit, guessed_output_dir, is_file=False)
-
-            old_spec = self._spec_path_text().strip()
-            should_update_spec = not old_spec
-            if should_update_spec:
-                guessed_spec_dir = infer_specifications_dir(str(project_dir), found.get("pdf_dirs", []))
-                self.spec_dir_path = guessed_spec_dir
-                self._set_line_path(self.spec_edit, guessed_spec_dir, is_file=False)
-
-            # Передаём результаты сканирования активным страницам.
-            # Так вкладки сами решают, какие файлы и папки им нужны.
-            for page in (getattr(self, "stulz_page", None), getattr(self, "riello_page", None), getattr(self, "battery_page", None), getattr(self, "genset_page", None)):
-                if page is not None and hasattr(page, "apply_scan_results"):
+        def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+            for page in self._all_brand_pages():
+                if hasattr(page, "remember_values"):
                     try:
-                        page.apply_scan_results(project_dir, found, force=force)
+                        page.remember_values()
                     except Exception:
                         pass
-
-            spec_hint = self._display_dir(self.spec_dir_path) if self.spec_dir_path else "не выбрана"
-            self.status_label.setText(
-                f"Найдено Excel: {len(found['excel'])}, Word: {len(found['word'])}, "
-                f"папок PDF: {len(found['pdf_dirs'])}. Спецификации: {spec_hint}"
-            )
-            self._load_sheets()
-            self._refresh_preview()
-
-        def _load_sheets(self) -> None:
-            current = self.sheet_combo.currentText().strip() or self._saved("sheet_name", "")
-            self.sheet_combo.blockSignals(True)
-            self.sheet_combo.clear()
-            try:
-                calc_path = Path(self._path_from_combo(self.calc_combo))
-                if calc_path.exists():
-                    sheets = list_sheets(calc_path)
-                    self.sheet_combo.addItems(sheets)
-                    if current and current in sheets:
-                        self.sheet_combo.setCurrentText(current)
-            except Exception:
-                self.sheet_combo.addItem("")
-            finally:
-                self.sheet_combo.blockSignals(False)
-            self._refresh_preview()
-
-        def _make_context(self) -> OfferContext:
-            page = self._active_brand_page()
-            if page is not None and hasattr(page, "make_context"):
-                return page.make_context()
-
-            project_dir = Path(self._project_path_text().strip())
-            output_dir = Path(self._output_path_text().strip() or project_dir)
-            spec_text = self._spec_path_text().strip()
-            pdf_dir = Path(spec_text) if spec_text else (project_dir if project_dir.exists() else None)
-            calc_text = self._path_from_combo(self.calc_combo).strip()
-            template_text = self._path_from_combo(self.template_combo).strip()
-            return OfferContext(
-                brand=self.brand_combo.currentText(),
-                project_dir=project_dir,
-                template_path=Path(template_text) if template_text else Path("__template_not_selected__.docx"),
-                calc_path=Path(calc_text) if calc_text else Path("__calc_not_selected__.xlsx"),
-                output_dir=output_dir,
-                client_name=self.client_edit.text().strip() or "Client",
-                sheet_name=self.sheet_combo.currentText().strip() or None,
-                pdf_dir=pdf_dir,
-                manager_name=self.manager_name_edit.text().strip(),
-                manager_position=self.manager_position_edit.text().strip(),
-                manager_email=self.manager_email_edit.text().strip(),
-                manager_phone=self.manager_phone_edit.text().strip(),
-                signer_name=self._selected_signer()["name"],
-                signer_position=self._selected_signer()["position"],
-                spec_models=self._selected_spec_models(),
-                description_options=self._description_options(),
-                brand_options=self._brand_options(),
-            )
-
-        def _validate_context(self, context: OfferContext) -> None:
-            page = self._active_brand_page()
-            if page is not None and hasattr(page, "validate_context"):
-                return page.validate_context(context)
-
-            if not context.project_dir.exists():
-                raise FileNotFoundError("Выберите существующую папку проекта.")
-
-            if context.brand == "Riello":
-                if not context.calc_path.exists():
-                    raise FileNotFoundError("Выберите существующий Excel-шаблон расчета Riello.")
-                if context.calc_path.suffix.lower() not in {".xlsx", ".xlsm"}:
-                    raise ValueError("Excel-шаблон Riello должен быть файлом .xlsx или .xlsm")
-                return
-
-            if not context.calc_path.exists():
-                raise FileNotFoundError("Выберите существующий Excel-файл калькуляции.")
-            if not context.template_path.exists():
-                raise FileNotFoundError("Выберите существующий Word-шаблон.")
-            if context.pdf_dir and not context.pdf_dir.exists():
-                raise FileNotFoundError("Выберите существующую папку спецификаций.")
-            if context.template_path.suffix.lower() != ".docx":
-                raise ValueError("Word-шаблон должен быть файлом .docx")
-
-        def _current_spec_model_state(self) -> dict[str, tuple[bool, str]]:
-            if hasattr(self, "stulz_page"):
-                return self.stulz_page.current_spec_model_state()
-            return {}
-
-        def _selected_spec_models(self) -> list[dict[str, object]]:
-            if hasattr(self, "stulz_page"):
-                return self.stulz_page.selected_spec_models()
-            return []
-
-        def _description_options(self) -> dict[str, bool]:
-            if hasattr(self, "stulz_page"):
-                return self.stulz_page.description_options()
-            return {}
-
-        def _brand_options(self) -> dict[str, object]:
-            if self.brand_combo.currentText() == "Riello" and hasattr(self, "riello_page"):
-                return self.riello_page.brand_options()
-            return {}
-
-        def _refresh_spec_models(self, context: OfferContext | None = None) -> None:
-            if hasattr(self, "stulz_page"):
-                self.stulz_page.refresh_spec_models(context)
-
-        def _refresh_preview(self) -> None:
-            page = self._active_brand_page()
-            if page is not None and hasattr(page, "refresh_preview"):
-                try:
-                    return page.refresh_preview()
-                except Exception:
-                    pass
-            try:
-                context = self._make_context()
-                self._refresh_spec_models(context)
-                if context.brand != "Riello" and not context.calc_path.exists():
-                    if hasattr(self, "preview"):
-                        self.preview.setPlainText("Excel-файл пока не выбран или не найден.")
-                    return
-                module = get_brand_module(context.brand)
-                if hasattr(self, "preview"):
-                    self.preview.setPlainText(module.preview(context))
-            except Exception as exc:
-                if hasattr(self, "preview"):
-                    self.preview.setPlainText(f"Не удалось прочитать данные: {exc}")
-                self._refresh_spec_models(None)
-
-        def _remember_values(self) -> None:
-            self.settings.setValue("project_dir", self._project_path_text())
-            self.settings.setValue("client", self.client_edit.text())
-            self.settings.setValue("brand", self.brand_combo.currentText())
-            self.settings.setValue("calc_path", self._path_from_combo(self.calc_combo))
-            self.settings.setValue("template_path", self._path_from_combo(self.template_combo))
-            self.settings.setValue("sheet_name", self.sheet_combo.currentText())
-            self.settings.setValue("output_dir", self._output_path_text())
-            self.settings.setValue("spec_dir", self._spec_path_text())
             self.settings.setValue("signer_key", self._selected_signer_key())
-            page = self._active_brand_page()
-            if page is not None and hasattr(page, "remember_values"):
-                try:
-                    page.remember_values()
-                except Exception:
-                    pass
             self.settings.sync()
-
-        def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
-            self._remember_values()
             super().closeEvent(event)
-
-        def _generate(self) -> None:
-            try:
-                self.generate_btn.setEnabled(False)
-                self.status_label.setText("Формирую документ...")
-                QApplication.processEvents()
-
-                context = self._make_context()
-                if context.brand == "Riello":
-                    self.status_label.setText("Формирую Excel-расчет...")
-                    QApplication.processEvents()
-                self._validate_context(context)
-                module = get_brand_module(context.brand)
-                out = module.make_offer(context)
-
-                self._remember_values()
-                self.status_label.setText(f"Готово: {out.name}")
-
-                msg = QMessageBox(self)
-                msg.setWindowTitle("SAM Offer Generator")
-                msg.setIcon(QMessageBox.Question)
-                msg.setText("Excel-расчет успешно сформирован." if context.brand == "Riello" else "Коммерческое предложение успешно сформировано.")
-                msg.setInformativeText(str(out))
-                open_folder_btn = msg.addButton("Открыть папку", QMessageBox.ActionRole)
-                open_file_btn = msg.addButton("Открыть расчет" if context.brand == "Riello" else "Открыть КП", QMessageBox.ActionRole)
-                msg.addButton("Закрыть", QMessageBox.RejectRole)
-                msg.exec()
-                clicked = msg.clickedButton()
-                if clicked == open_folder_btn:
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(out.parent)))
-                elif clicked == open_file_btn:
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(out)))
-
-            except Exception as exc:
-                self.status_label.setText("Ошибка формирования")
-                QMessageBox.critical(self, "Ошибка", str(exc))
-            finally:
-                self.generate_btn.setEnabled(True)
-                self._refresh_preview()
 
     app = QApplication.instance() or QApplication(sys.argv)
     icon_path = app_icon_path()

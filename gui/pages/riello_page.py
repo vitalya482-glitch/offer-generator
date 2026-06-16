@@ -2,19 +2,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QFileDialog,
+    QApplication,
     QComboBox,
+    QFileDialog,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QHeaderView,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
     QVBoxLayout,
     QWidget,
 )
 
+from brands.registry import get_brand_module
+from core.manager_profile import find_manager_in_project
 from core.models import OfferContext
 from core.riello_price import (
     default_price_path,
@@ -27,24 +35,31 @@ from core.riello_price import (
     power_modules,
 )
 from core.runtime_paths import resource_path
+from gui.path_helpers import extract_client_from_project_dir, infer_output_dir
 
 
 class RielloPage(QWidget):
-    """Страница Riello: сначала ввод мощности, затем выбор подходящей позиции из PDF-прайса."""
+    """Самостоятельная страница Riello.
+
+    Страница сама содержит папку проекта, Excel-шаблон, папку результата,
+    ввод мощности, список моделей и кнопку формирования Excel-расчета.
+    """
+
+    brand_name = "Riello"
 
     def __init__(self, owner) -> None:
         super().__init__(owner)
         self.owner = owner
         self._updating = False
+        self._updating_path_display = False
         self.price_items = []
         self.filtered_items = []
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        self.project_dir_path = self._saved("riello/project_dir", self._saved("project_dir", ""))
+        self.output_dir_path = self._saved("riello/output_dir", self._saved("output_dir", ""))
 
-        self.output_dir_path = self._saved("riello/output_dir", "")
-
+        self.project_edit = QLineEdit(owner._display_dir(self.project_dir_path))
+        self.project_edit.setToolTip(self.project_dir_path)
         self.client_edit = QLineEdit(self._saved("riello/client", self._saved("client", "ТОО Example")))
         self.calc_combo = QComboBox()
         self.calc_combo.setEditable(True)
@@ -54,14 +69,42 @@ class RielloPage(QWidget):
             self.calc_combo.setCurrentIndex(0)
         self.output_edit = QLineEdit(owner._display_dir(self.output_dir_path))
         self.output_edit.setToolTip(self.output_dir_path)
+        self.status_label = QLabel("Выберите папку проекта и модель Riello")
 
-        files_card = owner._card("Riello: Excel-шаблон")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        h_text = QVBoxLayout()
+        page_title = QLabel("Riello: расчет ИБП")
+        page_title.setObjectName("PageTitle")
+        page_subtitle = QLabel("Введите мощность — страница Riello подберет ближайшие позиции из PDF-прайса и сформирует Excel по шаблону.")
+        page_subtitle.setObjectName("PageSubtitle")
+        h_text.addWidget(page_title)
+        h_text.addWidget(page_subtitle)
+        self.generate_btn = QPushButton("Сформировать Excel")
+        self.generate_btn.setObjectName("PrimaryButton")
+        self.generate_btn.clicked.connect(self.generate)
+        header.addLayout(h_text, stretch=1)
+        header.addWidget(self.generate_btn, stretch=0, alignment=Qt.AlignTop)
+        layout.addLayout(header)
+
+        project_card = owner._card("Папка проекта")
+        project_grid = QGridLayout()
+        project_card.layout().addLayout(project_grid)
+        project_grid.setColumnStretch(1, 1)
+        project_grid.setVerticalSpacing(12)
+        project_grid.setHorizontalSpacing(10)
+        owner._add_row(project_grid, 0, "Папка проекта", self.project_edit, "Выбрать", self.browse_project_dir)
+        layout.addWidget(project_card)
+
+        files_card = owner._card("Riello: Excel-шаблон и результат")
         files_grid = QGridLayout()
         files_card.layout().addLayout(files_grid)
         files_grid.setColumnStretch(1, 1)
         files_grid.setVerticalSpacing(12)
         files_grid.setHorizontalSpacing(10)
-
         owner._add_row(files_grid, 0, "Клиент", self.client_edit, None, None)
         owner._add_row(files_grid, 1, "Excel-шаблон", self.calc_combo, "Выбрать", self.browse_calc_file)
         owner._add_row(files_grid, 2, "Папка результата", self.output_edit, "Выбрать", self.browse_output_dir)
@@ -77,16 +120,13 @@ class RielloPage(QWidget):
         input_grid.setHorizontalSpacing(10)
 
         self.required_power_edit = QLineEdit(self._saved("riello/required_power_kw", "20"))
-        self.required_power_edit.setPlaceholderText("например 20 или 100")
-
+        self.required_power_edit.setPlaceholderText("например 20, 100 или 4000")
         self.autonomy_edit = QLineEdit(self._saved("riello/autonomy_min", "20"))
         self.autonomy_edit.setPlaceholderText("мин")
         self.autonomy_edit.setMaximumWidth(95)
-
         self.ups_qty_edit = QLineEdit(self._saved("riello/ups_quantity", "1"))
         self.ups_qty_edit.setPlaceholderText("шт")
         self.ups_qty_edit.setMaximumWidth(95)
-
         self.ups_combo = QComboBox()
         self.ups_combo.setMinimumWidth(480)
 
@@ -124,6 +164,7 @@ class RielloPage(QWidget):
         self.details.setObjectName("Hint")
         self.details.setWordWrap(True)
         details_card.layout().addWidget(self.details)
+        details_card.layout().addWidget(self.status_label)
         layout.addWidget(details_card)
         layout.addStretch(1)
 
@@ -132,6 +173,7 @@ class RielloPage(QWidget):
         self._connect_changes()
         self.refresh_summary()
 
+    # ------------------------- helpers/settings -------------------------
     def _saved(self, key: str, default: str) -> str:
         settings = getattr(self.owner, "settings", None)
         if settings is None:
@@ -145,6 +187,20 @@ class RielloPage(QWidget):
             return
         settings.setValue(key, value)
 
+    def _path_from_combo(self, combo: QComboBox) -> str:
+        return self.owner._path_from_combo(combo)
+
+    def _set_line_path(self, line_edit: QLineEdit, path_text: str, is_file: bool = False) -> None:
+        self._updating_path_display = True
+        self.owner._set_line_path(line_edit, path_text, is_file=is_file)
+        self._updating_path_display = False
+
+    def project_path_text(self) -> str:
+        return self.project_dir_path or self.project_edit.toolTip() or self.project_edit.text().strip()
+
+    def output_path_text(self) -> str:
+        return self.output_dir_path or self.output_edit.toolTip() or self.output_edit.text().strip()
+
     def ensure_default_excel_template(self) -> None:
         template_path = resource_path(Path("templates") / "riello" / "calc_08-04-26 UPS.xlsx")
         if not template_path.exists():
@@ -157,15 +213,8 @@ class RielloPage(QWidget):
             if index >= 0:
                 combo.setCurrentIndex(index)
 
-    def _load_price_items(self) -> None:
-        self._updating = True
-        try:
-            self.price_items = load_price_items(default_price_path())
-            self._reload_ups_models(keep_saved=True)
-        finally:
-            self._updating = False
-
     def _connect_changes(self) -> None:
+        self.project_edit.textChanged.connect(self._on_project_dir_changed)
         self.client_edit.textChanged.connect(self._on_changed)
         self.calc_combo.currentTextChanged.connect(self._on_changed)
         self.output_edit.textChanged.connect(self._on_output_dir_changed)
@@ -175,19 +224,45 @@ class RielloPage(QWidget):
         self.autonomy_edit.textChanged.connect(self._on_changed)
         self.models_table.cellClicked.connect(self._on_table_row_clicked)
 
+    def _load_price_items(self) -> None:
+        self._updating = True
+        try:
+            self.price_items = load_price_items(default_price_path())
+            self._reload_ups_models(keep_saved=True)
+        finally:
+            self._updating = False
 
-    def _path_from_combo(self, combo: QComboBox) -> str:
-        return self.owner._path_from_combo(combo)
+    # ------------------------- browse/project -------------------------
+    def browse_project_dir(self) -> None:
+        old_project = self.project_path_text().strip()
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта Riello", old_project)
+        if not path:
+            return
+        self.project_dir_path = path
+        self._set_line_path(self.project_edit, path, is_file=False)
+        if path != old_project:
+            self.output_dir_path = ""
+            self._set_line_path(self.output_edit, "", is_file=False)
+        self.apply_project_dir(Path(path))
+        self.save_options()
 
-    def _set_line_path(self, line_edit: QLineEdit, path_text: str, is_file: bool = False) -> None:
-        self.owner._set_line_path(line_edit, path_text, is_file=is_file)
-
-    def output_path_text(self) -> str:
-        return self.output_dir_path or self.output_edit.text().strip()
+    def apply_project_dir(self, project_dir: Path) -> None:
+        if not self.output_path_text().strip():
+            try:
+                guessed = infer_output_dir(str(project_dir))
+            except Exception:
+                guessed = str(project_dir)
+            self.output_dir_path = guessed
+            self._set_line_path(self.output_edit, guessed, is_file=False)
+        client = extract_client_from_project_dir(str(project_dir))
+        if client and (not self.client_edit.text().strip() or self.client_edit.text().strip() == "ТОО Example"):
+            self.client_edit.setText(client)
+        self.autofill_manager_from_project(project_dir, force=False)
+        self.refresh_summary()
 
     def browse_calc_file(self) -> None:
         current_calc = self._path_from_combo(self.calc_combo)
-        start_dir = str(Path(current_calc).parent) if current_calc else self.owner._project_path_text()
+        start_dir = str(Path(current_calc).parent) if current_calc else self.project_path_text()
         path, _ = QFileDialog.getOpenFileName(self, "Выберите Excel-шаблон Riello", start_dir, "Excel (*.xlsx *.xlsm)")
         if path:
             index = self.owner._find_combo_path(self.calc_combo, path)
@@ -199,7 +274,7 @@ class RielloPage(QWidget):
             self.save_options()
 
     def browse_output_dir(self) -> None:
-        start_dir = self.output_path_text() or self.owner._project_path_text()
+        start_dir = self.output_path_text() or self.project_path_text()
         path = QFileDialog.getExistingDirectory(self, "Выберите папку результата Riello", start_dir)
         if path:
             self.output_dir_path = path
@@ -207,12 +282,37 @@ class RielloPage(QWidget):
             self._set_saved("riello/output_dir", path)
             self.save_options()
 
+    def autofill_manager_from_project(self, project_dir: Path, force: bool = False) -> None:
+        if not force and self.owner._has_saved_manager_profile():
+            return
+        if not force and not self.owner._manager_profile().is_empty():
+            return
+        if not project_dir.exists():
+            return
+        profile = find_manager_in_project(project_dir)
+        if profile.is_empty():
+            return
+        self.owner._set_manager_profile(profile)
+        self.owner.settings.setValue("manager_name", profile.name)
+        self.owner.settings.setValue("manager_position", profile.position)
+        self.owner.settings.setValue("manager_email", profile.email)
+        self.owner.settings.setValue("manager_phone", profile.phone)
+        self.owner.settings.sync()
+        self.status_label.setText("Данные исполнителя найдены в Word-файле проекта")
+
+    def _on_project_dir_changed(self) -> None:
+        if not self._updating_path_display:
+            self.project_dir_path = self.project_edit.text().strip()
+            self.project_edit.setToolTip(self.project_dir_path)
+        self._on_changed()
+
     def _on_output_dir_changed(self) -> None:
-        if not getattr(self.owner, "_updating_path_display", False):
+        if not self._updating_path_display:
             self.output_dir_path = self.output_edit.text().strip()
             self.output_edit.setToolTip(self.output_dir_path)
         self._on_changed()
 
+    # ------------------------- Riello picker -------------------------
     def _on_power_changed(self) -> None:
         if self._updating:
             return
@@ -241,7 +341,6 @@ class RielloPage(QWidget):
             return
         self.save_options()
         self.refresh_summary()
-        self.owner._refresh_preview()
 
     def _reload_ups_models(self, keep_saved: bool = True) -> None:
         required_kw = self._as_float(self.required_power_edit.text(), 0.0)
@@ -259,7 +358,6 @@ class RielloPage(QWidget):
             self.ups_combo.clear()
             for item in candidates:
                 self.ups_combo.addItem(item_display_with_price(item), item.model)
-
             index = self.ups_combo.findData(previous_ups)
             if index < 0 and self.ups_combo.count() > 0:
                 index = 0
@@ -292,7 +390,6 @@ class RielloPage(QWidget):
             return str(value)
 
     def _default_power_module(self, selected_model: str) -> str:
-        """Технический fallback для текущего Excel-экспортера. На странице это поле пока не показываем."""
         selected = self._item_by_model(selected_model)
         prefix = selected_model.split(" ", 1)[0] if selected_model else "SRT"
         modules = power_modules(getattr(self, "price_items", []), prefix=prefix)
@@ -308,7 +405,6 @@ class RielloPage(QWidget):
             "ups_model": selected_model,
             "ups_quantity": self.ups_qty_edit.text().strip() or "1",
             "autonomy_min": self.autonomy_edit.text().strip(),
-            # Ниже — временные дефолты для старого генератора Excel. На странице эти поля пока не показываем.
             "power_module": self._default_power_module(selected_model),
             "modules_per_ups": "",
             "battery_cabinet_type": "",
@@ -325,17 +421,6 @@ class RielloPage(QWidget):
             "installation_startup": self._saved("riello/installation_startup", "0"),
             "extra_cost": self._saved("riello/extra_cost", "0"),
         }
-
-    def save_options(self) -> None:
-        options = self.brand_options()
-        self._set_saved("riello/client", self.client_edit.text().strip())
-        self._set_saved("riello/calc_path", self._path_from_combo(self.calc_combo))
-        self._set_saved("riello/output_dir", self.output_path_text())
-        for key in ("required_power_kw", "ups_model", "ups_quantity", "autonomy_min"):
-            self._set_saved(f"riello/{key}", str(options.get(key, "")))
-        settings = getattr(self.owner, "settings", None)
-        if settings is not None:
-            settings.sync()
 
     def refresh_summary(self) -> None:
         self._refresh_models_table()
@@ -364,26 +449,24 @@ class RielloPage(QWidget):
                 table.selectRow(row)
 
         table.resizeRowsToContents()
-
         required = self._as_float(self.required_power_edit.text(), 0.0)
         if self.filtered_items:
             shown_power = item_power_label(self.filtered_items[0])
             self.match_hint.setText(
                 f"Из PDF-прайса показаны позиции ближайшей подходящей мощности: "
                 f"{shown_power}. Найдено: {len(self.filtered_items)}. "
-                f"В списке модели сразу выводится ориентировочная стоимость."
+                f"Список отсортирован по стоимости: сначала самые дешевые."
             )
         elif required:
             self.match_hint.setText(f"В прайсе не найдены позиции под {required:g} кВА/кВт.")
         else:
-            self.match_hint.setText("Укажите требуемую мощность в кВА/кВт, например 20 или 100.")
+            self.match_hint.setText("Укажите требуемую мощность в кВА/кВт, например 20, 100 или 4000.")
 
     def _refresh_details(self) -> None:
         item = self._selected_item()
         if not item:
             self.details.setText("Модель пока не выбрана.")
             return
-
         power = item_power_label(item)
         self.details.setText(
             f"Модель: {item.model}\n"
@@ -396,43 +479,14 @@ class RielloPage(QWidget):
             f"Описание из прайса/раздела: {item.description or item.section or '—'}"
         )
 
-
-    def primary_button_text(self) -> str:
-        return "Сформировать Excel"
-
-    def clear_cache(self) -> None:
-        self.client_edit.clear()
-        self.calc_combo.clear()
-        self.output_dir_path = ""
-        self.output_edit.clear()
-        self.output_edit.setToolTip("")
-        self.required_power_edit.setText("20")
-        self.autonomy_edit.setText("20")
-        self.ups_qty_edit.setText("1")
-        self.ensure_default_excel_template()
-        self.refresh_summary()
-
-    def apply_scan_results(self, project_dir: Path, found: dict, force: bool = False) -> None:
-        if not self.output_path_text().strip():
-            try:
-                from gui.path_helpers import infer_output_dir
-                guessed = infer_output_dir(str(project_dir))
-            except Exception:
-                guessed = str(project_dir)
-            self.output_dir_path = guessed
-            self._set_line_path(self.output_edit, guessed, is_file=False)
-        client = self.owner._extract_client_from_project_dir(str(project_dir))
-        if client and (not self.client_edit.text().strip() or self.client_edit.text().strip() == "ТОО Example"):
-            self.client_edit.setText(client)
-        self.save_options()
-
+    # ------------------------- context/generate -------------------------
     def make_context(self) -> OfferContext:
-        project_text = self.owner._project_path_text().strip()
+        project_text = self.project_path_text().strip()
         project_dir = Path(project_text) if project_text else Path(".")
         output_dir = Path(self.output_path_text().strip() or project_dir)
         signer = self.owner._selected_signer()
         return OfferContext(
-            brand="Riello",
+            brand=self.brand_name,
             project_dir=project_dir,
             template_path=Path(""),
             calc_path=Path(self._path_from_combo(self.calc_combo)),
@@ -455,10 +509,87 @@ class RielloPage(QWidget):
             raise FileNotFoundError("Выберите существующий Excel-шаблон Riello.")
         if context.calc_path.suffix.lower() not in {".xlsx", ".xlsm"}:
             raise ValueError("Excel-шаблон Riello должен быть файлом .xlsx или .xlsm")
+        if not context.output_dir.exists():
+            context.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def refresh_preview(self) -> None:
-        # У Riello пока нет отдельного текстового блока проверки, поэтому обновляем только карточку.
-        self.refresh_summary()
+    def generate(self) -> None:
+        try:
+            self.generate_btn.setEnabled(False)
+            self.status_label.setText("Формирую Excel-расчет...")
+            QApplication.processEvents()
+            context = self.make_context()
+            self.validate_context(context)
+            module = get_brand_module(context.brand)
+            out = module.make_offer(context)
+            self.remember_values()
+            self.status_label.setText(f"Готово: {out.name}")
+
+            msg = QMessageBox(self)
+            msg.setWindowTitle("SAM Offer Generator")
+            msg.setIcon(QMessageBox.Question)
+            msg.setText("Excel-расчет успешно сформирован.")
+            msg.setInformativeText(str(out))
+            open_folder_btn = msg.addButton("Открыть папку", QMessageBox.ActionRole)
+            open_file_btn = msg.addButton("Открыть расчет", QMessageBox.ActionRole)
+            msg.addButton("Закрыть", QMessageBox.RejectRole)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == open_folder_btn:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(out.parent)))
+            elif clicked == open_file_btn:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(out)))
+        except Exception as exc:
+            self.status_label.setText("Ошибка формирования")
+            QMessageBox.critical(self, "Ошибка", str(exc))
+        finally:
+            self.generate_btn.setEnabled(True)
+            self.refresh_summary()
+
+    # ------------------------- persistence/page hooks -------------------------
+    def save_options(self) -> None:
+        options = self.brand_options()
+        self._set_saved("riello/project_dir", self.project_path_text())
+        self._set_saved("riello/client", self.client_edit.text().strip())
+        self._set_saved("riello/calc_path", self._path_from_combo(self.calc_combo))
+        self._set_saved("riello/output_dir", self.output_path_text())
+        self._set_saved("brand", self.brand_name)
+        for key in ("required_power_kw", "ups_model", "ups_quantity", "autonomy_min"):
+            self._set_saved(f"riello/{key}", str(options.get(key, "")))
+        settings = getattr(self.owner, "settings", None)
+        if settings is not None:
+            settings.sync()
 
     def remember_values(self) -> None:
         self.save_options()
+
+    def on_settings_changed(self) -> None:
+        # Settings can change the default Riello Excel template.
+        template_path = self._saved("calc_template_path", "")
+        if template_path:
+            index = self.owner._find_combo_path(self.calc_combo, template_path)
+            if index < 0:
+                self.owner._add_path_item(self.calc_combo, template_path, is_file=True)
+                index = self.calc_combo.count() - 1
+            self.calc_combo.setCurrentIndex(index)
+        self.refresh_summary()
+
+    def clear_cache(self) -> None:
+        self.project_dir_path = ""
+        self.output_dir_path = ""
+        self._set_line_path(self.project_edit, "", is_file=False)
+        self.client_edit.clear()
+        self.calc_combo.clear()
+        self._set_line_path(self.output_edit, "", is_file=False)
+        self.required_power_edit.setText("20")
+        self.autonomy_edit.setText("20")
+        self.ups_qty_edit.setText("1")
+        self.ensure_default_excel_template()
+        self.refresh_summary()
+        self.status_label.setText("Кэш очищен. Выберите папку проекта заново.")
+
+    def refresh_preview(self) -> None:
+        self.refresh_summary()
+
+    def apply_responsive_metrics(self, scale: float) -> None:
+        self.generate_btn.setMinimumWidth(int(220 * scale))
+        self.generate_btn.setMinimumHeight(int(42 * scale))
