@@ -69,24 +69,24 @@ def build_quote_config(context: OfferContext) -> RielloQuoteConfig:
     options = _options(context)
     price_path = options.get("price_path") or str(default_price_path())
     items = load_price_items(price_path)
-    cabinets = rack_cabinets(items)
 
-    required_power_kw = _as_float(options.get("required_power_kw"), 60.0)
-    nearest_cabinets = nearest_power_items(cabinets or items, required_power_kw)
+    required_power_kw = _as_float(options.get("required_power_kw"), 20.0)
+    nearest_items = nearest_power_items(items, required_power_kw)
 
     requested_ups = str(options.get("ups_model") or "").strip()
-    selected_ups = find_item(nearest_cabinets, requested_ups, contains=False) if requested_ups else None
+    selected_ups = find_item(nearest_items, requested_ups, contains=False) if requested_ups else None
     if selected_ups is None and requested_ups:
-        # Если сохраненная модель больше не попадает в фильтр по мощности, берем ближайшую подходящую.
         selected_ups = find_item(items, requested_ups, contains=False)
-        if selected_ups not in nearest_cabinets:
-            selected_ups = None
     if selected_ups is None:
-        selected_ups = nearest_cabinets[0] if nearest_cabinets else _selected_item(items, "SRT 60 PWC", cabinets[0] if cabinets else None)
+        selected_ups = nearest_items[0] if nearest_items else _selected_item(items, "SRT 20 PM P", items[0] if items else None)
 
     prefix = selected_ups.model.split(" ", 1)[0]
     modules = power_modules(items, prefix=prefix)
-    selected_module = _selected_item(items, str(options.get("power_module") or f"{prefix} 20 PM P"), modules[0] if modules else None)
+    requested_module = str(options.get("power_module") or "").strip()
+    if " 20 PM" in selected_ups.model.upper():
+        selected_module = selected_ups
+    else:
+        selected_module = _selected_item(items, requested_module or f"{prefix} 20 PM P", modules[0] if modules else None)
 
     ups_qty = max(_as_float(options.get("ups_quantity"), 1.0), 0.0) or 1.0
     raw_modules_per_ups = str(options.get("modules_per_ups") or "").strip()
@@ -102,9 +102,10 @@ def build_quote_config(context: OfferContext) -> RielloQuoteConfig:
     currency = selected_ups.currency or selected_module.currency or str(options.get("currency") or "EUR")
 
     lines = [
-        RielloQuoteLine(selected_ups, ups_qty, note=f"Шкаф ИБП; запрос {required_power_kw:g} кВт" if required_power_kw else "Шкаф ИБП"),
-        RielloQuoteLine(selected_module, module_qty, note=f"{_fmt_qty(modules_per_ups)} мод. на 1 шкаф"),
+        RielloQuoteLine(selected_ups, ups_qty, note=f"Позиция из прайса; запрос {required_power_kw:g} кВт" if required_power_kw else "Позиция из прайса"),
     ]
+    if selected_module.model != selected_ups.model:
+        lines.append(RielloQuoteLine(selected_module, module_qty, note=f"{_fmt_qty(modules_per_ups)} мод. на 1 шкаф"))
 
     return RielloQuoteConfig(
         client_name=context.client_name,

@@ -231,10 +231,23 @@ def item_power_kw(item: RielloPriceItem) -> float:
     return 0.0
 
 
+def format_price(value: float) -> str:
+    try:
+        return f"{float(value):,.0f}".replace(",", " ")
+    except Exception:
+        return str(value)
+
+
 def item_display_with_power(item: RielloPriceItem) -> str:
     power = item_power_kw(item)
     power_text = f"{power:g} кВт" if power else "мощность не указана"
     return f"{item.display_name} — {power_text}"
+
+
+def item_display_with_price(item: RielloPriceItem) -> str:
+    power = item_power_kw(item)
+    power_text = f"{power:g} кВт" if power else "мощность не указана"
+    return f"{item.model} — {format_price(item.price)} {item.currency} — {power_text} — {item.code}"
 
 
 def rack_cabinets(items: list[RielloPriceItem]) -> list[RielloPriceItem]:
@@ -248,9 +261,9 @@ def rack_cabinets(items: list[RielloPriceItem]) -> list[RielloPriceItem]:
 
 def nearest_power_items(items: list[RielloPriceItem], required_power_kw: float) -> list[RielloPriceItem]:
     """
-    Возвращает все модели ближайшей подходящей мощности.
+    Возвращает все позиции ближайшей подходящей мощности.
 
-    Логика для подбора ИБП: сначала ищем минимальную мощность >= требуемой.
+    Логика для страницы Riello: сначала ищем минимальную мощность >= требуемой.
     Если в прайсе нет модели выше/равной требуемой, показываем самую мощную доступную.
     """
     candidates = [(item_power_kw(item), item) for item in items]
@@ -267,10 +280,10 @@ def nearest_power_items(items: list[RielloPriceItem], required_power_kw: float) 
 
     result = [item for power, item in candidates if power == target_power]
 
-    def sort_key(item: RielloPriceItem) -> tuple[int, str, str]:
+    def sort_key(item: RielloPriceItem) -> tuple[int, float, str, str]:
         model_upper = item.model.upper()
         prefix_priority = 0 if model_upper.startswith("SRT ") else 1 if model_upper.startswith("SRM ") else 2
-        return prefix_priority, model_upper, item.code.upper()
+        return prefix_priority, item.price, model_upper, item.code.upper()
 
     return sorted(result, key=sort_key)
 

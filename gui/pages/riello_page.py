@@ -16,109 +16,100 @@ from PySide6.QtWidgets import (
 
 from core.riello_price import (
     default_price_path,
-    item_display_with_power,
+    format_price,
+    item_display_with_price,
     item_power_kw,
     load_price_items,
     nearest_power_items,
     power_modules,
-    rack_cabinets,
 )
 from core.runtime_paths import resource_path
 
 
 class RielloPage(QWidget):
-    """Страница Riello: выбор мощности, ИБП и формирование Excel-расчета по шаблону."""
+    """Страница Riello: сначала ввод мощности, затем выбор подходящей позиции из PDF-прайса."""
 
     def __init__(self, owner) -> None:
         super().__init__(owner)
         self.owner = owner
         self._updating = False
+        self.price_items = []
+        self.filtered_items = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        files_card = owner._card("Riello: Excel-шаблон и параметры расчета")
-        grid = QGridLayout()
-        files_card.layout().addLayout(grid)
-        grid.setColumnStretch(1, 1)
-        grid.setVerticalSpacing(12)
-        grid.setHorizontalSpacing(10)
+        files_card = owner._card("Riello: Excel-шаблон")
+        files_grid = QGridLayout()
+        files_card.layout().addLayout(files_grid)
+        files_grid.setColumnStretch(1, 1)
+        files_grid.setVerticalSpacing(12)
+        files_grid.setHorizontalSpacing(10)
 
-        owner._add_row(grid, 0, "Клиент", owner.client_edit, None, None)
-        owner._add_row(grid, 1, "Excel-шаблон", owner.calc_combo, "Выбрать", owner._browse_calc_file)
-        owner._add_row(grid, 2, "Папка результата", owner.output_edit, "Выбрать", owner._browse_output_dir)
+        owner._add_row(files_grid, 0, "Клиент", owner.client_edit, None, None)
+        owner._add_row(files_grid, 1, "Excel-шаблон", owner.calc_combo, "Выбрать", owner._browse_calc_file)
+        owner._add_row(files_grid, 2, "Папка результата", owner.output_edit, "Выбрать", owner._browse_output_dir)
         layout.addWidget(files_card)
 
-        config_card = owner._card("Конфигурация Riello")
-        config_grid = QGridLayout()
-        config_card.layout().addLayout(config_grid)
-        config_grid.setColumnStretch(1, 1)
-        config_grid.setVerticalSpacing(12)
-        config_grid.setHorizontalSpacing(10)
+        input_card = owner._card("1. Ввод данных")
+        input_grid = QGridLayout()
+        input_card.layout().addLayout(input_grid)
+        input_grid.setColumnStretch(1, 1)
+        input_grid.setColumnStretch(3, 0)
+        input_grid.setColumnStretch(5, 0)
+        input_grid.setVerticalSpacing(12)
+        input_grid.setHorizontalSpacing(10)
 
-        self.required_power_edit = QLineEdit(self._saved("riello/required_power_kw", "60"))
-        self.ups_combo = QComboBox()
-        self.power_module_combo = QComboBox()
+        self.required_power_edit = QLineEdit(self._saved("riello/required_power_kw", "20"))
+        self.required_power_edit.setPlaceholderText("например 20")
+
+        self.autonomy_edit = QLineEdit(self._saved("riello/autonomy_min", "20"))
+        self.autonomy_edit.setPlaceholderText("мин")
+        self.autonomy_edit.setMaximumWidth(95)
+
         self.ups_qty_edit = QLineEdit(self._saved("riello/ups_quantity", "1"))
-        self.modules_per_ups_edit = QLineEdit(self._saved("riello/modules_per_ups", "3"))
-        self.autonomy_edit = QLineEdit(self._saved("riello/autonomy_min", ""))
-        self.battery_cabinet_edit = QLineEdit(self._saved("riello/battery_cabinet_type", ""))
-        self.city_edit = QLineEdit(self._saved("riello/city", "Алматы"))
-        self.rate_edit = QLineEdit(self._saved("riello/rate", "1"))
-        self.margin_edit = QLineEdit(self._saved("riello/margin_percent", "15"))
-        self.vat_edit = QLineEdit(self._saved("riello/vat_percent", "0"))
-        self.special_edit = QLineEdit(self._saved("riello/special_percent", "0"))
-        self.transport_cost_edit = QLineEdit(self._saved("riello/transport_cost", "2000"))
-        self.customs_edit = QLineEdit(self._saved("riello/customs_clearance", "200"))
-        self.certificate_edit = QLineEdit(self._saved("riello/certificate", "200"))
-        self.transport_to_customer_edit = QLineEdit(self._saved("riello/transport_to_customer", "1500"))
-        self.site_inspection_edit = QLineEdit(self._saved("riello/site_inspection", "0"))
-        self.installation_edit = QLineEdit(self._saved("riello/installation_startup", "0"))
-        self.extra_cost_edit = QLineEdit(self._saved("riello/extra_cost", "0"))
+        self.ups_qty_edit.setPlaceholderText("шт")
+        self.ups_qty_edit.setMaximumWidth(95)
 
-        owner._add_row(config_grid, 0, "Мощность, кВт", self.required_power_edit, None, None)
-        owner._add_row(config_grid, 1, "Модель ИБП", self.ups_combo, None, None)
-        owner._add_row(config_grid, 2, "Кол-во ИБП", self.ups_qty_edit, None, None)
-        owner._add_row(config_grid, 3, "Силовой модуль", self.power_module_combo, None, None)
-        owner._add_row(config_grid, 4, "Модулей на ИБП", self.modules_per_ups_edit, None, None)
-        owner._add_row(config_grid, 5, "Автономия", self.autonomy_edit, None, None)
-        owner._add_row(config_grid, 6, "Бат. шкаф", self.battery_cabinet_edit, None, None)
-        owner._add_row(config_grid, 7, "Город DDP", self.city_edit, None, None)
-        owner._add_row(config_grid, 8, "Курс", self.rate_edit, None, None)
-        owner._add_row(config_grid, 9, "Маржа, %", self.margin_edit, None, None)
-        owner._add_row(config_grid, 10, "НДС, %", self.vat_edit, None, None)
-        owner._add_row(config_grid, 11, "Спецусловие, %", self.special_edit, None, None)
-        owner._add_row(config_grid, 12, "Доставка", self.transport_cost_edit, None, None)
-        owner._add_row(config_grid, 13, "Таможня", self.customs_edit, None, None)
-        owner._add_row(config_grid, 14, "Сертификат", self.certificate_edit, None, None)
-        owner._add_row(config_grid, 15, "Дост. клиенту", self.transport_to_customer_edit, None, None)
-        owner._add_row(config_grid, 16, "Обследование", self.site_inspection_edit, None, None)
-        owner._add_row(config_grid, 17, "Монтаж/ПНР", self.installation_edit, None, None)
-        owner._add_row(config_grid, 18, "Доп. расходы", self.extra_cost_edit, None, None)
-        layout.addWidget(config_card)
+        self.ups_combo = QComboBox()
+        self.ups_combo.setMinimumWidth(480)
 
-        self.items_table = QTableWidget(0, 7)
-        self.items_table.setHorizontalHeaderLabels(["Позиция", "Код", "Габариты", "Вес", "Цена", "Кол-во", "Сумма"])
-        self.items_table.verticalHeader().setVisible(False)
-        self.items_table.setAlternatingRowColors(True)
-        self.items_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.items_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.items_table.setMinimumHeight(145)
-        table_card = owner._card("Состав расчета")
-        table_card.layout().addWidget(self.items_table)
+        input_grid.addWidget(QLabel("Мощность, кВт"), 0, 0)
+        input_grid.addWidget(self.required_power_edit, 0, 1)
+        input_grid.addWidget(QLabel("Автономия, мин"), 0, 2)
+        input_grid.addWidget(self.autonomy_edit, 0, 3)
+        input_grid.addWidget(QLabel("Кол-во ИБП"), 0, 4)
+        input_grid.addWidget(self.ups_qty_edit, 0, 5)
+        input_grid.addWidget(QLabel("Модель ИБП"), 1, 0)
+        input_grid.addWidget(self.ups_combo, 1, 1, 1, 5)
+
+        self.match_hint = QLabel("")
+        self.match_hint.setObjectName("Hint")
+        self.match_hint.setWordWrap(True)
+        input_grid.addWidget(self.match_hint, 2, 1, 1, 5)
+        layout.addWidget(input_card)
+
+        table_card = owner._card("Подходящие позиции из PDF-прайса")
+        self.models_table = QTableWidget(0, 6)
+        self.models_table.setHorizontalHeaderLabels(["Модель", "Код", "Мощность", "Стоимость", "Габариты", "Вес"])
+        self.models_table.verticalHeader().setVisible(False)
+        self.models_table.setAlternatingRowColors(True)
+        self.models_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.models_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.models_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.models_table.setMinimumHeight(180)
+        self.models_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.models_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table_card.layout().addWidget(self.models_table)
         layout.addWidget(table_card)
 
-        hint_card = owner._card("Подсказка")
-        self.hint = QLabel(
-            "Сначала укажите требуемую мощность в кВт. Список «Модель ИБП» автоматически покажет "
-            "модели ближайшей подходящей мощности из прайса Riello. Excel-шаблон копируется и заполняется; "
-            "Word-шаблон для Riello не требуется."
-        )
-        self.hint.setObjectName("Hint")
-        self.hint.setWordWrap(True)
-        hint_card.layout().addWidget(self.hint)
-        layout.addWidget(hint_card)
+        details_card = owner._card("Карточка выбранной модели")
+        self.details = QLabel("")
+        self.details.setObjectName("Hint")
+        self.details.setWordWrap(True)
+        details_card.layout().addWidget(self.details)
+        layout.addWidget(details_card)
         layout.addStretch(1)
 
         self._load_price_items()
@@ -155,99 +146,16 @@ class RielloPage(QWidget):
         self._updating = True
         try:
             self.price_items = load_price_items(default_price_path())
-            self.cabinet_items = rack_cabinets(self.price_items) or self.price_items[:]
             self._reload_ups_models(keep_saved=True)
-            self._reload_power_modules(update_modules_count=True)
         finally:
             self._updating = False
-
-    def _reload_ups_models(self, keep_saved: bool = True) -> None:
-        required_kw = self._as_float(self.required_power_edit.text(), 0.0)
-        saved_ups = self._saved("riello/ups_model", "SRT 60 PWC") if keep_saved else ""
-        current_ups = str(self.ups_combo.currentData() or "")
-        previous_ups = saved_ups or current_ups
-
-        candidates = nearest_power_items(getattr(self, "cabinet_items", []), required_kw)
-        if not candidates:
-            candidates = getattr(self, "cabinet_items", [])[:]
-
-        self.ups_combo.blockSignals(True)
-        try:
-            self.ups_combo.clear()
-            for item in candidates:
-                self.ups_combo.addItem(item_display_with_power(item), item.model)
-
-            index = self.ups_combo.findData(previous_ups)
-            if index < 0 and self.ups_combo.count() > 0:
-                index = 0
-            if index >= 0:
-                self.ups_combo.setCurrentIndex(index)
-        finally:
-            self.ups_combo.blockSignals(False)
-
-    def _reload_power_modules(self, update_modules_count: bool = False) -> None:
-        selected_model = str(self.ups_combo.currentData() or self.ups_combo.currentText()).strip()
-        prefix = selected_model.split(" ", 1)[0] if selected_model else "SRT"
-        modules = power_modules(getattr(self, "price_items", []), prefix=prefix)
-        if not modules:
-            modules = power_modules(getattr(self, "price_items", []), prefix="SRT")
-        saved_module = self._saved("riello/power_module", f"{prefix} 20 PM P")
-
-        self.power_module_combo.blockSignals(True)
-        try:
-            self.power_module_combo.clear()
-            for item in modules:
-                self.power_module_combo.addItem(item_display_with_power(item), item.model)
-            module_index = self.power_module_combo.findData(saved_module)
-            if module_index < 0 and self.power_module_combo.count() > 0:
-                module_index = 0
-            if module_index >= 0:
-                self.power_module_combo.setCurrentIndex(module_index)
-        finally:
-            self.power_module_combo.blockSignals(False)
-
-        if update_modules_count:
-            self._set_default_modules_per_ups()
-
-    def _set_default_modules_per_ups(self) -> None:
-        ups = self._item_by_model(str(self.ups_combo.currentData() or ""))
-        module = self._item_by_model(str(self.power_module_combo.currentData() or ""))
-        if not ups or not module:
-            return
-        ups_power = item_power_kw(ups)
-        module_power = item_power_kw(module)
-        if ups_power > 0 and module_power > 0:
-            calculated = max(round(ups_power / module_power), 1)
-            self.modules_per_ups_edit.blockSignals(True)
-            try:
-                self.modules_per_ups_edit.setText(str(calculated))
-            finally:
-                self.modules_per_ups_edit.blockSignals(False)
 
     def _connect_changes(self) -> None:
         self.required_power_edit.textChanged.connect(self._on_power_changed)
         self.ups_combo.currentIndexChanged.connect(self._on_ups_changed)
-        self.power_module_combo.currentIndexChanged.connect(self._on_module_changed)
-        widgets = [
-            self.ups_qty_edit,
-            self.modules_per_ups_edit,
-            self.autonomy_edit,
-            self.battery_cabinet_edit,
-            self.city_edit,
-            self.rate_edit,
-            self.margin_edit,
-            self.vat_edit,
-            self.special_edit,
-            self.transport_cost_edit,
-            self.customs_edit,
-            self.certificate_edit,
-            self.transport_to_customer_edit,
-            self.site_inspection_edit,
-            self.installation_edit,
-            self.extra_cost_edit,
-        ]
-        for widget in widgets:
-            widget.textChanged.connect(self._on_changed)
+        self.ups_qty_edit.textChanged.connect(self._on_changed)
+        self.autonomy_edit.textChanged.connect(self._on_changed)
+        self.models_table.cellClicked.connect(self._on_table_row_clicked)
 
     def _on_power_changed(self) -> None:
         if self._updating:
@@ -255,7 +163,6 @@ class RielloPage(QWidget):
         self._updating = True
         try:
             self._reload_ups_models(keep_saved=False)
-            self._reload_power_modules(update_modules_count=True)
         finally:
             self._updating = False
         self._on_changed()
@@ -263,18 +170,15 @@ class RielloPage(QWidget):
     def _on_ups_changed(self) -> None:
         if self._updating:
             return
-        self._updating = True
-        try:
-            self._reload_power_modules(update_modules_count=True)
-        finally:
-            self._updating = False
         self._on_changed()
 
-    def _on_module_changed(self) -> None:
-        if self._updating:
+    def _on_table_row_clicked(self, row: int, _column: int) -> None:
+        if row < 0 or row >= len(self.filtered_items):
             return
-        self._set_default_modules_per_ups()
-        self._on_changed()
+        item = self.filtered_items[row]
+        index = self.ups_combo.findData(item.model)
+        if index >= 0:
+            self.ups_combo.setCurrentIndex(index)
 
     def _on_changed(self) -> None:
         if self._updating:
@@ -283,39 +187,30 @@ class RielloPage(QWidget):
         self.refresh_summary()
         self.owner._refresh_preview()
 
-    def save_options(self) -> None:
-        options = self.brand_options()
-        for key, value in options.items():
-            if key == "price_path":
-                continue
-            self._set_saved(f"riello/{key}", str(value))
-        settings = getattr(self.owner, "settings", None)
-        if settings is not None:
-            settings.sync()
+    def _reload_ups_models(self, keep_saved: bool = True) -> None:
+        required_kw = self._as_float(self.required_power_edit.text(), 0.0)
+        saved_ups = self._saved("riello/ups_model", "") if keep_saved else ""
+        current_ups = str(self.ups_combo.currentData() or "")
+        previous_ups = saved_ups or current_ups
 
-    def brand_options(self) -> dict[str, str]:
-        return {
-            "price_path": str(default_price_path()),
-            "required_power_kw": self.required_power_edit.text().strip() or "60",
-            "ups_model": str(self.ups_combo.currentData() or self.ups_combo.currentText()).strip(),
-            "power_module": str(self.power_module_combo.currentData() or self.power_module_combo.currentText()).strip(),
-            "ups_quantity": self.ups_qty_edit.text().strip() or "1",
-            "modules_per_ups": self.modules_per_ups_edit.text().strip() or "3",
-            "autonomy_min": self.autonomy_edit.text().strip(),
-            "battery_cabinet_type": self.battery_cabinet_edit.text().strip(),
-            "city": self.city_edit.text().strip() or "Алматы",
-            "rate": self.rate_edit.text().strip() or "1",
-            "margin_percent": self.margin_edit.text().strip() or "15",
-            "vat_percent": self.vat_edit.text().strip() or "0",
-            "special_percent": self.special_edit.text().strip() or "0",
-            "transport_cost": self.transport_cost_edit.text().strip() or "0",
-            "customs_clearance": self.customs_edit.text().strip() or "0",
-            "certificate": self.certificate_edit.text().strip() or "0",
-            "transport_to_customer": self.transport_to_customer_edit.text().strip() or "0",
-            "site_inspection": self.site_inspection_edit.text().strip() or "0",
-            "installation_startup": self.installation_edit.text().strip() or "0",
-            "extra_cost": self.extra_cost_edit.text().strip() or "0",
-        }
+        candidates = nearest_power_items(getattr(self, "price_items", []), required_kw)
+        if not candidates:
+            candidates = getattr(self, "price_items", [])[:]
+        self.filtered_items = candidates
+
+        self.ups_combo.blockSignals(True)
+        try:
+            self.ups_combo.clear()
+            for item in candidates:
+                self.ups_combo.addItem(item_display_with_price(item), item.model)
+
+            index = self.ups_combo.findData(previous_ups)
+            if index < 0 and self.ups_combo.count() > 0:
+                index = 0
+            if index >= 0:
+                self.ups_combo.setCurrentIndex(index)
+        finally:
+            self.ups_combo.blockSignals(False)
 
     def _as_float(self, value: str, default: float = 0.0) -> float:
         try:
@@ -330,37 +225,113 @@ class RielloPage(QWidget):
                 return item
         return None
 
-    def _format_money(self, value: float) -> str:
+    def _selected_item(self):
+        return self._item_by_model(str(self.ups_combo.currentData() or ""))
+
+    def _fmt_qty(self, value: float | str) -> str:
         try:
-            return f"{float(value):,.2f}".replace(",", " ").replace(".", ",")
+            number = float(value)
+            return str(int(number)) if number.is_integer() else str(number).replace(".", ",")
         except Exception:
             return str(value)
 
+    def _default_power_module(self, selected_model: str) -> str:
+        """Технический fallback для текущего Excel-экспортера. На странице это поле пока не показываем."""
+        selected = self._item_by_model(selected_model)
+        prefix = selected_model.split(" ", 1)[0] if selected_model else "SRT"
+        modules = power_modules(getattr(self, "price_items", []), prefix=prefix)
+        if selected and " 20 PM" in selected.model.upper():
+            return selected.model
+        return modules[0].model if modules else selected_model
+
+    def brand_options(self) -> dict[str, str]:
+        selected_model = str(self.ups_combo.currentData() or self.ups_combo.currentText()).strip()
+        return {
+            "price_path": str(default_price_path()),
+            "required_power_kw": self.required_power_edit.text().strip() or "20",
+            "ups_model": selected_model,
+            "ups_quantity": self.ups_qty_edit.text().strip() or "1",
+            "autonomy_min": self.autonomy_edit.text().strip(),
+            # Ниже — временные дефолты для старого генератора Excel. На странице эти поля пока не показываем.
+            "power_module": self._default_power_module(selected_model),
+            "modules_per_ups": "",
+            "battery_cabinet_type": "",
+            "city": self._saved("riello/city", "Алматы"),
+            "rate": self._saved("riello/rate", "1"),
+            "margin_percent": self._saved("riello/margin_percent", "15"),
+            "vat_percent": self._saved("riello/vat_percent", "0"),
+            "special_percent": self._saved("riello/special_percent", "0"),
+            "transport_cost": self._saved("riello/transport_cost", "0"),
+            "customs_clearance": self._saved("riello/customs_clearance", "0"),
+            "certificate": self._saved("riello/certificate", "0"),
+            "transport_to_customer": self._saved("riello/transport_to_customer", "0"),
+            "site_inspection": self._saved("riello/site_inspection", "0"),
+            "installation_startup": self._saved("riello/installation_startup", "0"),
+            "extra_cost": self._saved("riello/extra_cost", "0"),
+        }
+
+    def save_options(self) -> None:
+        options = self.brand_options()
+        for key in ("required_power_kw", "ups_model", "ups_quantity", "autonomy_min"):
+            self._set_saved(f"riello/{key}", str(options.get(key, "")))
+        settings = getattr(self.owner, "settings", None)
+        if settings is not None:
+            settings.sync()
+
     def refresh_summary(self) -> None:
-        table = self.items_table
+        self._refresh_models_table()
+        self._refresh_details()
+
+    def _refresh_models_table(self) -> None:
+        table = self.models_table
         table.setRowCount(0)
-        ups = self._item_by_model(str(self.ups_combo.currentData() or ""))
-        module = self._item_by_model(str(self.power_module_combo.currentData() or ""))
-        ups_qty = self._as_float(self.ups_qty_edit.text(), 1.0) or 1.0
-        modules_per_ups = self._as_float(self.modules_per_ups_edit.text(), 3.0) or 3.0
-        rows = []
-        if ups:
-            rows.append((ups, ups_qty))
-        if module:
-            rows.append((module, ups_qty * modules_per_ups))
-        for item, qty in rows:
+        selected_model = str(self.ups_combo.currentData() or "")
+
+        for item in self.filtered_items:
             row = table.rowCount()
             table.insertRow(row)
+            power = item_power_kw(item)
             values = [
                 item.model,
                 item.code,
-                item.dimensions,
-                str(item.weight_kg),
-                f"{self._format_money(item.price)} {item.currency}",
-                str(int(qty)) if float(qty).is_integer() else str(qty).replace(".", ","),
-                f"{self._format_money(item.price * qty)} {item.currency}",
+                f"{power:g} кВт" if power else "—",
+                f"{format_price(item.price)} {item.currency}",
+                item.dimensions or "—",
+                f"{self._fmt_qty(item.weight_kg)} кг" if item.weight_kg else "—",
             ]
             for col, value in enumerate(values):
-                cell = QTableWidgetItem(value)
-                table.setItem(row, col, cell)
+                table.setItem(row, col, QTableWidgetItem(str(value)))
+            if item.model == selected_model:
+                table.selectRow(row)
+
         table.resizeRowsToContents()
+
+        required = self._as_float(self.required_power_edit.text(), 0.0)
+        if self.filtered_items:
+            shown_power = item_power_kw(self.filtered_items[0])
+            self.match_hint.setText(
+                f"Из PDF-прайса показаны позиции ближайшей подходящей мощности: "
+                f"{shown_power:g} кВт. Найдено: {len(self.filtered_items)}. "
+                f"В списке модели сразу выводится ориентировочная стоимость."
+            )
+        elif required:
+            self.match_hint.setText(f"В прайсе не найдены позиции под {required:g} кВт.")
+        else:
+            self.match_hint.setText("Укажите требуемую мощность в кВт, например 20.")
+
+    def _refresh_details(self) -> None:
+        item = self._selected_item()
+        if not item:
+            self.details.setText("Модель пока не выбрана.")
+            return
+
+        power = item_power_kw(item)
+        self.details.setText(
+            f"Модель: {item.model}\n"
+            f"Код: {item.code}\n"
+            f"Мощность: {power:g} кВт\n"
+            f"Стоимость: {format_price(item.price)} {item.currency}\n"
+            f"Габариты: {item.dimensions or '—'}\n"
+            f"Вес: {self._fmt_qty(item.weight_kg)} кг\n"
+            f"Описание из прайса/раздела: {item.description or item.section or '—'}"
+        )
