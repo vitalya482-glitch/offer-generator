@@ -18,7 +18,7 @@ from core.riello_price import (
     default_price_path,
     format_price,
     item_display_with_price,
-    item_power_kw,
+    item_power_label,
     load_price_items,
     nearest_power_items,
     power_modules,
@@ -62,7 +62,7 @@ class RielloPage(QWidget):
         input_grid.setHorizontalSpacing(10)
 
         self.required_power_edit = QLineEdit(self._saved("riello/required_power_kw", "20"))
-        self.required_power_edit.setPlaceholderText("например 20")
+        self.required_power_edit.setPlaceholderText("например 20 или 100")
 
         self.autonomy_edit = QLineEdit(self._saved("riello/autonomy_min", "20"))
         self.autonomy_edit.setPlaceholderText("мин")
@@ -75,7 +75,7 @@ class RielloPage(QWidget):
         self.ups_combo = QComboBox()
         self.ups_combo.setMinimumWidth(480)
 
-        input_grid.addWidget(QLabel("Мощность, кВт"), 0, 0)
+        input_grid.addWidget(QLabel("Мощность, кВА/кВт"), 0, 0)
         input_grid.addWidget(self.required_power_edit, 0, 1)
         input_grid.addWidget(QLabel("Автономия, мин"), 0, 2)
         input_grid.addWidget(self.autonomy_edit, 0, 3)
@@ -290,11 +290,10 @@ class RielloPage(QWidget):
         for item in self.filtered_items:
             row = table.rowCount()
             table.insertRow(row)
-            power = item_power_kw(item)
             values = [
                 item.model,
                 item.code,
-                f"{power:g} кВт" if power else "—",
+                item_power_label(item),
                 f"{format_price(item.price)} {item.currency}",
                 item.dimensions or "—",
                 f"{self._fmt_qty(item.weight_kg)} кг" if item.weight_kg else "—",
@@ -308,16 +307,16 @@ class RielloPage(QWidget):
 
         required = self._as_float(self.required_power_edit.text(), 0.0)
         if self.filtered_items:
-            shown_power = item_power_kw(self.filtered_items[0])
+            shown_power = item_power_label(self.filtered_items[0])
             self.match_hint.setText(
                 f"Из PDF-прайса показаны позиции ближайшей подходящей мощности: "
-                f"{shown_power:g} кВт. Найдено: {len(self.filtered_items)}. "
+                f"{shown_power}. Найдено: {len(self.filtered_items)}. "
                 f"В списке модели сразу выводится ориентировочная стоимость."
             )
         elif required:
-            self.match_hint.setText(f"В прайсе не найдены позиции под {required:g} кВт.")
+            self.match_hint.setText(f"В прайсе не найдены позиции под {required:g} кВА/кВт.")
         else:
-            self.match_hint.setText("Укажите требуемую мощность в кВт, например 20.")
+            self.match_hint.setText("Укажите требуемую мощность в кВА/кВт, например 20 или 100.")
 
     def _refresh_details(self) -> None:
         item = self._selected_item()
@@ -325,11 +324,11 @@ class RielloPage(QWidget):
             self.details.setText("Модель пока не выбрана.")
             return
 
-        power = item_power_kw(item)
+        power = item_power_label(item)
         self.details.setText(
             f"Модель: {item.model}\n"
             f"Код: {item.code}\n"
-            f"Мощность: {power:g} кВт\n"
+            f"Мощность: {power}\n"
             f"Стоимость: {format_price(item.price)} {item.currency}\n"
             f"Габариты: {item.dimensions or '—'}\n"
             f"Вес: {self._fmt_qty(item.weight_kg)} кг\n"

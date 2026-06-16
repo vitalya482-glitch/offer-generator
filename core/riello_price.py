@@ -58,7 +58,7 @@ _FALLBACK_ITEMS: tuple[RielloPriceItem, ...] = (
         price=5100,
         section="SRT/SRM Rack Cabinets",
         description="Шкаф SRT Rack Cabinet для установки 3 силовых модулей SRT 20 PM.",
-        power="до 60 kVA / 60 kW",
+        power="60 kVA / 60 kW",
     ),
     RielloPriceItem(
         model="SRM 60 PWC",
@@ -68,17 +68,51 @@ _FALLBACK_ITEMS: tuple[RielloPriceItem, ...] = (
         price=5700,
         section="SRT/SRM Rack Cabinets",
         description="Шкаф SRM Rack Cabinet для установки 3 силовых модулей SRM 20 PM.",
-        power="до 60 kVA / 60 kW",
+        power="60 kVA / 60 kW",
+    ),
+    RielloPriceItem(
+        model="S3T 100",
+        code="ES3TM10ANB00RUA",
+        dimensions="500x830x1600",
+        weight_kg=180,
+        price=10725,
+        section="Series Sentryum S3T",
+        description="ИБП Riello Sentryum S3T.",
+        power="100 kVA / 100 kW",
+    ),
+    RielloPriceItem(
+        model="MHT 100",
+        code="EMHTM10ANB00RUB",
+        dimensions="800 x 850 x 1900",
+        weight_kg=700,
+        price=10455,
+        section="Series Master HP MHT",
+        description="ИБП Riello Master HP MHT.",
+        power="100 kVA / 90 kW",
+    ),
+    RielloPriceItem(
+        model="MHE 100",
+        code="EMHEM10ANB00RUB",
+        dimensions="800 x 850 x 1900",
+        weight_kg=850,
+        price=13070,
+        section="Series Master HE MHE",
+        description="ИБП Riello Master HE MHE.",
+        power="100 kVA / 100 kW",
     ),
 )
 
 
-_MODEL_RE = re.compile(r"^(SRT|SRM)\s+.+", re.IGNORECASE)
-_CODE_RE = re.compile(r"^[A-Z0-9]{8,}$")
+_MODEL_PREFIXES = ("S3T", "S3M", "SRT", "SRM", "MHT", "MHE")
+_MODEL_RE = re.compile(r"^(?:" + "|".join(_MODEL_PREFIXES) + r")\b[ A-Z0-9+*/().,\-\"]*$", re.IGNORECASE)
+_CODE_RE = re.compile(r"^[A-Z]{1,6}[A-Z0-9]{6,}$")
 _NUMBER_RE = re.compile(r"^-?\d+(?:[\s\d]*\d)?(?:[,.]\d+)?$")
-_DIM_RE = re.compile(r"\d+.*x.*\d+", re.IGNORECASE)
+_DIM_RE = re.compile(r"\d+\s*(?:\([^)]*\))?\s*x\s*\d+", re.IGNORECASE)
+_POWER_PAIR_RE = re.compile(r"^(\d+(?:[,.]\d+)?)\s*/\s*(\d+(?:[,.]\d+)?)$")
+_POWER_KVA_RE = re.compile(r"(\d+(?:[,.]\d+)?)\s*kVA\b", re.IGNORECASE)
 _POWER_KW_RE = re.compile(r"(\d+(?:[,.]\d+)?)\s*kW\b", re.IGNORECASE)
 _MODEL_POWER_RE = re.compile(r"\b(\d+(?:[,.]\d+)?)\b")
+_SECTION_RE = re.compile(r"^(Series|Section)\b", re.IGNORECASE)
 
 
 def default_price_path() -> Path:
@@ -104,39 +138,161 @@ def _clean_line(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
 
 
-def _item_description(model: str, section: str) -> tuple[str, str]:
-    section_lower = section.lower()
-    model_upper = model.upper()
+def _is_number(value: str) -> bool:
+    return bool(_NUMBER_RE.match(_clean_line(value)))
+
+
+def _is_code(value: str) -> bool:
+    return bool(_CODE_RE.match(_clean_line(value)))
+
+
+def _is_model(value: str) -> bool:
+    text = _clean_line(value)
+    return bool(_MODEL_RE.match(text))
+
+
+def _format_number(value: float) -> str:
+    return f"{value:g}"
+
+
+def _power_from_pair(value: str) -> str:
+    match = _POWER_PAIR_RE.match(_clean_line(value))
+    if not match:
+        return ""
+    kva = _to_float(match.group(1), 0.0)
+    kw = _to_float(match.group(2), 0.0)
+    if kva <= 0 and kw <= 0:
+        return ""
+    return f"{_format_number(kva)} kVA / {_format_number(kw)} kW"
+
+
+def _power_from_model(model: str) -> str:
+    match = _MODEL_POWER_RE.search(model or "")
+    if not match:
+        return ""
+    power = _to_float(match.group(1), 0.0)
+    if power <= 0:
+        return ""
+    return f"{_format_number(power)} kVA / {_format_number(power)} kW"
+
+
+def _description_for_item(model: str, section: str) -> str:
+    section_lower = (section or "").lower()
+    model_upper = (model or "").upper()
     if " 20 PM" in model_upper or "power modules" in section_lower:
-        return "20 kVA / 20 kW", "Силовой модуль Riello Sentryum Rack."
-    if model_upper.endswith("60 PWC") or section.strip().lower() == "srt/srm rack cabinets":
-        return "до 60 kVA / 60 kW", "Шкаф SRT/SRM Rack Cabinet для установки 3 силовых модулей."
-    return "", section
+        return "Силовой модуль Riello Sentryum Rack."
+    if model_upper.endswith("60 PWC") or "rack cabinets" in section_lower:
+        return "Шкаф Riello SRT/SRM Rack Cabinet для установки силовых модулей."
+    if model_upper.startswith("S3T "):
+        return "ИБП Riello Sentryum S3T."
+    if model_upper.startswith("S3M "):
+        return "ИБП Riello Sentryum S3M."
+    if model_upper.startswith("MHT "):
+        return "ИБП Riello Master HP MHT."
+    if model_upper.startswith("MHE "):
+        return "ИБП Riello Master HE MHE."
+    return section or "Позиция Riello из PDF-прайса."
 
 
-def _extract_sentryum_rack_text(pdf_path: Path) -> list[str]:
+def _extract_pdf_lines(pdf_path: Path) -> list[tuple[int, str]]:
     try:
         import fitz  # PyMuPDF
     except Exception as exc:  # pragma: no cover - depends on runtime
         raise RuntimeError("Для чтения PDF-прайса Riello нужен PyMuPDF из requirements.txt") from exc
 
     doc = fitz.open(str(pdf_path))
-    lines: list[str] = []
-    in_section = False
-    for page in doc:
+    lines: list[tuple[int, str]] = []
+    for page_number, page in enumerate(doc, start=1):
         page_lines = [_clean_line(line) for line in page.get_text("text").splitlines()]
         page_lines = [line for line in page_lines if line]
-        page_text = "\n".join(page_lines).upper()
-        if "SERIES SENTRYUM RACK" in page_text:
-            in_section = True
-        if not in_section:
-            continue
-        for line in page_lines:
-            lines.append(line)
-        # The Rack page ends after the accessories block. Stop before the next product series.
-        if "SRT/SRM accessories" in page_text:
-            break
+        lines.extend((page_number, line) for line in page_lines)
     return lines
+
+
+def _parse_pdf_lines(lines: list[tuple[int, str]]) -> list[RielloPriceItem]:
+    items: list[RielloPriceItem] = []
+    seen: set[tuple[str, str]] = set()
+    section = "Riello PDF price list"
+
+    raw_lines = [line for _page, line in lines]
+    pages = [page for page, _line in lines]
+
+    for i, line in enumerate(raw_lines):
+        if _SECTION_RE.match(line) or line.lower().startswith("power modules"):
+            section = line
+            continue
+
+        if not _is_model(line):
+            continue
+        if i + 1 >= len(raw_lines) or not _is_code(raw_lines[i + 1]):
+            continue
+
+        model = line
+        code = raw_lines[i + 1]
+        block: list[str] = []
+        for k in range(i + 2, min(len(raw_lines), i + 14)):
+            candidate = raw_lines[k]
+            if k > i + 2 and _is_model(candidate) and k + 1 < len(raw_lines):
+                next_value = raw_lines[k + 1]
+                if _is_code(next_value) or _POWER_PAIR_RE.match(next_value):
+                    break
+            if candidate in {"MODEL", "Code"} or "PRICE LIST" in candidate.upper():
+                break
+            block.append(candidate)
+
+        dim_index = next((idx for idx, value in enumerate(block) if _DIM_RE.search(value)), None)
+        if dim_index is None:
+            continue
+        if dim_index + 2 >= len(block):
+            continue
+
+        dimensions = block[dim_index]
+        weight_text = block[dim_index + 1]
+        price_text = block[dim_index + 2]
+        if not (_is_number(weight_text) and _is_number(price_text)):
+            found = False
+            for idx in range(dim_index + 1, min(len(block) - 1, dim_index + 5)):
+                if _is_number(block[idx]) and _is_number(block[idx + 1]):
+                    weight_text = block[idx]
+                    price_text = block[idx + 1]
+                    found = True
+                    break
+            if not found:
+                continue
+
+        power = ""
+        for value in block[:dim_index]:
+            power = _power_from_pair(value)
+            if power:
+                break
+        if not power:
+            power = _power_from_model(model)
+
+        price = _money_to_float(price_text)
+        weight = _to_float(weight_text)
+        if price <= 0:
+            continue
+
+        key = (model.upper(), code.upper())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        items.append(
+            RielloPriceItem(
+                model=model,
+                code=code,
+                dimensions=dimensions,
+                weight_kg=weight,
+                price=price,
+                currency="EUR",
+                section=section,
+                description=_description_for_item(model, section),
+                power=power,
+            )
+        )
+
+    return items
 
 
 def parse_price_pdf(pdf_path: str | Path | None = None) -> list[RielloPriceItem]:
@@ -144,58 +300,8 @@ def parse_price_pdf(pdf_path: str | Path | None = None) -> list[RielloPriceItem]
     if not path.exists():
         return list(_FALLBACK_ITEMS)
 
-    lines = _extract_sentryum_rack_text(path)
-    items: list[RielloPriceItem] = []
-    section = "SERIES SENTRYUM RACK (SRT/SRM)"
-    seen: set[tuple[str, str]] = set()
-
-    heading_markers = (
-        "SRT/SRM Power Modules",
-        "Power Modules for installation",
-        "SA - without parallel",
-        "SP - including parallel",
-        "SP - with parallel",
-        "SRT/SRM Rack Cabinets",
-        "SRT/SRM accessories",
-    )
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if any(marker.lower() in line.lower() for marker in heading_markers):
-            section = line
-            i += 1
-            continue
-
-        if _MODEL_RE.match(line) and i + 4 < len(lines) and _CODE_RE.match(lines[i + 1]):
-            model = line
-            code = lines[i + 1]
-            dimensions = lines[i + 2]
-            weight_text = lines[i + 3]
-            price_text = lines[i + 4]
-
-            if _DIM_RE.search(dimensions) and _NUMBER_RE.match(weight_text) and _NUMBER_RE.match(price_text):
-                key = (model.upper(), code.upper())
-                if key not in seen:
-                    power, description = _item_description(model, section)
-                    items.append(
-                        RielloPriceItem(
-                            model=model,
-                            code=code,
-                            dimensions=dimensions,
-                            weight_kg=_to_float(weight_text),
-                            price=_money_to_float(price_text),
-                            currency="EUR",
-                            section=section,
-                            description=description,
-                            power=power,
-                        )
-                    )
-                    seen.add(key)
-                i += 5
-                continue
-        i += 1
-
+    lines = _extract_pdf_lines(path)
+    items = _parse_pdf_lines(lines)
     return items or list(_FALLBACK_ITEMS)
 
 
@@ -218,17 +324,33 @@ def find_item(items: list[RielloPriceItem], model_or_code: str, *, contains: boo
     return None
 
 
-def item_power_kw(item: RielloPriceItem) -> float:
-    """Возвращает мощность позиции в кВт, насколько это можно понять из прайса/модели."""
-    for text in (item.power, item.model, item.description, item.section):
-        match = _POWER_KW_RE.search(str(text or ""))
-        if match:
-            return _to_float(match.group(1), 0.0)
-    # В строках Riello мощность часто есть в модели: SRT 60 PWC, SRT 20 PM P и т.п.
-    match = _MODEL_POWER_RE.search(item.model)
+def item_power_kva(item: RielloPriceItem) -> float:
+    """Возвращает мощность позиции в кВА для подбора по модели из прайса."""
+    match = _POWER_KVA_RE.search(str(item.power or ""))
+    if match:
+        return _to_float(match.group(1), 0.0)
+    match = _MODEL_POWER_RE.search(item.model or "")
     if match:
         return _to_float(match.group(1), 0.0)
     return 0.0
+
+
+def item_power_kw(item: RielloPriceItem) -> float:
+    """Возвращает мощность позиции в кВт, если она есть в прайсе."""
+    match = _POWER_KW_RE.search(str(item.power or ""))
+    if match:
+        return _to_float(match.group(1), 0.0)
+    match = _MODEL_POWER_RE.search(item.model or "")
+    if match:
+        return _to_float(match.group(1), 0.0)
+    return 0.0
+
+
+def item_power_label(item: RielloPriceItem) -> str:
+    if item.power:
+        return item.power.replace("kVA", "кВА").replace("kW", "кВт")
+    kva = item_power_kva(item)
+    return f"{kva:g} кВА" if kva else "—"
 
 
 def format_price(value: float) -> str:
@@ -239,15 +361,11 @@ def format_price(value: float) -> str:
 
 
 def item_display_with_power(item: RielloPriceItem) -> str:
-    power = item_power_kw(item)
-    power_text = f"{power:g} кВт" if power else "мощность не указана"
-    return f"{item.display_name} — {power_text}"
+    return f"{item.display_name} — {item_power_label(item)}"
 
 
 def item_display_with_price(item: RielloPriceItem) -> str:
-    power = item_power_kw(item)
-    power_text = f"{power:g} кВт" if power else "мощность не указана"
-    return f"{item.model} — {format_price(item.price)} {item.currency} — {power_text} — {item.code}"
+    return f"{item.model} — {format_price(item.price)} {item.currency} — {item_power_label(item)} — {item.code}"
 
 
 def rack_cabinets(items: list[RielloPriceItem]) -> list[RielloPriceItem]:
@@ -255,7 +373,7 @@ def rack_cabinets(items: list[RielloPriceItem]) -> list[RielloPriceItem]:
         item
         for item in items
         if item.model.upper().endswith("60 PWC")
-        or item.section.strip().upper() == "SRT/SRM RACK CABINETS"
+        or "RACK CABINETS" in item.section.strip().upper()
     ]
 
 
@@ -263,10 +381,10 @@ def nearest_power_items(items: list[RielloPriceItem], required_power_kw: float) 
     """
     Возвращает все позиции ближайшей подходящей мощности.
 
-    Логика для страницы Riello: сначала ищем минимальную мощность >= требуемой.
-    Если в прайсе нет модели выше/равной требуемой, показываем самую мощную доступную.
+    Для Riello подбираем по кВА: пользователь обычно вводит модельную мощность
+    20/60/100, а в прайсе часть серий имеет PF < 1, например MHT 100 = 100 kVA / 90 kW.
     """
-    candidates = [(item_power_kw(item), item) for item in items]
+    candidates = [(item_power_kva(item), item) for item in items]
     candidates = [(power, item) for power, item in candidates if power > 0]
     if not candidates:
         return list(items)
@@ -282,7 +400,9 @@ def nearest_power_items(items: list[RielloPriceItem], required_power_kw: float) 
 
     def sort_key(item: RielloPriceItem) -> tuple[int, float, str, str]:
         model_upper = item.model.upper()
-        prefix_priority = 0 if model_upper.startswith("SRT ") else 1 if model_upper.startswith("SRM ") else 2
+        prefix_order = {"SRT": 0, "SRM": 1, "S3T": 2, "S3M": 3, "MHT": 4, "MHE": 5}
+        prefix = model_upper.split(" ", 1)[0]
+        prefix_priority = prefix_order.get(prefix, 99)
         return prefix_priority, item.price, model_upper, item.code.upper()
 
     return sorted(result, key=sort_key)
