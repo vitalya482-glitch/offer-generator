@@ -103,7 +103,7 @@ _FALLBACK_ITEMS: tuple[RielloPriceItem, ...] = (
 )
 
 
-_MODEL_PREFIXES = ("S3T", "S3M", "SRT", "SRM", "MHT", "MHE")
+_MODEL_PREFIXES = ("S3T", "S3M", "SRT", "SRM", "MHT", "MHE", "NXE")
 _MODEL_RE = re.compile(r"^(?:" + "|".join(_MODEL_PREFIXES) + r")\b[ A-Z0-9+*/().,\-\"]*$", re.IGNORECASE)
 _CODE_RE = re.compile(r"^[A-Z]{1,6}[A-Z0-9]{6,}$")
 _NUMBER_RE = re.compile(r"^-?\d+(?:[\s\d]*\d)?(?:[,.]\d+)?$")
@@ -191,6 +191,8 @@ def _description_for_item(model: str, section: str) -> str:
         return "ИБП Riello Master HP MHT."
     if model_upper.startswith("MHE "):
         return "ИБП Riello Master HE MHE."
+    if model_upper.startswith("NXE "):
+        return "ИБП Riello NextEnergy NXE."
     return section or "Позиция Riello из PDF-прайса."
 
 
@@ -267,6 +269,12 @@ def _parse_pdf_lines(lines: list[tuple[int, str]]) -> list[RielloPriceItem]:
                 break
         if not power:
             power = _power_from_model(model)
+
+        model_upper = model.upper()
+        # NXE TCE and similar rows are accessories / battery extension cabinets,
+        # not UPS models for the main power selection list.
+        if " TCE " in f" {model_upper} " or model_upper.startswith("NXE TCE"):
+            continue
 
         price = _money_to_float(price_text)
         weight = _to_float(weight_text)
@@ -400,7 +408,7 @@ def nearest_power_items(items: list[RielloPriceItem], required_power_kw: float) 
 
     def sort_key(item: RielloPriceItem) -> tuple[int, float, str, str]:
         model_upper = item.model.upper()
-        prefix_order = {"SRT": 0, "SRM": 1, "S3T": 2, "S3M": 3, "MHT": 4, "MHE": 5}
+        prefix_order = {"SRT": 0, "SRM": 1, "S3T": 2, "S3M": 3, "MHT": 4, "MHE": 5, "NXE": 6}
         prefix = model_upper.split(" ", 1)[0]
         prefix_priority = prefix_order.get(prefix, 99)
         return prefix_priority, item.price, model_upper, item.code.upper()
