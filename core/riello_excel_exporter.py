@@ -35,6 +35,7 @@ class RielloQuoteConfig:
     city: str = "Алматы"
     currency: str = "EUR"
     ups_quantity: float = 1.0
+    required_power_kw: float = 0.0
     autonomy_min: str = ""
     battery_cabinet_type: str = ""
     rate: float = 1.0
@@ -221,12 +222,14 @@ def _write_ups_configuration(wb, config: RielloQuoteConfig) -> int:
     ws.cell(total_row, 8).font = Font(bold=True)
 
     info_row = total_row + 2
-    ws.cell(info_row, 2).value = "Время автономии"
-    ws.cell(info_row, 3).value = config.autonomy_min
-    ws.cell(info_row + 1, 2).value = "Тип батарейного шкафа"
-    ws.cell(info_row + 1, 3).value = config.battery_cabinet_type
-    ws.cell(info_row + 2, 2).value = "Суммарный вес, кг"
-    ws.cell(info_row + 2, 3).value = config.total_weight
+    ws.cell(info_row, 2).value = "Требуемая мощность, кВт"
+    ws.cell(info_row, 3).value = config.required_power_kw
+    ws.cell(info_row + 1, 2).value = "Время автономии"
+    ws.cell(info_row + 1, 3).value = config.autonomy_min
+    ws.cell(info_row + 2, 2).value = "Тип батарейного шкафа"
+    ws.cell(info_row + 2, 3).value = config.battery_cabinet_type
+    ws.cell(info_row + 3, 2).value = "Суммарный вес, кг"
+    ws.cell(info_row + 3, 3).value = config.total_weight
 
     _style_table_body(ws, start_row, max(start_row, total_row), 2, 9)
     widths = {"B": 22, "C": 24, "D": 24, "E": 12, "F": 14, "G": 12, "H": 16, "I": 32}

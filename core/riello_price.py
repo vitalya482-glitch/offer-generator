@@ -77,6 +77,8 @@ _MODEL_RE = re.compile(r"^(SRT|SRM)\s+.+", re.IGNORECASE)
 _CODE_RE = re.compile(r"^[A-Z0-9]{8,}$")
 _NUMBER_RE = re.compile(r"^-?\d+(?:[\s\d]*\d)?(?:[,.]\d+)?$")
 _DIM_RE = re.compile(r"\d+.*x.*\d+", re.IGNORECASE)
+_POWER_KW_RE = re.compile(r"(\d+(?:[,.]\d+)?)\s*kW\b", re.IGNORECASE)
+_MODEL_POWER_RE = re.compile(r"\b(\d+(?:[,.]\d+)?)\b")
 
 
 def default_price_path() -> Path:
@@ -216,6 +218,25 @@ def find_item(items: list[RielloPriceItem], model_or_code: str, *, contains: boo
     return None
 
 
+def item_power_kw(item: RielloPriceItem) -> float:
+    """Возвращает мощность позиции в кВт, насколько это можно понять из прайса/модели."""
+    for text in (item.power, item.model, item.description, item.section):
+        match = _POWER_KW_RE.search(str(text or ""))
+        if match:
+            return _to_float(match.group(1), 0.0)
+    # В строках Riello мощность часто есть в модели: SRT 60 PWC, SRT 20 PM P и т.п.
+    match = _MODEL_POWER_RE.search(item.model)
+    if match:
+        return _to_float(match.group(1), 0.0)
+    return 0.0
+
+
+def item_display_with_power(item: RielloPriceItem) -> str:
+    power = item_power_kw(item)
+    power_text = f"{power:g} кВт" if power else "мощность не указана"
+    return f"{item.display_name} — {power_text}"
+
+
 def rack_cabinets(items: list[RielloPriceItem]) -> list[RielloPriceItem]:
     return [
         item
@@ -223,6 +244,35 @@ def rack_cabinets(items: list[RielloPriceItem]) -> list[RielloPriceItem]:
         if item.model.upper().endswith("60 PWC")
         or item.section.strip().upper() == "SRT/SRM RACK CABINETS"
     ]
+
+
+def nearest_power_items(items: list[RielloPriceItem], required_power_kw: float) -> list[RielloPriceItem]:
+    """
+    Возвращает все модели ближайшей подходящей мощности.
+
+    Логика для подбора ИБП: сначала ищем минимальную мощность >= требуемой.
+    Если в прайсе нет модели выше/равной требуемой, показываем самую мощную доступную.
+    """
+    candidates = [(item_power_kw(item), item) for item in items]
+    candidates = [(power, item) for power, item in candidates if power > 0]
+    if not candidates:
+        return list(items)
+
+    required = max(float(required_power_kw or 0), 0.0)
+    powers = sorted({power for power, _item in candidates})
+    if required <= 0:
+        target_power = powers[0]
+    else:
+        target_power = next((power for power in powers if power >= required), powers[-1])
+
+    result = [item for power, item in candidates if power == target_power]
+
+    def sort_key(item: RielloPriceItem) -> tuple[int, str, str]:
+        model_upper = item.model.upper()
+        prefix_priority = 0 if model_upper.startswith("SRT ") else 1 if model_upper.startswith("SRM ") else 2
+        return prefix_priority, model_upper, item.code.upper()
+
+    return sorted(result, key=sort_key)
 
 
 def power_modules(items: list[RielloPriceItem], prefix: str = "SRT") -> list[RielloPriceItem]:

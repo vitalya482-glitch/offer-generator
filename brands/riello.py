@@ -15,7 +15,9 @@ from core.riello_price import (
     RielloPriceItem,
     default_price_path,
     find_item,
+    item_power_kw,
     load_price_items,
+    nearest_power_items,
     power_modules,
     rack_cabinets,
 )
@@ -69,20 +71,38 @@ def build_quote_config(context: OfferContext) -> RielloQuoteConfig:
     items = load_price_items(price_path)
     cabinets = rack_cabinets(items)
 
-    selected_ups = _selected_item(items, str(options.get("ups_model") or "SRT 60 PWC"), cabinets[0] if cabinets else None)
+    required_power_kw = _as_float(options.get("required_power_kw"), 60.0)
+    nearest_cabinets = nearest_power_items(cabinets or items, required_power_kw)
+
+    requested_ups = str(options.get("ups_model") or "").strip()
+    selected_ups = find_item(nearest_cabinets, requested_ups, contains=False) if requested_ups else None
+    if selected_ups is None and requested_ups:
+        # Если сохраненная модель больше не попадает в фильтр по мощности, берем ближайшую подходящую.
+        selected_ups = find_item(items, requested_ups, contains=False)
+        if selected_ups not in nearest_cabinets:
+            selected_ups = None
+    if selected_ups is None:
+        selected_ups = nearest_cabinets[0] if nearest_cabinets else _selected_item(items, "SRT 60 PWC", cabinets[0] if cabinets else None)
+
     prefix = selected_ups.model.split(" ", 1)[0]
     modules = power_modules(items, prefix=prefix)
     selected_module = _selected_item(items, str(options.get("power_module") or f"{prefix} 20 PM P"), modules[0] if modules else None)
 
     ups_qty = max(_as_float(options.get("ups_quantity"), 1.0), 0.0) or 1.0
-    modules_per_ups = max(_as_float(options.get("modules_per_ups"), 3.0), 0.0) or 3.0
+    raw_modules_per_ups = str(options.get("modules_per_ups") or "").strip()
+    if raw_modules_per_ups:
+        modules_per_ups = max(_as_float(raw_modules_per_ups, 3.0), 0.0) or 3.0
+    else:
+        ups_power = item_power_kw(selected_ups)
+        module_power = item_power_kw(selected_module)
+        modules_per_ups = max(round(ups_power / module_power), 1) if ups_power > 0 and module_power > 0 else 3.0
     module_qty = ups_qty * modules_per_ups
 
     city = str(options.get("city") or context.city or "Алматы").replace("г.", "").strip() or "Алматы"
     currency = selected_ups.currency or selected_module.currency or str(options.get("currency") or "EUR")
 
     lines = [
-        RielloQuoteLine(selected_ups, ups_qty, note="Шкаф ИБП"),
+        RielloQuoteLine(selected_ups, ups_qty, note=f"Шкаф ИБП; запрос {required_power_kw:g} кВт" if required_power_kw else "Шкаф ИБП"),
         RielloQuoteLine(selected_module, module_qty, note=f"{_fmt_qty(modules_per_ups)} мод. на 1 шкаф"),
     ]
 
@@ -91,6 +111,7 @@ def build_quote_config(context: OfferContext) -> RielloQuoteConfig:
         city=city,
         currency=currency,
         ups_quantity=ups_qty,
+        required_power_kw=required_power_kw,
         autonomy_min=str(options.get("autonomy_min") or "").strip(),
         battery_cabinet_type=str(options.get("battery_cabinet_type") or "").strip(),
         rate=_as_float(options.get("rate"), 1.0) or 1.0,
@@ -135,6 +156,7 @@ def preview(context: OfferContext) -> str:
 
     lines.extend([
         "",
+        f"Требуемая мощность: {_fmt_qty(config.required_power_kw)} кВт",
         "Состав расчета:",
     ])
     for idx, line in enumerate(config.lines, start=1):
