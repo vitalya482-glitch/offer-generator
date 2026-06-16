@@ -689,7 +689,21 @@ def build_update_plan() -> UpdatePlan:
     app_needed = is_newer(latest, current)
     runtime_required = False
 
-    if app_needed and release.app_asset is not None:
+    # Важно: runtime не должен обновляться сам по себе, если версия приложения
+    # уже актуальная. Иначе старый/неполный update_state.json или другая ZIP-
+    # подпись runtime могут вызвать ложное окно обновления вида:
+    # "Доступна новая версия: X / Текущая версия: X".
+    if not app_needed:
+        return UpdatePlan(
+            has_update=False,
+            current_version=current,
+            latest_version=latest,
+            release=release,
+            packages=[],
+            runtime_required=False,
+        )
+
+    if release.app_asset is not None:
         packages.append(UpdatePackage("app", release.app_asset, asset_sha256(release, release.app_asset)))
 
     if release.runtime_asset is not None:
@@ -697,10 +711,11 @@ def build_update_plan() -> UpdatePlan:
         latest_runtime_state_sha = runtime_content_sha256_from_release(release, release.runtime_asset)
 
         # Backward compatible fallback for older releases without the stable content signature.
-        # New releases should publish *.content.sha256; otherwise ZIP SHA can cause false runtime updates.
+        # New releases should publish RUNTIME_CONTENT_SHA256 in release notes; otherwise ZIP SHA
+        # can cause false runtime updates because the archive bytes may change on every build.
         if latest_runtime_state_sha:
             # Prefer the real local _internal content signature. Older update_state.json files
-            # stored runtime ZIP SHA256, which must not be compared with *.content.sha256.
+            # stored runtime ZIP SHA256, which must not be compared with content SHA256.
             installed_runtime_sha = (
                 installed_runtime_content_sha256()
                 or installed_asset_sha256(release.runtime_asset.name)
