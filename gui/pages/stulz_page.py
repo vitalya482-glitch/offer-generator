@@ -205,6 +205,14 @@ class StulzPage(QWidget):
         self.owner._set_line_path(line_edit, path_text, is_file=is_file)
         self._updating_path_display = False
 
+    def _set_spec_dir_path(self, path_text: str) -> None:
+        self.spec_dir_path = path_text
+        self.spec_edit.blockSignals(True)
+        try:
+            self._set_line_path(self.spec_edit, path_text, is_file=False)
+        finally:
+            self.spec_edit.blockSignals(False)
+
     def project_path_text(self) -> str:
         return self.project_dir_path or self.project_edit.toolTip() or self.project_edit.text().strip()
 
@@ -398,10 +406,12 @@ class StulzPage(QWidget):
             self.output_dir_path = guessed_output_dir
             self._set_line_path(self.output_edit, guessed_output_dir, is_file=False)
 
-        if not self.spec_path_text().strip():
+        current_spec_text = self.spec_path_text().strip()
+        current_spec_dir = Path(current_spec_text) if current_spec_text else None
+        should_guess_spec_dir = not current_spec_text or bool(current_spec_dir and not current_spec_dir.exists())
+        if should_guess_spec_dir:
             guessed_spec_dir = infer_specifications_dir(str(project_dir), found.get("pdf_dirs", []))
-            self.spec_dir_path = guessed_spec_dir
-            self._set_line_path(self.spec_edit, guessed_spec_dir, is_file=False)
+            self._set_spec_dir_path(guessed_spec_dir)
 
         spec_hint = self._display_dir(self.spec_dir_path) if self.spec_dir_path else "не выбрана"
         self.status_label.setText(
@@ -582,6 +592,25 @@ class StulzPage(QWidget):
             if context.brand != self.brand_name:
                 return
             models = self._scan_calc_pdf_models(context.pdf_dir)
+            if not models and context.project_dir.exists():
+                fallback_dirs = [
+                    Path(infer_specifications_dir(str(context.project_dir))),
+                    context.project_dir,
+                ]
+                seen: set[str] = set()
+                for fallback_dir in fallback_dirs:
+                    fallback_key = str(fallback_dir.resolve()) if fallback_dir.exists() else str(fallback_dir)
+                    if not fallback_key or fallback_key in seen:
+                        continue
+                    seen.add(fallback_key)
+                    if context.pdf_dir and fallback_dir == context.pdf_dir:
+                        continue
+                    fallback_models = self._scan_calc_pdf_models(fallback_dir)
+                    if fallback_models:
+                        models = fallback_models
+                        context.pdf_dir = fallback_dir
+                        self._set_spec_dir_path(str(fallback_dir))
+                        break
             if not models:
                 return
 
