@@ -21,6 +21,7 @@ class RielloPriceItem:
     section: str = ""
     description: str = ""
     power: str = ""
+    backup_min: str = ""
 
     @property
     def display_name(self) -> str:
@@ -103,7 +104,7 @@ _FALLBACK_ITEMS: tuple[RielloPriceItem, ...] = (
 )
 
 
-_MODEL_PREFIXES = ("S3T", "S3M", "SRT", "SRM", "MHT", "MHE", "NXE")
+_MODEL_PREFIXES = ("SDU", "S3T", "S3M", "SRT", "SRM", "MHT", "MHE", "NXE")
 _MODEL_RE = re.compile(r"^(?:" + "|".join(_MODEL_PREFIXES) + r")\b[ A-Z0-9+*/().,\-\"]*$", re.IGNORECASE)
 _CODE_RE = re.compile(r"^[A-Z]{1,6}[A-Z0-9]{6,}$")
 _NUMBER_RE = re.compile(r"^-?\d+(?:[\s\d]*\d)?(?:[,.]\d+)?$")
@@ -176,6 +177,28 @@ def _power_from_model(model: str) -> str:
     return f"{_format_number(power)} kVA / {_format_number(power)} kW"
 
 
+def _power_from_va_w(va_text: str, w_text: str) -> str:
+    va = _to_float(va_text, 0.0)
+    watts = _to_float(w_text, 0.0)
+    if va <= 0 or watts <= 0:
+        return ""
+    kva = va / 1000.0
+    kw = watts / 1000.0
+    return f"{_format_number(kva)} kVA / {_format_number(kw)} kW"
+
+
+def _backup_label(value: str) -> str:
+    text = _clean_line(value)
+    if not text or text in {"-", "—"}:
+        return ""
+    if not _is_number(text):
+        return ""
+    minutes = _to_float(text, 0.0)
+    if minutes < 0:
+        return ""
+    return _format_number(minutes)
+
+
 def _description_for_item(model: str, section: str) -> str:
     section_lower = (section or "").lower()
     model_upper = (model or "").upper()
@@ -183,6 +206,8 @@ def _description_for_item(model: str, section: str) -> str:
         return "Силовой модуль Riello Sentryum Rack."
     if model_upper.endswith("60 PWC") or "rack cabinets" in section_lower:
         return "Шкаф Riello SRT/SRM Rack Cabinet для установки силовых модулей."
+    if model_upper.startswith("SDU "):
+        return "ИБП Riello Sentinel Dual SDU."
     if model_upper.startswith("S3T "):
         return "ИБП Riello Sentryum S3T."
     if model_upper.startswith("S3M "):
@@ -262,15 +287,31 @@ def _parse_pdf_lines(lines: list[tuple[int, str]]) -> list[RielloPriceItem]:
             if not found:
                 continue
 
+        before_dimensions = block[:dim_index]
         power = ""
-        for value in block[:dim_index]:
+        backup_min = ""
+
+        # Большинство больших UPS в прайсе имеют блок:
+        # kVA/kW, min, Voltage, Ah, Size, Weight, Price.
+        for idx, value in enumerate(before_dimensions):
             power = _power_from_pair(value)
             if power:
+                # Автономия есть только в таблицах, где после мощности идут как минимум
+                # еще два столбца, например: min + Ah или min + Voltage + Ah.
+                # В строках PWA после мощности идет только Voltage, его нельзя считать минутами.
+                if idx + 2 < len(before_dimensions):
+                    backup_min = _backup_label(before_dimensions[idx + 1])
                 break
+
+        # Sentinel Dual SDU в PDF указан иначе: VA, W, min, Size, Weight, Price.
+        # Для подбора переводим VA/W в kVA/kW.
+        model_upper = model.upper()
+        if not power and model_upper.startswith("SDU ") and len(before_dimensions) >= 3:
+            power = _power_from_va_w(before_dimensions[0], before_dimensions[1])
+            backup_min = _backup_label(before_dimensions[2])
+
         if not power:
             power = _power_from_model(model)
-
-        model_upper = model.upper()
         # NXE TCE and similar rows are accessories / battery extension cabinets,
         # not UPS models for the main power selection list.
         if " TCE " in f" {model_upper} " or model_upper.startswith("NXE TCE"):
@@ -297,6 +338,7 @@ def _parse_pdf_lines(lines: list[tuple[int, str]]) -> list[RielloPriceItem]:
                 section=section,
                 description=_description_for_item(model, section),
                 power=power,
+                backup_min=backup_min,
             )
         )
 
@@ -361,6 +403,13 @@ def item_power_label(item: RielloPriceItem) -> str:
     return f"{kva:g} кВА" if kva else "—"
 
 
+def item_backup_label(item: RielloPriceItem) -> str:
+    value = str(getattr(item, "backup_min", "") or "").strip()
+    if not value:
+        return "время автономии = —"
+    return f"время автономии = {value} мин"
+
+
 def format_price(value: float) -> str:
     try:
         return f"{float(value):,.0f}".replace(",", " ")
@@ -373,7 +422,10 @@ def item_display_with_power(item: RielloPriceItem) -> str:
 
 
 def item_display_with_price(item: RielloPriceItem) -> str:
-    return f"{item.model} — {format_price(item.price)} {item.currency} — {item_power_label(item)} — {item.code}"
+    return (
+        f"{item.model} — {format_price(item.price)} {item.currency} — "
+        f"{item_power_label(item)} — {item_backup_label(item)} — {item.code}"
+    )
 
 
 def rack_cabinets(items: list[RielloPriceItem]) -> list[RielloPriceItem]:
@@ -398,6 +450,10 @@ def nearest_power_items(items: list[RielloPriceItem], required_power_kw: float) 
         return list(items)
 
     required = max(float(required_power_kw or 0), 0.0)
+    # Если пользователь ввёл мощность мелких SDU как VA, например 4000,
+    # трактуем это как 4 кВА. Обычный ввод 20/100/250 остается без изменений.
+    if required >= 1000:
+        required = required / 1000.0
     powers = sorted({power for power, _item in candidates})
     if required <= 0:
         target_power = powers[0]
@@ -406,12 +462,8 @@ def nearest_power_items(items: list[RielloPriceItem], required_power_kw: float) 
 
     result = [item for power, item in candidates if power == target_power]
 
-    def sort_key(item: RielloPriceItem) -> tuple[int, float, str, str]:
-        model_upper = item.model.upper()
-        prefix_order = {"SRT": 0, "SRM": 1, "S3T": 2, "S3M": 3, "MHT": 4, "MHE": 5, "NXE": 6}
-        prefix = model_upper.split(" ", 1)[0]
-        prefix_priority = prefix_order.get(prefix, 99)
-        return prefix_priority, item.price, model_upper, item.code.upper()
+    def sort_key(item: RielloPriceItem) -> tuple[float, str, str]:
+        return item.price, item.model.upper(), item.code.upper()
 
     return sorted(result, key=sort_key)
 

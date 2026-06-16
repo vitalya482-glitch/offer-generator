@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from core.riello_price import (
     default_price_path,
     format_price,
+    item_backup_label,
     item_display_with_price,
     item_power_label,
     load_price_items,
@@ -91,13 +92,13 @@ class RielloPage(QWidget):
         layout.addWidget(input_card)
 
         table_card = owner._card("Подходящие позиции из PDF-прайса")
-        self.models_table = QTableWidget(0, 6)
-        self.models_table.setHorizontalHeaderLabels(["Модель", "Код", "Мощность", "Стоимость", "Габариты", "Вес"])
+        self.models_table = QTableWidget(0, 7)
+        self.models_table.setHorizontalHeaderLabels(["Модель", "Код", "Мощность", "Стоимость", "Автономия", "Габариты", "Вес"])
         self.models_table.verticalHeader().setVisible(False)
         self.models_table.setAlternatingRowColors(True)
         self.models_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.models_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.models_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.models_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
         self.models_table.setMinimumHeight(180)
         self.models_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.models_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -295,6 +296,7 @@ class RielloPage(QWidget):
                 item.code,
                 item_power_label(item),
                 f"{format_price(item.price)} {item.currency}",
+                item_backup_label(item),
                 item.dimensions or "—",
                 f"{self._fmt_qty(item.weight_kg)} кг" if item.weight_kg else "—",
             ]
@@ -330,6 +332,7 @@ class RielloPage(QWidget):
             f"Код: {item.code}\n"
             f"Мощность: {power}\n"
             f"Стоимость: {format_price(item.price)} {item.currency}\n"
+            f"Автономия: {item_backup_label(item)}\n"
             f"Габариты: {item.dimensions or '—'}\n"
             f"Вес: {self._fmt_qty(item.weight_kg)} кг\n"
             f"Описание из прайса/раздела: {item.description or item.section or '—'}"
