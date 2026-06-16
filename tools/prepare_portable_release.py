@@ -18,7 +18,7 @@ COPY_TO_ROOT = [
     "requirements.txt",
 ]
 SOURCE_MODULE_DIRS = ["assets", "brands", "core", "gui", "config"]
-OPTIONAL_ROOT_DIRS = ["assets", "prices"]
+OPTIONAL_ROOT_DIRS = ["assets", "prices", "templates"]
 EXCLUDED_DIR_NAMES = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
@@ -62,6 +62,7 @@ Folder layout:
   config/                  - editable JSON configuration files
   modules/source/          - source copies of project modules for review/reuse
   prices/                  - optional reference price files, when present
+  templates/               - Excel/Word templates used by brand modules
 
 Important:
   Do not move only the EXE to another folder. This is a one-dir build, so the

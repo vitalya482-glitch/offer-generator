@@ -267,7 +267,9 @@ def run_gui() -> None:
                     for package in plan.packages
                 )
                 runtime_note = (
-                    "Runtime-модуль тоже будет обновлен, потому что его SHA256 отличается.\n\n"
+                    "Runtime-модуль тоже будет обновлен, потому что изменились настоящие runtime-файлы "
+                    "в папке _internal. Изменения config/prices/templates/assets теперь не считаются "
+                    "причиной для скачивания runtime.\n\n"
                     if plan.runtime_required
                     else ""
                 )

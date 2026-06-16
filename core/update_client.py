@@ -22,6 +22,12 @@ CHECKSUMS_ASSET = "RELEASE_SHA256SUMS.txt"
 CONFIG_RELATIVE_PATH = Path("config") / "update.json"
 UPDATE_STATE_RELATIVE_PATH = Path("config") / "update_state.json"
 
+# PyInstaller places bundled data folders into _internal, but the portable
+# modular release also ships them next to the EXE in App-No-Runtime.zip.
+# They are not real runtime/dependency files and must not force runtime download.
+RUNTIME_SIGNATURE_IGNORED_TOP_LEVEL_DIRS = {"assets", "config", "prices", "templates"}
+RUNTIME_SIGNATURE_IGNORED_FILES = {"release_info.json"}
+
 
 class UpdateError(RuntimeError):
     """Raised when update check/download/start cannot be completed."""
@@ -580,12 +586,35 @@ def runtime_content_sha256_from_release(release: ReleaseInfo, asset: ReleaseAsse
     )
 
 
+def is_ignored_runtime_signature_path(relative_path: Path) -> bool:
+    parts = relative_path.parts
+    if not parts:
+        return False
+    if parts[0].lower() in RUNTIME_SIGNATURE_IGNORED_TOP_LEVEL_DIRS:
+        return True
+    if relative_path.name.lower() in RUNTIME_SIGNATURE_IGNORED_FILES:
+        return True
+    return False
+
+
 def directory_content_sha256(root: Path) -> str | None:
-    """Hash directory contents in a stable way: relative paths + file bytes, no timestamps."""
+    """Hash true runtime contents in a stable way: paths + file bytes, no timestamps.
+
+    Bundled data/config folders are ignored on purpose. They are updated by the
+    App-No-Runtime module in the writable app root, so they must not make the
+    runtime module look changed on every release.
+    """
     if not root.exists() or not root.is_dir():
         return None
     digest = hashlib.sha256()
-    files = sorted((p for p in root.rglob("*") if p.is_file()), key=lambda p: p.relative_to(root).as_posix().lower())
+    files = sorted(
+        (
+            p
+            for p in root.rglob("*")
+            if p.is_file() and not is_ignored_runtime_signature_path(p.relative_to(root))
+        ),
+        key=lambda p: p.relative_to(root).as_posix().lower(),
+    )
     for file_path in files:
         rel = file_path.relative_to(root).as_posix().encode("utf-8")
         digest.update(rel)
