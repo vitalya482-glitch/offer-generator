@@ -18,6 +18,7 @@ from core.riello_price import (
     item_power_kw,
     load_price_items,
     nearest_power_items,
+    option_items,
     power_modules,
     rack_cabinets,
 )
@@ -65,47 +66,102 @@ def _selected_item(items: list[RielloPriceItem], value: str, fallback: RielloPri
     raise ValueError("В прайсе Riello не найдены позиции для выбора.")
 
 
+
+def _item_from_payload(row: dict[str, Any], catalog_items: list[RielloPriceItem]) -> RielloPriceItem:
+    """Восстанавливает позицию из листа подбора Riello.
+
+    Для ИБП стараемся взять свежую позицию из PDF-прайса по коду/модели.
+    Для быстрых опций используем такой же каталог опций; если позиция не найдена,
+    создаем ее из сохраненной строки корзины, чтобы расчет не терял данные.
+    """
+    code = str(row.get("code") or "").strip()
+    model = str(row.get("model") or "").strip()
+    found = find_item(catalog_items, code, contains=False) if code else None
+    if found is None and model:
+        found = find_item(catalog_items, model, contains=False)
+    if found is not None:
+        return found
+    return RielloPriceItem(
+        model=model or code or "Riello item",
+        code=code,
+        dimensions=str(row.get("dimensions") or ""),
+        weight_kg=_as_float(row.get("weight_kg"), 0.0),
+        price=_as_float(row.get("price"), 0.0),
+        currency=str(row.get("currency") or "EUR"),
+        section=str(row.get("section") or "Riello selection"),
+        description=str(row.get("description") or "Позиция из листа подбора оборудования."),
+        power=str(row.get("power") or ""),
+        backup_min=str(row.get("backup_min") or ""),
+    )
+
+
+def _quote_lines_from_payload(payload: Any, catalog_items: list[RielloPriceItem]) -> list[RielloQuoteLine]:
+    if not isinstance(payload, list):
+        return []
+    lines: list[RielloQuoteLine] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        qty = max(_as_float(row.get("qty"), 0.0), 0.0)
+        if qty <= 0:
+            continue
+        item = _item_from_payload(row, catalog_items)
+        if not item.model and not item.code:
+            continue
+        kind = str(row.get("kind") or "Позиция")
+        lines.append(RielloQuoteLine(item, qty, note=kind))
+    return lines
+
 def build_quote_config(context: OfferContext) -> RielloQuoteConfig:
     options = _options(context)
     price_path = options.get("price_path") or str(default_price_path())
     items = load_price_items(price_path)
+    catalog_items = items + option_items()
 
     required_power_kw = _as_float(options.get("required_power_kw"), 20.0)
-    nearest_items = nearest_power_items(items, required_power_kw)
+    lines = _quote_lines_from_payload(options.get("quote_lines"), catalog_items)
 
-    requested_ups = str(options.get("ups_model") or "").strip()
-    selected_ups = find_item(nearest_items, requested_ups, contains=False) if requested_ups else None
-    if selected_ups is None and requested_ups:
-        selected_ups = find_item(items, requested_ups, contains=False)
-    if selected_ups is None:
-        selected_ups = nearest_items[0] if nearest_items else _selected_item(items, "SRT 20 PM P", items[0] if items else None)
-
-    prefix = selected_ups.model.split(" ", 1)[0]
-    modules = power_modules(items, prefix=prefix)
-    requested_module = str(options.get("power_module") or "").strip()
-    if " 20 PM" in selected_ups.model.upper():
-        selected_module = selected_ups
+    # Совместимость со старой схемой: если лист подбора пустой, строим расчет
+    # по текущей выбранной модели ИБП. Новая страница Riello передает quote_lines.
+    if lines:
+        ups_qty = sum(line.qty for line in lines if str(line.note).lower().startswith("ибп")) or 1.0
+        currency = lines[0].item.currency or str(options.get("currency") or "EUR")
     else:
-        selected_module = _selected_item(items, requested_module or f"{prefix} 20 PM P", modules[0] if modules else None)
+        nearest_items = nearest_power_items(items, required_power_kw)
 
-    ups_qty = max(_as_float(options.get("ups_quantity"), 1.0), 0.0) or 1.0
-    raw_modules_per_ups = str(options.get("modules_per_ups") or "").strip()
-    if raw_modules_per_ups:
-        modules_per_ups = max(_as_float(raw_modules_per_ups, 3.0), 0.0) or 3.0
-    else:
-        ups_power = item_power_kw(selected_ups)
-        module_power = item_power_kw(selected_module)
-        modules_per_ups = max(round(ups_power / module_power), 1) if ups_power > 0 and module_power > 0 else 3.0
-    module_qty = ups_qty * modules_per_ups
+        requested_ups = str(options.get("ups_model") or "").strip()
+        selected_ups = find_item(nearest_items, requested_ups, contains=False) if requested_ups else None
+        if selected_ups is None and requested_ups:
+            selected_ups = find_item(items, requested_ups, contains=False)
+        if selected_ups is None:
+            selected_ups = nearest_items[0] if nearest_items else _selected_item(items, "SRT 20 PM P", items[0] if items else None)
+
+        prefix = selected_ups.model.split(" ", 1)[0]
+        modules = power_modules(items, prefix=prefix)
+        requested_module = str(options.get("power_module") or "").strip()
+        if " 20 PM" in selected_ups.model.upper():
+            selected_module = selected_ups
+        else:
+            selected_module = _selected_item(items, requested_module or f"{prefix} 20 PM P", modules[0] if modules else None)
+
+        ups_qty = max(_as_float(options.get("ups_quantity"), 1.0), 0.0) or 1.0
+        raw_modules_per_ups = str(options.get("modules_per_ups") or "").strip()
+        if raw_modules_per_ups:
+            modules_per_ups = max(_as_float(raw_modules_per_ups, 3.0), 0.0) or 3.0
+        else:
+            ups_power = item_power_kw(selected_ups)
+            module_power = item_power_kw(selected_module)
+            modules_per_ups = max(round(ups_power / module_power), 1) if ups_power > 0 and module_power > 0 else 3.0
+        module_qty = ups_qty * modules_per_ups
+
+        currency = selected_ups.currency or selected_module.currency or str(options.get("currency") or "EUR")
+        lines = [
+            RielloQuoteLine(selected_ups, ups_qty, note=f"Позиция из прайса; запрос {required_power_kw:g} кВт" if required_power_kw else "Позиция из прайса"),
+        ]
+        if selected_module.model != selected_ups.model:
+            lines.append(RielloQuoteLine(selected_module, module_qty, note=f"{_fmt_qty(modules_per_ups)} мод. на 1 шкаф"))
 
     city = str(options.get("city") or context.city or "Алматы").replace("г.", "").strip() or "Алматы"
-    currency = selected_ups.currency or selected_module.currency or str(options.get("currency") or "EUR")
-
-    lines = [
-        RielloQuoteLine(selected_ups, ups_qty, note=f"Позиция из прайса; запрос {required_power_kw:g} кВт" if required_power_kw else "Позиция из прайса"),
-    ]
-    if selected_module.model != selected_ups.model:
-        lines.append(RielloQuoteLine(selected_module, module_qty, note=f"{_fmt_qty(modules_per_ups)} мод. на 1 шкаф"))
 
     return RielloQuoteConfig(
         client_name=context.client_name,

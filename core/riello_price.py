@@ -428,6 +428,51 @@ def item_display_with_price(item: RielloPriceItem) -> str:
     )
 
 
+def option_items() -> list[RielloPriceItem]:
+    """Базовые опции Riello, которые чаще всего добавляются к ИБП.
+
+    Пока держим список явно: эти позиции нужны в интерфейсе подбора как быстрые
+    опции для добавления в расчет. Позже этот список можно расширить полноценным
+    парсером раздела Connectivity/Options из PDF-прайса.
+    """
+    return [
+        RielloPriceItem(
+            model="MULTICOM 392",
+            code="YSKCMC9A",
+            dimensions="",
+            weight_kg=0.0,
+            price=200.0,
+            currency="EUR",
+            section="Riello options",
+            description="Коммуникационная карта Multicom 392.",
+        ),
+        RielloPriceItem(
+            model="TEMP SENSOR KIT",
+            code="YS3TE09A",
+            dimensions="",
+            weight_kg=0.0,
+            price=60.0,
+            currency="EUR",
+            section="Riello options",
+            description="Комплект датчика температуры для внешнего батарейного шкафа/помещения.",
+        ),
+        RielloPriceItem(
+            model="NETMAN 208",
+            code="YSKCSA8ARU",
+            dimensions="",
+            weight_kg=0.0,
+            price=240.0,
+            currency="EUR",
+            section="Riello options",
+            description="Сетевая карта NetMan 208, Gigabit Ethernet, slot-in.",
+        ),
+    ]
+
+
+def item_display_option(item: RielloPriceItem) -> str:
+    return f"{item.model} — {format_price(item.price)} {item.currency} — {item.code}"
+
+
 def rack_cabinets(items: list[RielloPriceItem]) -> list[RielloPriceItem]:
     return [
         item
