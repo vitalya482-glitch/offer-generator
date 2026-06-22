@@ -62,6 +62,7 @@ def run_gui() -> None:
     from gui.pages.riello_page import RielloPage
     from gui.pages.battery_page import BatteryPage
     from gui.pages.genset_page import GensetPage
+    from gui.pages.hvac_page import HVACPage
 
     class OfferGeneratorWindow(QMainWindow):
         """Главное окно: только каркас приложения и общие сервисы.
@@ -268,6 +269,7 @@ def run_gui() -> None:
                     getattr(self, "stulz_page", None),
                     getattr(self, "riello_page", None),
                     getattr(self, "battery_page", None),
+                    getattr(self, "hvac_page", None),
                     getattr(self, "genset_page", None),
                 )
                 if page is not None
@@ -296,10 +298,15 @@ def run_gui() -> None:
             return self._saved("project_dir", "")
 
         def _brand_for_tab_index(self, index: int) -> str:
-            names = list(BRANDS.keys())
-            return names[index] if 0 <= index < len(names) else "Stulz"
+            if hasattr(self, "brand_tabs") and 0 <= index < self.brand_tabs.count():
+                return self.brand_tabs.tabText(index)
+            return "Stulz"
 
         def _tab_index_for_brand(self, brand: str) -> int:
+            if hasattr(self, "brand_tabs"):
+                for i in range(self.brand_tabs.count()):
+                    if self.brand_tabs.tabText(i) == brand:
+                        return i
             names = list(BRANDS.keys())
             return names.index(brand) if brand in names else 0
 
@@ -453,10 +460,12 @@ def run_gui() -> None:
             self.riello_page = RielloPage(self)
             self.battery_page = BatteryPage(self)
             self.genset_page = GensetPage(self)
+            self.hvac_page = HVACPage(self)
 
             self.brand_tabs.addTab(self.stulz_page, "Stulz")
             self.brand_tabs.addTab(self.riello_page, "Riello")
             self.brand_tabs.addTab(self.battery_page, "Battery")
+            self.brand_tabs.addTab(self.hvac_page, "HVAC")
             self.brand_tabs.addTab(self.genset_page, "Genset")
             self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
             self.brand_tabs.setCurrentIndex(self._tab_index_for_brand(self._saved("brand", "Stulz")))

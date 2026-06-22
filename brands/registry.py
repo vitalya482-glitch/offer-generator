@@ -8,6 +8,7 @@ BRANDS = {
     "Riello": "brands.riello",
     "DC Eltek": "brands.dc_eltek",
     "Generator": "brands.generator",
+    "HVAC": "brands.hvac",
 }
 
 

@@ -17,11 +17,16 @@ hiddenimports = [
     'gui.pages.riello_page',
     'gui.pages.battery_page',
     'gui.pages.genset_page',
+    'gui.pages.hvac_page',
 
     'brands.stulz',
     'brands.riello',
     'brands.dc_eltek',
     'brands.generator',
+    'brands.hvac',
+    'brands.hvac.excel_reader',
+    'brands.hvac.offer_builder',
+    'brands.hvac.template_finder',
     'brands.registry',
 
     'core.docx_renderer',
@@ -60,6 +65,7 @@ datas = [
     ('assets', 'assets'),
     ('prices', 'prices'),
     ('templates', 'templates'),
+    ('brands/hvac/templates', 'brands/hvac/templates'),
 ]
 datas += collect_data_files('openpyxl')
 
