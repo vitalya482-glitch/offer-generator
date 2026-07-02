@@ -5,7 +5,11 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from PySide6.QtCore import Qt
-from brands.dc_eltek import preview as build_dc_eltek_preview
+from brands.dc_eltek import (
+    find_default_dc_eltek_template,
+    make_offer as make_dc_eltek_offer,
+    preview as build_dc_eltek_preview,
+)
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -67,7 +71,7 @@ def read_excel_sheet_names(path_text: str) -> list[str]:
 
 
 class DcEltekPage(QWidget):
-    """Страница DC Eltek: выбор проекта, расчета, листа и шаблона КП."""
+    """Страница DC Eltek: выбор проекта, расчета, листа, шаблона и формирование КП."""
 
     def __init__(self, owner) -> None:
         super().__init__(owner)
@@ -106,7 +110,10 @@ class DcEltekPage(QWidget):
         self.sheet_combo.currentTextChanged.connect(lambda _text: self._on_field_changed())
         owner._add_row(form, 3, "Лист для КП", self.sheet_combo, None, None)
 
-        self.template_path_edit = QLineEdit(self._saved("dc_eltek_template_path", ""))
+        saved_template = self._saved("dc_eltek_template_path", "")
+        if not saved_template:
+            saved_template = find_default_dc_eltek_template()
+        self.template_path_edit = QLineEdit(saved_template)
         self.template_path_edit.setPlaceholderText("Шаблон КП .docx")
         self.template_path_edit.editingFinished.connect(self._on_field_changed)
         owner._add_row(form, 4, "Шаблон КП", self.template_path_edit, "Выбрать", self.select_template_file)
@@ -156,7 +163,7 @@ class DcEltekPage(QWidget):
         self.client_edit.clear()
         self.calc_path_edit.clear()
         self.sheet_combo.clear()
-        self.template_path_edit.clear()
+        self.template_path_edit.setText(find_default_dc_eltek_template())
         self.preview_box.clear()
         self.settings.sync()
 
@@ -246,13 +253,38 @@ class DcEltekPage(QWidget):
             if index >= 0:
                 self.sheet_combo.setCurrentIndex(index)
 
+    def _selected_signer(self) -> dict[str, str]:
+        if hasattr(self.owner, "_selected_signer"):
+            try:
+                return dict(self.owner._selected_signer())
+            except Exception:
+                pass
+        return {"name": "Сания Санаткызы", "position": "Коммерческий директор"}
+
+    def _manager_profile(self):
+        if hasattr(self.owner, "_manager_profile"):
+            try:
+                return self.owner._manager_profile()
+            except Exception:
+                pass
+        return None
+
     def _context_dict(self) -> dict[str, str]:
+        signer = self._selected_signer()
+        manager = self._manager_profile()
         return {
             "project_dir": self.project_dir_edit.text().strip(),
+            "output_dir": self.project_dir_edit.text().strip(),
             "client": self.client_edit.text().strip(),
             "calc_path": self.calc_path_edit.text().strip(),
             "sheet_name": self.sheet_combo.currentText().strip(),
             "template_path": self.template_path_edit.text().strip(),
+            "signer_name": str(signer.get("name", "")),
+            "signer_position": str(signer.get("position", "")),
+            "manager_name": str(getattr(manager, "name", "") if manager else ""),
+            "manager_position": str(getattr(manager, "position", "") if manager else ""),
+            "manager_email": str(getattr(manager, "email", "") if manager else ""),
+            "manager_phone": str(getattr(manager, "phone", "") if manager else ""),
         }
 
     def _update_preview(self) -> None:
@@ -278,12 +310,14 @@ class DcEltekPage(QWidget):
             QMessageBox.warning(self, "DC Eltek", "Заполните поля: " + ", ".join(missing))
             return
 
+        try:
+            result_path = make_dc_eltek_offer(data)
+        except Exception as exc:
+            QMessageBox.critical(self, "DC Eltek", f"Не удалось сформировать КП:\n{exc}")
+            return
+
         self._update_preview()
-        QMessageBox.information(
-            self,
-            "DC Eltek",
-            "Парсер Excel DC Eltek подключен.\nПозиции и итоги сейчас отображаются в предпросмотре.\nГенерацию Word-КП подключим следующим этапом после согласования тегов шаблона.",
-        )
+        QMessageBox.information(self, "DC Eltek", f"КП сформировано:\n{result_path}")
 
 
 # Backward compatibility if older imports used the all-caps class name.
