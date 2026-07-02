@@ -279,16 +279,16 @@ def build_offer_filename(client_name: str, offer_version: int, dt: datetime | No
     return f"offer_{client}_{dt:%d-%m-%y}_rev{offer_version}.docx"
 
 
+
 def currency_name(currency: str) -> str:
-    code = (currency or "").upper()
+    code = (currency or "").upper().strip()
     if code == "KZT":
         return "тенге"
     if code == "EUR":
         return "евро"
     if code == "USD":
         return "долларов США"
-    return code.lower() or "тенге"
-
+    return code.lower() or "валюта не указана"
 
 def _triad_words_ru(number: int, feminine: bool = False) -> str:
     hundreds = ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"]
@@ -351,7 +351,7 @@ def number_to_words_ru(number: int) -> str:
 
 def money_in_words(amount: float | int | None, currency: str) -> str:
     whole = int(round(float(amount or 0)))
-    cur = (currency or "KZT").upper()
+    cur = (currency or "").upper()
     if cur == "KZT":
         main = "тенге"
         minor = "тиын"
@@ -412,7 +412,52 @@ def _read_workbook_sheet_paths(archive: zipfile.ZipFile) -> dict[str, str]:
     return result
 
 
-def _read_sheet_matrix(calc_path: str | Path, sheet_name: str) -> tuple[dict[int, dict[int, Any]], int, int]:
+
+def _read_styles(archive: zipfile.ZipFile) -> dict[int, str]:
+    """Возвращает Excel number format по style id, чтобы вытащить валюту из формата ячеек."""
+    try:
+        root = ET.fromstring(archive.read("xl/styles.xml"))
+    except KeyError:
+        return {}
+
+    custom_formats: dict[int, str] = {}
+    num_fmts = root.find(f"{{{_XLSX_MAIN_NS}}}numFmts")
+    if num_fmts is not None:
+        for num_fmt in num_fmts.findall(f"{{{_XLSX_MAIN_NS}}}numFmt"):
+            try:
+                num_fmt_id = int(num_fmt.attrib.get("numFmtId", "0"))
+            except ValueError:
+                continue
+            custom_formats[num_fmt_id] = num_fmt.attrib.get("formatCode", "")
+
+    # Базовые встроенные форматы Excel. Валютные обычно приходят как кастомные,
+    # но эти id полезно сохранить для полноты.
+    builtin_formats = {
+        5: "#,##0_);(#,##0)",
+        6: "#,##0_);[Red](#,##0)",
+        7: "#,##0.00_);(#,##0.00)",
+        8: "#,##0.00_);[Red](#,##0.00)",
+        44: "_($* #,##0.00_);_($* (#,##0.00);_($* '-'??_);_(@_)",
+    }
+
+    style_formats: dict[int, str] = {}
+    cell_xfs = root.find(f"{{{_XLSX_MAIN_NS}}}cellXfs")
+    if cell_xfs is None:
+        return style_formats
+
+    for index, xf in enumerate(cell_xfs.findall(f"{{{_XLSX_MAIN_NS}}}xf")):
+        try:
+            num_fmt_id = int(xf.attrib.get("numFmtId", "0"))
+        except ValueError:
+            continue
+        style_formats[index] = custom_formats.get(num_fmt_id, builtin_formats.get(num_fmt_id, ""))
+    return style_formats
+
+
+def _read_sheet_matrix_with_formats(
+    calc_path: str | Path,
+    sheet_name: str,
+) -> tuple[dict[int, dict[int, Any]], dict[int, dict[int, str]], int, int]:
     path = Path(calc_path)
     if path.suffix.lower() not in {".xlsx", ".xlsm"}:
         raise ValueError("DC Eltek пока читает только .xlsx/.xlsm. Старый .xls нужно сохранить как .xlsx.")
@@ -421,6 +466,7 @@ def _read_sheet_matrix(calc_path: str | Path, sheet_name: str) -> tuple[dict[int
 
     with zipfile.ZipFile(path) as archive:
         shared_strings = _read_shared_strings(archive)
+        style_formats = _read_styles(archive)
         sheet_paths = _read_workbook_sheet_paths(archive)
         if sheet_name not in sheet_paths:
             available = ", ".join(sheet_paths.keys())
@@ -429,6 +475,7 @@ def _read_sheet_matrix(calc_path: str | Path, sheet_name: str) -> tuple[dict[int
         root = ET.fromstring(archive.read(sheet_paths[sheet_name]))
 
     matrix: dict[int, dict[int, Any]] = {}
+    formats: dict[int, dict[int, str]] = {}
     max_row = 0
     max_col = 0
 
@@ -441,6 +488,16 @@ def _read_sheet_matrix(calc_path: str | Path, sheet_name: str) -> tuple[dict[int
         except ValueError:
             continue
 
+        style_id_text = cell.attrib.get("s")
+        if style_id_text is not None:
+            try:
+                style_id = int(style_id_text)
+                fmt = style_formats.get(style_id, "")
+                if fmt:
+                    formats.setdefault(row, {})[col] = fmt
+            except ValueError:
+                pass
+
         cell_type = cell.attrib.get("t")
         value: Any = None
 
@@ -450,6 +507,8 @@ def _read_sheet_matrix(calc_path: str | Path, sheet_name: str) -> tuple[dict[int
         else:
             value_node = cell.find(f"{{{_XLSX_MAIN_NS}}}v")
             if value_node is None or value_node.text is None:
+                max_row = max(max_row, row)
+                max_col = max(max_col, col)
                 continue
             raw_value = value_node.text
             if cell_type == "s":
@@ -464,14 +523,17 @@ def _read_sheet_matrix(calc_path: str | Path, sheet_name: str) -> tuple[dict[int
                 except ValueError:
                     value = raw_value
 
-        if value is None or value == "":
-            continue
-        matrix.setdefault(row, {})[col] = value
+        if value is not None and value != "":
+            matrix.setdefault(row, {})[col] = value
         max_row = max(max_row, row)
         max_col = max(max_col, col)
 
-    return matrix, max_row, max_col
+    return matrix, formats, max_row, max_col
 
+
+def _read_sheet_matrix(calc_path: str | Path, sheet_name: str) -> tuple[dict[int, dict[int, Any]], int, int]:
+    matrix, _formats, max_row, max_col = _read_sheet_matrix_with_formats(calc_path, sheet_name)
+    return matrix, max_row, max_col
 
 def _cell_text(matrix: dict[int, dict[int, Any]], row: int, col: int) -> str:
     return _clean_text(matrix.get(row, {}).get(col))
@@ -578,46 +640,297 @@ def _is_service_name(name: str) -> bool:
     return False
 
 
+
 def _currency_from_text(text: str) -> str | None:
-    text = _normalize_text(text)
-    if any(term in text for term in ("kzt", "тенге")):
+    text_norm = _normalize_text(text)
+    raw = str(text or "").strip().lower()
+    if any(term in text_norm for term in ("kzt", "тенге", "тг")) or "₸" in raw:
         return "KZT"
-    if any(term in text for term in ("eur", "euro", "евро")):
+    if any(term in text_norm for term in ("eur", "euro", "евро")) or "€" in raw:
         return "EUR"
-    if any(term in text for term in ("usd", "доллар")):
+    if any(term in text_norm for term in ("usd", "доллар")) or "$" in raw:
         return "USD"
     return None
 
 
-def _detect_currency(matrix: dict[int, dict[int, Any]], target_row: int | None = None) -> str:
-    markers: list[tuple[int, int, str]] = []
+def _detect_currency(
+    matrix: dict[int, dict[int, Any]],
+    formats: dict[int, dict[int, str]] | None = None,
+    *,
+    unit_price_row: int | None = None,
+    total_row: int | None = None,
+) -> str:
+    """Ищет валюту только рядом с ценовыми строками.
+
+    Важно: если валюта не указана в блоке Price per unit / Total per quantity / TOTAL,
+    возвращаем пустую строку, а не KZT по умолчанию.
+    """
+    formats = formats or {}
+    candidate_rows: list[int] = []
+    for row in (unit_price_row, total_row):
+        if row:
+            candidate_rows.extend([row - 1, row, row + 1])
+
+    seen: set[int] = set()
+    ordered_rows = [row for row in candidate_rows if row and not (row in seen or seen.add(row))]
+
+    for row in ordered_rows:
+        row_values = matrix.get(row, {})
+        row_formats = formats.get(row, {})
+        for col in sorted(set(row_values) | set(row_formats)):
+            for source in (row_values.get(col), row_formats.get(col)):
+                currency = _currency_from_text(str(source or ""))
+                if currency:
+                    return currency
+    return ""
+
+
+def detect_dc_eltek_currency(calc_path: str | Path, sheet_name: str) -> str:
+    matrix, formats, _max_row, _max_col = _read_sheet_matrix_with_formats(calc_path, sheet_name)
+    layout = detect_offer_layout(calc_path, sheet_name)
+    return _detect_currency(
+        matrix,
+        formats,
+        unit_price_row=int(layout["unit_price_row"] or 0) if layout.get("unit_price_row") else None,
+        total_row=int(layout["total_row"] or 0) if layout.get("total_row") else None,
+    )
+
+
+
+INCOTERM_ALIASES = (
+    "ddp",
+    "dap",
+    "ddu",
+    "exw",
+    "fob",
+    "cpt",
+    "cip",
+    "cfr",
+    "cif",
+    "условия поставки",
+    "место поставки",
+    "delivery terms",
+    "delivery condition",
+)
+
+INSTALLATION_ALIASES = (
+    "installation",
+    "install",
+    "монтаж",
+    "монтажные работы",
+)
+
+STARTUP_ALIASES = (
+    "start-up",
+    "startup",
+    "commissioning",
+    "commission",
+    "пнр",
+    "пуско",
+    "налад",
+)
+
+INSPECTION_ALIASES = (
+    "inspection",
+    "site survey",
+    "survey",
+    "обследование",
+    "инспекция",
+    "инспекция объекта",
+    "выезд на объект",
+    "аудит объекта",
+)
+
+SPECIAL_TERM_ALIASES = (
+    "special term",
+    "special terms",
+    "special condition",
+    "special conditions",
+    "финансирование",
+    "финанс",
+    "особые условия",
+    "особое условие",
+)
+
+
+def _row_label(matrix: dict[int, dict[int, Any]], row: int) -> str:
+    cols = matrix.get(row, {})
+    if not cols:
+        return ""
+    # Обычно названия расчетных строк стоят в левой части листа.
+    for col in sorted(cols):
+        text = _clean_text(cols[col])
+        if text:
+            return text
+    return ""
+
+
+def _row_contains_any(matrix: dict[int, dict[int, Any]], row: int, aliases: tuple[str, ...]) -> bool:
+    row_text = " ".join(_normalize_text(value) for value in matrix.get(row, {}).values())
+    return any(_alias_matches(row_text, alias) for alias in aliases)
+
+
+def _find_rows_by_aliases(matrix: dict[int, dict[int, Any]], aliases: tuple[str, ...]) -> list[int]:
+    rows: list[int] = []
+    for row in sorted(matrix):
+        if _row_contains_any(matrix, row, aliases):
+            rows.append(row)
+    return rows
+
+
+def _sum_rows_for_item_columns(
+    matrix: dict[int, dict[int, Any]],
+    rows: list[int],
+    item_columns: list[int],
+) -> float:
+    total = 0.0
+    for row in rows:
+        for col in item_columns:
+            value = _cell_number(matrix, row, col)
+            if value is not None and value > 0:
+                total += float(value)
+    return total
+
+
+def _detect_delivery_terms(
+    matrix: dict[int, dict[int, Any]],
+    *,
+    total_row: int | None,
+) -> str:
+    candidates: list[tuple[int, int, str]] = []
     for row, cols in matrix.items():
+        if total_row is not None and row > total_row:
+            continue
         for col, value in cols.items():
-            currency = _currency_from_text(str(value))
-            if currency:
-                markers.append((row, col, currency))
+            text = _clean_text(value)
+            normalized = _normalize_text(text)
+            if not normalized:
+                continue
+            if any(_alias_matches(normalized, alias) for alias in INCOTERM_ALIASES):
+                # Предпочитаем ближайшую к итоговому блоку строку, затем левую часть листа.
+                row_score = row if total_row is None else (1000 - abs(total_row - row))
+                col_score = max(0, 50 - col)
+                candidates.append((row_score + col_score, row, text))
 
-    if target_row is not None and markers:
-        # В Eltek-листах один блок может быть в EUR, а финальный блок для КП — в KZT.
-        # Поэтому берем ближайшую валютную метку выше итоговой строки TOTAL.
-        before = [marker for marker in markers if marker[0] <= target_row]
-        if before:
-            before.sort(key=lambda item: (item[0], item[1]), reverse=True)
-            return before[0][2]
-
-    if markers:
-        markers.sort(key=lambda item: (item[0], item[1]))
-        return markers[-1][2]
-    return "KZT"
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][2]
 
 
-def read_dc_eltek_offer_items(calc_path: str | Path, sheet_name: str) -> dict[str, Any]:
+def _status_from_cost(total: float, *, included_word: str, not_included_word: str, currency: str) -> str:
+    if total > 0.01:
+        return f"{included_word}, сумма {format_money(total)} {currency}"
+    return not_included_word
+
+
+def _percent_for_row_column(matrix: dict[int, dict[int, Any]], row: int, item_col: int) -> float | None:
+    # В расчетах Eltek проценты часто стоят в соседней колонке слева от суммы позиции:
+    # B=%, C=сумма; D=%, E=сумма и т.д. Но оставляем запасные варианты.
+    for col in (item_col - 1, item_col + 1, item_col):
+        if col <= 0:
+            continue
+        value = _cell_number(matrix, row, col)
+        if value is not None and 0 < value <= 100:
+            return float(value)
+    return None
+
+
+def _detect_special_terms(
+    matrix: dict[int, dict[int, Any]],
+    item_columns: list[int],
+    currency: str,
+) -> dict[str, Any]:
+    rows = _find_rows_by_aliases(matrix, SPECIAL_TERM_ALIASES)
+    total = _sum_rows_for_item_columns(matrix, rows, item_columns)
+
+    rates: list[float] = []
+    for row in rows:
+        for col in item_columns:
+            rate = _percent_for_row_column(matrix, row, col)
+            if rate is not None:
+                rates.append(rate)
+
+    unique_rates = sorted({round(rate, 4) for rate in rates})
+    rate_label = ", ".join(f"{rate:g}%" for rate in unique_rates)
+
+    if total > 0.01 or unique_rates:
+        if rate_label:
+            text = f"{rate_label}, сумма {format_money(total)} {currency}" if total > 0.01 else rate_label
+        else:
+            text = f"сумма {format_money(total)} {currency}"
+    else:
+        text = "не заложено"
+
+    return {
+        "rows": rows,
+        "total": total,
+        "rates": unique_rates,
+        "rate_label": rate_label,
+        "text": text,
+    }
+
+
+def detect_additional_terms(
+    matrix: dict[int, dict[int, Any]],
+    layout: dict[str, int | None],
+    items: list[dict[str, Any]],
+    currency: str,
+) -> dict[str, Any]:
+    item_columns = [int(item.get("source_column") or 0) for item in items if int(item.get("source_column") or 0) > 0]
+    total_row = int(layout.get("total_row") or 0) or None
+
+    installation_rows = _find_rows_by_aliases(matrix, INSTALLATION_ALIASES)
+    startup_rows = _find_rows_by_aliases(matrix, STARTUP_ALIASES)
+    combined_rows = sorted(set(installation_rows + startup_rows))
+    inspection_rows = _find_rows_by_aliases(matrix, INSPECTION_ALIASES)
+
+    installation_startup_total = _sum_rows_for_item_columns(matrix, combined_rows, item_columns)
+    inspection_total = _sum_rows_for_item_columns(matrix, inspection_rows, item_columns)
+    special_terms = _detect_special_terms(matrix, item_columns, currency)
+
+    delivery_terms = _detect_delivery_terms(matrix, total_row=total_row)
+
+    installation_pnr_status = _status_from_cost(
+        installation_startup_total,
+        included_word="включены",
+        not_included_word="не включены",
+        currency=currency,
+    )
+    inspection_status = _status_from_cost(
+        inspection_total,
+        included_word="заложена",
+        not_included_word="не заложена",
+        currency=currency,
+    )
+
+    return {
+        "delivery_terms": delivery_terms,
+        "currency": currency,
+        "installation_rows": combined_rows,
+        "installation_startup_total": installation_startup_total,
+        "installation_pnr_status": installation_pnr_status,
+        "installation_terms": "Монтажные работы включены" if installation_startup_total > 0.01 else "Монтажные работы не включены",
+        "startup_terms": "Пуско-наладочные работы включены" if installation_startup_total > 0.01 else "Пуско-наладочные работы не включены",
+        "inspection_rows": inspection_rows,
+        "inspection_total": inspection_total,
+        "inspection_status": inspection_status,
+        "special_terms": special_terms,
+    }
+
+
+def read_dc_eltek_offer_items(
+    calc_path: str | Path,
+    sheet_name: str,
+    currency_override: str | None = None,
+) -> dict[str, Any]:
     """Читает выбранный лист DC Eltek и возвращает позиции + итоги.
 
     Парсер не привязан к конкретным строкам/колонкам. Он ищет строки по заголовкам
     Model/Quantity/Total per unit/TOTAL/VAT и затем проходит все колонки слева направо.
+    Валюта должна быть найдена в ценовом блоке или явно выбрана пользователем.
     """
-    matrix, _max_row, max_col = _read_sheet_matrix(calc_path, sheet_name)
+    matrix, formats, _max_row, max_col = _read_sheet_matrix_with_formats(calc_path, sheet_name)
     layout = detect_offer_layout(calc_path, sheet_name)
 
     required = ["name_row", "quantity_row", "unit_price_row", "total_row"]
@@ -633,7 +946,13 @@ def read_dc_eltek_offer_items(calc_path: str | Path, sheet_name: str) -> dict[st
     unit_price_row = int(layout["unit_price_row"] or 0)
     total_row = int(layout["total_row"] or 0)
     vat_percent_row = layout.get("vat_percent_row")
-    currency = _detect_currency(matrix, total_row)
+    detected_currency = _detect_currency(
+        matrix,
+        formats,
+        unit_price_row=unit_price_row,
+        total_row=total_row,
+    )
+    currency = (currency_override or detected_currency or "").upper().strip()
 
     items: list[dict[str, Any]] = []
 
@@ -677,17 +996,21 @@ def read_dc_eltek_offer_items(calc_path: str | Path, sheet_name: str) -> dict[st
                 "vat_amount": vat_amount,
                 "total": total_with_vat,
                 "currency": currency,
+                "detected_currency": detected_currency,
                 "source_column": col,
             }
         )
 
     summary = summarize_items(items, currency=currency)
+    summary["detected_currency"] = detected_currency
+    summary["currency_source"] = "manual" if currency_override else ("auto" if detected_currency else "missing")
+    meta = detect_additional_terms(matrix, layout, items, currency)
     return {
         "layout": layout,
         "items": items,
         "summary": summary,
+        "meta": meta,
     }
-
 
 def summarize_items(items: list[dict[str, Any]], currency: str = "KZT") -> dict[str, Any]:
     quantity_total = sum(float(item.get("quantity") or 0) for item in items)
@@ -783,6 +1106,7 @@ def _context_values(context: OfferContext | dict[str, Any]) -> dict[str, Any]:
         "manager_position": manager_position,
         "manager_email": manager_email,
         "manager_phone": manager_phone,
+        "currency": str(_context_get(context, "currency", "") or "").upper().strip(),
     }
 
 
@@ -797,7 +1121,7 @@ def build_intro_text(summary: dict[str, Any]) -> str:
 
 
 def build_total_price_block(summary: dict[str, Any]) -> str:
-    currency = str(summary.get("currency") or "KZT")
+    currency = str(summary.get("currency") or "")
     total = float(summary.get("total") or 0.0)
     vat_amount = float(summary.get("vat_amount") or 0.0)
     vat_label = str(summary.get("vat_label") or "0%")
@@ -809,7 +1133,7 @@ def build_total_price_block(summary: dict[str, Any]) -> str:
 
 
 def build_currency_terms(summary: dict[str, Any]) -> str:
-    currency = str(summary.get("currency") or "KZT").upper()
+    currency = str(summary.get("currency") or "").upper()
     if currency == "KZT":
         return "Стоимость указана в тенге."
     if currency == "EUR":
@@ -836,9 +1160,19 @@ def build_offer_items(parsed: dict[str, Any]) -> list[dict[str, Any]]:
 
 def build_replacements(context_values: dict[str, Any], parsed: dict[str, Any], offer_version: int | None = None) -> dict[str, Any]:
     summary = parsed.get("summary", {})
-    currency = str(summary.get("currency") or "KZT")
+    meta = parsed.get("meta", {})
+    special_terms = meta.get("special_terms", {}) if isinstance(meta.get("special_terms", {}), dict) else {}
+
+    currency = str(summary.get("currency") or meta.get("currency") or "")
     cur_name = currency_name(currency)
     terms = DEFAULT_TERMS
+
+    delivery_terms = str(meta.get("delivery_terms") or terms["delivery_terms"])
+    installation_terms = str(meta.get("installation_terms") or terms["installation_terms"])
+    startup_terms = str(meta.get("startup_terms") or terms["startup_terms"])
+    inspection_terms = str(meta.get("inspection_status") or "не заложена")
+    financing_terms = str(special_terms.get("text") or "не заложено")
+
     return {
         "{{offer_date}}": format_offer_date(),
         "{{offer_version}}": str(offer_version or 1),
@@ -851,9 +1185,9 @@ def build_replacements(context_values: dict[str, Any], parsed: dict[str, Any], o
         "{{total_price_block}}": build_total_price_block(summary),
         "{{payment_terms}}": terms["payment_terms"],
         "{{delivery_time}}": terms["delivery_time"],
-        "{{delivery_terms}}": terms["delivery_terms"],
-        "{{installation_terms}}": terms["installation_terms"],
-        "{{startup_terms}}": terms["startup_terms"],
+        "{{delivery_terms}}": delivery_terms,
+        "{{installation_terms}}": installation_terms,
+        "{{startup_terms}}": startup_terms,
         "{{offer_validity}}": terms["offer_validity"],
         "{{currency_terms}}": build_currency_terms(summary),
         "{{signer_name}}": context_values.get("signer_name", ""),
@@ -862,10 +1196,19 @@ def build_replacements(context_values: dict[str, Any], parsed: dict[str, Any], o
         "{{manager_position}}": context_values.get("manager_position", ""),
         "{{manager_email}}": context_values.get("manager_email", ""),
         "{{manager_phone}}": context_values.get("manager_phone", ""),
+
+        # Дополнительные теги на будущие версии шаблонов. Если тегов нет в docx — они просто игнорируются.
+        "{{delivery_place_terms}}": delivery_terms,
+        "{{currency}}": currency,
+        "{{currency_code}}": currency,
+        "{{mounting_pnr_status}}": str(meta.get("installation_pnr_status") or "не включены"),
+        "{{installation_pnr_status}}": str(meta.get("installation_pnr_status") or "не включены"),
+        "{{inspection_terms}}": inspection_terms,
+        "{{inspection_status}}": inspection_terms,
+        "{{special_terms}}": financing_terms,
+        "{{financing_terms}}": financing_terms,
+        "{{special_financing_terms}}": financing_terms,
     }
-
-
-# ------------------------- DOCX rendering -------------------------
 
 def _docx_to_text(value: Any) -> str:
     if value is None:
@@ -1050,6 +1393,7 @@ def _get_unique_output_path(path: Path) -> Path:
         counter += 1
 
 
+
 def make_offer(context: OfferContext | dict[str, Any]) -> Path:
     values = _context_values(context)
     calc_path = values["calc_path"]
@@ -1057,6 +1401,7 @@ def make_offer(context: OfferContext | dict[str, Any]) -> Path:
     template_path = values["template_path"]
     output_dir = Path(values["output_dir"] or Path(calc_path).parent)
     client = values["client"] or "DC_Eltek"
+    currency_override = values.get("currency", "")
 
     if not calc_path:
         raise ValueError("Не выбран Excel calc.")
@@ -1065,9 +1410,16 @@ def make_offer(context: OfferContext | dict[str, Any]) -> Path:
     if not template_path:
         raise ValueError("Не выбран шаблон КП. Выберите .docx вручную или положите его в templates/dc_eltek.")
 
-    parsed = read_dc_eltek_offer_items(calc_path, sheet_name)
+    parsed = read_dc_eltek_offer_items(calc_path, sheet_name, currency_override=currency_override)
     if not parsed.get("items"):
         raise ValueError("В выбранном листе Excel не найдены позиции для КП.")
+
+    currency = str(parsed.get("summary", {}).get("currency") or "").upper().strip()
+    if not currency:
+        raise ValueError(
+            "Валюта не указана. Укажите валюту в расчёте рядом со строками "
+            "Price per unit / Total per quantity / TOTAL или выберите валюту на вкладке DC Eltek."
+        )
 
     offer_version = find_next_offer_version(output_dir, client, sheet_name)
     replacements = build_replacements(values, parsed, offer_version=offer_version)
@@ -1077,75 +1429,62 @@ def make_offer(context: OfferContext | dict[str, Any]) -> Path:
     return _render_dc_eltek_docx(template_path, output_path, replacements, items)
 
 
+
 def preview(context: OfferContext | dict[str, Any]) -> str:
     values = _context_values(context)
-    project_dir = values["project_dir"]
-    client = values["client"]
     calc_path = values["calc_path"]
     sheet_name = values["sheet_name"]
-    template_path = values["template_path"]
-
-    lines = [
-        "Направление: DC Eltek",
-        f"Папка проекта: {project_dir or '-'}",
-        f"Клиент: {client or '-'}",
-        f"Excel calc: {calc_path or '-'}",
-        f"Лист для КП: {sheet_name or '-'}",
-        f"Шаблон КП: {template_path or '-'}",
-    ]
+    currency_override = values.get("currency", "")
 
     if not calc_path or not sheet_name:
-        lines.append("")
-        lines.append("Выберите Excel calc и лист для КП — после этого здесь появятся позиции и итоги.")
-        return "\n".join(lines)
+        return "Выберите Excel calc и лист для КП — после этого здесь появятся позиции, валюта, условия и итоги."
 
     try:
-        parsed = read_dc_eltek_offer_items(calc_path, sheet_name)
+        parsed = read_dc_eltek_offer_items(calc_path, sheet_name, currency_override=currency_override)
     except Exception as exc:
-        lines.append("")
-        lines.append(f"Не удалось прочитать расчёт: {exc}")
-        return "\n".join(lines)
+        return f"Не удалось прочитать расчёт: {exc}"
 
-    layout = parsed["layout"]
     items = parsed["items"]
     summary = parsed["summary"]
+    meta = parsed.get("meta", {})
+    special_terms = meta.get("special_terms", {}) if isinstance(meta.get("special_terms", {}), dict) else {}
+    currency = str(summary.get("currency") or "").upper().strip()
+    detected_currency = str(summary.get("detected_currency") or "").upper().strip()
 
-    lines.extend(
-        [
-            "",
-            "Определённая структура листа:",
-            f"- строка модели/наименования: {layout.get('name_row') or '-'}",
-            f"- строка количества: {layout.get('quantity_row') or '-'}",
-            f"- строка цены за единицу: {layout.get('unit_price_row') or '-'}",
-            f"- строка НДС: {layout.get('vat_percent_row') or '-'}",
-            f"- строка итоговой суммы: {layout.get('total_row') or '-'}",
-            "",
-            "Позиции:",
-        ]
-    )
-
+    lines: list[str] = ["Позиции:"]
     for item in items:
         lines.append(
-            f"{item['number']}. {item['name']} | кол-во {format_qty(item['quantity'])} | "
-            f"цена {format_money(item['unit_price'])} | сумма {format_money(item['total'])}"
+            f"{item['number']}. {item['name']} — {format_qty(item['quantity'])} шт × "
+            f"{format_money(item['unit_price'])} = {format_money(item['total'])}"
         )
 
     lines.extend(
         [
             "",
             "Итоги:",
-            f"- количество позиций: {summary['positions_count']}",
-            f"- общее количество, шт: {format_qty(summary['quantity_total'])}",
-            f"- сумма без НДС: {format_money(summary['total_without_vat'])}",
-            f"- НДС: {format_money(summary['vat_amount'])} ({summary['vat_label']})",
-            f"- общая сумма с НДС: {format_money(summary['total'])}",
+            f"Количество позиций: {summary['positions_count']}",
+            f"Общее количество, шт: {format_qty(summary['quantity_total'])}",
+            f"Сумма без НДС: {format_money(summary['total_without_vat'])}",
+            f"НДС: {format_money(summary['vat_amount'])} ({summary['vat_label']})",
+            f"Общая сумма с НДС: {format_money(summary['total'])}",
+            f"Валюта: {currency or 'не указана'}" + (f" (авто: {detected_currency})" if detected_currency and currency_override else ""),
             "",
-            "Теги Word-шаблона будут заполнены автоматически при нажатии «Сформировать КП».",
+            "Дополнительно:",
+            f"Место и условия поставки: {meta.get('delivery_terms') or '-'}",
+            f"Монтаж и ПНР: {meta.get('installation_pnr_status') or 'не включены'}",
+            f"Инспекция объекта: {meta.get('inspection_status') or 'не заложена'}",
+            f"Особые условия / финансирование: {special_terms.get('text') or 'не заложено'}",
         ]
     )
+
+    if not currency:
+        lines.extend(
+            [
+                "",
+                "ВНИМАНИЕ: валюта не указана в ценовом блоке расчёта.",
+                "Перед формированием КП выберите валюту вручную на вкладке DC Eltek.",
+            ]
+        )
+
     return "\n".join(lines)
 
-
-# Backward-compatible aliases for older code/tests.
-generate_offer = make_offer
-build_preview = preview
