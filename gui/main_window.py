@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-APP_FOOTER = """
-Направления:
-Stulz · Riello · DC Eltek · Generator
+import sys
+from pathlib import Path
 
-Разработчик:
-Литвинов Виталий Константинович
+from brands.registry import BRANDS
+from core.manager_profile import ManagerProfile
+from core.project_scanner import clear_scan_cache
+from core.runtime_paths import app_icon_path
+from gui.ui_style import stylesheet, ui_scale
+
+
+APP_FOOTER = """
+Направления: Stulz · Riello · DC Eltek · Generator
+Разработчик: Литвинов Виталий Константинович
 """
 
 SIGNERS = {
@@ -18,15 +25,6 @@ SIGNERS = {
         "position": "Исполнительный директор",
     },
 }
-
-import sys
-from pathlib import Path
-
-from brands.registry import BRANDS
-from core.manager_profile import ManagerProfile
-from core.project_scanner import clear_scan_cache
-from core.runtime_paths import app_icon_path
-from gui.ui_style import stylesheet, ui_scale
 
 
 def run_gui() -> None:
@@ -60,16 +58,17 @@ def run_gui() -> None:
     from gui.settings_dialog import SettingsDialog
     from gui.pages.stulz_page import StulzPage
     from gui.pages.riello_page import RielloPage
+    from gui.pages.dc_eltek_page import DcEltekPage
     from gui.pages.battery_page import BatteryPage
-    from gui.pages.genset_page import GensetPage
     from gui.pages.hvac_page import HVACPage
+    from gui.pages.genset_page import GensetPage
 
     class OfferGeneratorWindow(QMainWindow):
         """Главное окно: только каркас приложения и общие сервисы.
 
-        Вся рабочая область справа принадлежит страницам брендов. MainWindow не
-        хранит поля проекта, расчета, шаблонов и не формирует КП — страницы сами
-        собирают свои формы, контексты и кнопки действий.
+        Вся рабочая область справа принадлежит страницам брендов. MainWindow не хранит
+        поля проекта, расчета, шаблонов и не формирует КП — страницы сами собирают
+        свои формы, контексты и кнопки действий.
         """
 
         def __init__(self) -> None:
@@ -105,6 +104,7 @@ def run_gui() -> None:
                 self.signer_alisher_radio.setChecked(True)
             else:
                 self.signer_saniya_radio.setChecked(True)
+
             self.signer_saniya_radio.toggled.connect(self._on_signer_changed)
             self.signer_alisher_radio.toggled.connect(self._on_signer_changed)
 
@@ -117,8 +117,8 @@ def run_gui() -> None:
             return str(value) if value is not None else default
 
         def _clear_cache(self) -> None:
-            # Главный экран не знает, какие поля хранит бренд. Он сбрасывает
-            # общий кэш сканирования и просит каждую страницу очистить свои данные.
+            # Главный экран не знает, какие поля хранит бренд. Он сбрасывает общий кэш
+            # сканирования и просит каждую страницу очистить свои данные.
             clear_scan_cache()
             for key in (
                 "project_dir",
@@ -132,6 +132,7 @@ def run_gui() -> None:
                 "calc_template_dir",
             ):
                 self.settings.remove(key)
+
             for page in self._all_brand_pages():
                 if hasattr(page, "clear_cache"):
                     try:
@@ -268,6 +269,7 @@ def run_gui() -> None:
                 for page in (
                     getattr(self, "stulz_page", None),
                     getattr(self, "riello_page", None),
+                    getattr(self, "dc_eltek_page", None),
                     getattr(self, "battery_page", None),
                     getattr(self, "hvac_page", None),
                     getattr(self, "genset_page", None),
@@ -360,14 +362,12 @@ def run_gui() -> None:
             lab.setObjectName("FormLabel")
             lab.setMinimumWidth(110)
             lab.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             widget.setMinimumWidth(0)
             if isinstance(widget, QComboBox):
                 widget.setMinimumContentsLength(1)
                 widget.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             self._responsive_widgets.append(widget)
-
             grid.addWidget(lab, row, 0)
             grid.addWidget(widget, row, 1)
             if button_text:
@@ -458,18 +458,19 @@ def run_gui() -> None:
 
             self.stulz_page = StulzPage(self)
             self.riello_page = RielloPage(self)
+            self.dc_eltek_page = DcEltekPage(self)
             self.battery_page = BatteryPage(self)
-            self.genset_page = GensetPage(self)
             self.hvac_page = HVACPage(self)
+            self.genset_page = GensetPage(self)
 
             self.brand_tabs.addTab(self.stulz_page, "Stulz")
             self.brand_tabs.addTab(self.riello_page, "Riello")
+            self.brand_tabs.addTab(self.dc_eltek_page, "DC Eltek")
             self.brand_tabs.addTab(self.battery_page, "Battery")
             self.brand_tabs.addTab(self.hvac_page, "HVAC")
             self.brand_tabs.addTab(self.genset_page, "Genset")
             self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
             self.brand_tabs.setCurrentIndex(self._tab_index_for_brand(self._saved("brand", "Stulz")))
-
             content_layout.addWidget(self.brand_tabs)
 
             scroll = QScrollArea()
@@ -509,7 +510,12 @@ def run_gui() -> None:
 
             content_margin_x = int(22 * scale)
             content_margin_y = int(20 * scale)
-            self.content.layout().setContentsMargins(content_margin_x, content_margin_y, content_margin_x, content_margin_y)
+            self.content.layout().setContentsMargins(
+                content_margin_x,
+                content_margin_y,
+                content_margin_x,
+                content_margin_y,
+            )
             self.content.layout().setSpacing(int(16 * scale))
 
             widget_h = int(28 * scale)
@@ -517,6 +523,7 @@ def run_gui() -> None:
                 widget.setMinimumHeight(widget_h)
 
             self._apply_style(scale)
+
             for page in self._all_brand_pages():
                 if hasattr(page, "apply_responsive_metrics"):
                     try:

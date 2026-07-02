@@ -5,6 +5,8 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from PySide6.QtCore import Qt
+from brands.dc_eltek import preview as build_dc_eltek_preview
+
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -64,7 +66,7 @@ def read_excel_sheet_names(path_text: str) -> list[str]:
     return result
 
 
-class DCEltekPage(QWidget):
+class DcEltekPage(QWidget):
     """Страница DC Eltek: выбор проекта, расчета, листа и шаблона КП."""
 
     def __init__(self, owner) -> None:
@@ -91,18 +93,22 @@ class DCEltekPage(QWidget):
 
         self.client_edit = QLineEdit(self._saved("dc_eltek_client", ""))
         self.client_edit.setPlaceholderText("Клиент")
+        self.client_edit.editingFinished.connect(self._on_field_changed)
         owner._add_row(form, 1, "Клиент", self.client_edit, None, None)
 
         self.calc_path_edit = QLineEdit(self._saved("dc_eltek_calc_path", ""))
         self.calc_path_edit.setPlaceholderText("Excel calc")
+        self.calc_path_edit.editingFinished.connect(self._on_calc_path_edited)
         owner._add_row(form, 2, "Расчёт Excel", self.calc_path_edit, "Выбрать", self.select_calc_file)
 
         self.sheet_combo = QComboBox()
         self.sheet_combo.setEditable(False)
+        self.sheet_combo.currentTextChanged.connect(lambda _text: self._on_field_changed())
         owner._add_row(form, 3, "Лист для КП", self.sheet_combo, None, None)
 
         self.template_path_edit = QLineEdit(self._saved("dc_eltek_template_path", ""))
         self.template_path_edit.setPlaceholderText("Шаблон КП .docx")
+        self.template_path_edit.editingFinished.connect(self._on_field_changed)
         owner._add_row(form, 4, "Шаблон КП", self.template_path_edit, "Выбрать", self.select_template_file)
 
         self.generate_btn = QPushButton("Сформировать КП")
@@ -112,7 +118,7 @@ class DCEltekPage(QWidget):
 
         self.preview_box = QTextEdit()
         self.preview_box.setReadOnly(True)
-        self.preview_box.setMinimumHeight(120)
+        self.preview_box.setMinimumHeight(260)
         card.layout().addWidget(self.preview_box)
 
         layout.addWidget(card)
@@ -155,9 +161,18 @@ class DCEltekPage(QWidget):
         self.settings.sync()
 
     def apply_responsive_metrics(self, scale: float) -> None:
-        self.preview_box.setMinimumHeight(int(120 * scale))
+        self.preview_box.setMinimumHeight(int(260 * scale))
 
     def on_settings_changed(self) -> None:
+        self._update_preview()
+
+    def _on_field_changed(self) -> None:
+        self.remember_values()
+        self._update_preview()
+
+    def _on_calc_path_edited(self) -> None:
+        self._load_sheet_names(initial=False)
+        self.remember_values()
         self._update_preview()
 
     def select_project_dir(self) -> None:
@@ -241,17 +256,7 @@ class DCEltekPage(QWidget):
         }
 
     def _update_preview(self) -> None:
-        data = self._context_dict()
-        lines = [
-            "DC Eltek — подготовка КП",
-            "",
-            f"Папка проекта: {data['project_dir'] or 'не выбрана'}",
-            f"Клиент: {data['client'] or 'не указан'}",
-            f"Расчёт Excel: {data['calc_path'] or 'не выбран'}",
-            f"Лист для КП: {data['sheet_name'] or 'не выбран'}",
-            f"Шаблон КП: {data['template_path'] or 'не выбран'}",
-        ]
-        self.preview_box.setPlainText("\n".join(lines))
+        self.preview_box.setPlainText(build_dc_eltek_preview(self._context_dict()))
 
     def generate_offer(self) -> None:
         self.remember_values()
@@ -273,8 +278,13 @@ class DCEltekPage(QWidget):
             QMessageBox.warning(self, "DC Eltek", "Заполните поля: " + ", ".join(missing))
             return
 
+        self._update_preview()
         QMessageBox.information(
             self,
             "DC Eltek",
-            "Каркас вкладки готов.\nГенерацию КП подключим следующим этапом после разбора Excel и тегов шаблона.",
+            "Парсер Excel DC Eltek подключен.\nПозиции и итоги сейчас отображаются в предпросмотре.\nГенерацию Word-КП подключим следующим этапом после согласования тегов шаблона.",
         )
+
+
+# Backward compatibility if older imports used the all-caps class name.
+DCEltekPage = DcEltekPage

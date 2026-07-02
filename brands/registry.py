@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 from types import ModuleType
 
+
 BRANDS = {
     "Stulz": "brands.stulz",
     "Riello": "brands.riello",
