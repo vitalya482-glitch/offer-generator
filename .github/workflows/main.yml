@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 env:
-  LVK_UPDATER_VERSION: "0.2.0"
+  LVK_UPDATER_VERSION: "0.2.1"
   LVK_UPDATER_REPOSITORY: "vitalya482-glitch/LVK-Updater"
   LVK_UPDATER_ASSET_NAME: "LVKUpdater-win-x64.zip"
 
