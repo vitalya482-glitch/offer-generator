@@ -13,7 +13,8 @@ permissions:
 
 env:
   LVK_UPDATER_VERSION: "0.2.0"
-  LVK_UPDATER_RELEASE_URL: "https://github.com/vitalya482-glitch/LVK-Updater/releases/download/v0.2.0/LVKUpdater-win-x64.zip"
+  LVK_UPDATER_REPOSITORY: "vitalya482-glitch/LVK-Updater"
+  LVK_UPDATER_ASSET_NAME: "LVKUpdater-win-x64.zip"
 
 jobs:
   build-windows-modular-release:
@@ -131,13 +132,32 @@ jobs:
 
       - name: Download LVKUpdater
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.LVK_UPDATER_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          $zipPath = "LVKUpdater-win-x64.zip"
-          $extractDir = "lvk_updater"
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "Repository secret LVK_UPDATER_TOKEN is missing. Create a fine-grained token with Contents: Read access to vitalya482-glitch/LVK-Updater and save it in offer-generator Actions secrets."
+          }
 
-          Invoke-WebRequest -Uri $env:LVK_UPDATER_RELEASE_URL -OutFile $zipPath -UseBasicParsing
+          $zipPath = $env:LVK_UPDATER_ASSET_NAME
+          $extractDir = "lvk_updater"
+          $releaseTag = "v$env:LVK_UPDATER_VERSION"
+
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
+
+          gh release download $releaseTag `
+            --repo $env:LVK_UPDATER_REPOSITORY `
+            --pattern $env:LVK_UPDATER_ASSET_NAME `
+            --dir "." `
+            --clobber
+
+          if (!(Test-Path $zipPath)) {
+            throw "Release asset was not downloaded: $env:LVK_UPDATER_REPOSITORY / $releaseTag / $env:LVK_UPDATER_ASSET_NAME"
+          }
 
           if (Test-Path $extractDir) {
             Remove-Item $extractDir -Recurse -Force
@@ -151,7 +171,16 @@ jobs:
           }
 
           Copy-Item $updater.FullName "dist/SAM-Offer-Generator/LVKUpdater.exe" -Force
+          Copy-Item $zipPath "dist/$env:LVK_UPDATER_ASSET_NAME" -Force
+
+          $updaterZip = Get-Item "dist/$env:LVK_UPDATER_ASSET_NAME"
+          $updaterSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $updaterZip.FullName).Hash.ToLowerInvariant()
+          "LVK_UPDATER_SHA256=$updaterSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LVK_UPDATER_SIZE=$($updaterZip.Length)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
           Write-Host "LVKUpdater copied to dist/SAM-Offer-Generator/LVKUpdater.exe"
+          Write-Host "LVKUpdater release asset staged: $($updaterZip.FullName)"
+          Write-Host "LVKUpdater SHA256: $updaterSha"
 
       - name: Write release metadata for updater
         shell: pwsh
@@ -248,12 +277,15 @@ jobs:
           $moduleRoot = "dist/distribution-modules"
           $appZip = Join-Path $moduleRoot "SAM-Offer-Generator-App-No-Runtime.zip"
           $runtimeZip = Join-Path $moduleRoot "SAM-Offer-Generator-Runtime-Win64.zip"
+          $updaterZip = "dist/$env:LVK_UPDATER_ASSET_NAME"
           $manifestPath = "dist/offer-generator.json"
 
           $appFile = Get-Item $appZip
           $runtimeFile = Get-Item $runtimeZip
+          $updaterFile = Get-Item $updaterZip
           $appSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $appZip).Hash.ToLowerInvariant()
           $runtimeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $runtimeZip).Hash.ToLowerInvariant()
+          $updaterSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $updaterZip).Hash.ToLowerInvariant()
 
           $manifest = [ordered]@{
             schemaVersion = 2
@@ -281,10 +313,10 @@ jobs:
                 size = $runtimeFile.Length
               }
               updater = [ordered]@{
-                file = "LVKUpdater-win-x64.zip"
-                url = $env:LVK_UPDATER_RELEASE_URL
-                sha256 = ""
-                size = 0
+                file = $env:LVK_UPDATER_ASSET_NAME
+                url = "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG/$env:LVK_UPDATER_ASSET_NAME"
+                sha256 = $updaterSha
+                size = $updaterFile.Length
               }
             }
             notes = @(
@@ -318,6 +350,13 @@ jobs:
           path: dist/offer-generator.json
           retention-days: 30
 
+      - name: Upload LVKUpdater artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LVKUpdater-win-x64
+          path: dist/LVKUpdater-win-x64.zip
+          retention-days: 30
+
       - name: Publish or update GitHub Release automatically
         shell: pwsh
         env:
@@ -336,6 +375,7 @@ jobs:
           - SAM-Offer-Generator-Runtime-Win64.zip
           - SAM-Offer-Generator-App-No-Runtime.zip
           - offer-generator.json
+          - LVKUpdater-win-x64.zip
 
           Updater metadata:
           RUNTIME_CONTENT_SHA256=$env:RUNTIME_CONTENT_SHA256
@@ -346,7 +386,8 @@ jobs:
           $files = @(
             "dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip",
             "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip",
-            "dist/offer-generator.json"
+            "dist/offer-generator.json",
+            "dist/LVKUpdater-win-x64.zip"
           )
 
           Write-Host "Publishing release $tag with LVK manifest"
