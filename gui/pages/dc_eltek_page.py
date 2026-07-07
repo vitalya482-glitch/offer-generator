@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from brands.dc_eltek_fixed import (
+from brands.dc_eltek import (
     detect_dc_eltek_currency,
     find_default_dc_eltek_template,
     make_offer as make_dc_eltek_offer,
