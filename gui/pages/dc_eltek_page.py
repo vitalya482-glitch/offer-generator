@@ -6,19 +6,11 @@ import xml.etree.ElementTree as ET
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from brands.dc_eltek import (
-    detect_dc_eltek_currency,
-    find_default_dc_eltek_template,
-    make_offer as make_dc_eltek_offer,
-    preview as build_dc_eltek_preview,
-)
-
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -27,57 +19,55 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from brands.dc_eltek_fixed import (
+    detect_dc_eltek_currency,
+    find_default_dc_eltek_template,
+    make_offer as make_dc_eltek_offer,
+    preview as build_dc_eltek_preview,
+)
+
 
 PROJECTS_MARKER = "02_Projects"
 
 
 def extract_client_from_project_path(path_text: str) -> str:
-    """Берет клиента из пути вида ...\\02_Projects\\КЛИЕНТ\\..."""
     if not path_text:
         return ""
-
     parts = [part for part in path_text.replace("/", "\\").split("\\") if part]
     for index, part in enumerate(parts):
         if part.lower() == PROJECTS_MARKER.lower() and index + 1 < len(parts):
             return parts[index + 1].strip()
-
     return ""
 
 
 def read_excel_sheet_names(path_text: str) -> list[str]:
-    """Читает список листов из .xlsx/.xlsm без зависимости от openpyxl."""
     path = Path(path_text)
     if path.suffix.lower() not in {".xlsx", ".xlsm"}:
         raise ValueError("Пока поддерживаются только Excel-файлы .xlsx и .xlsm")
-
     if not path.exists():
         raise FileNotFoundError(f"Файл не найден: {path}")
 
     with zipfile.ZipFile(path) as archive:
         workbook_xml = archive.read("xl/workbook.xml")
-
-    namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-    root = ET.fromstring(workbook_xml)
-    sheets = root.find("main:sheets", namespace)
-    if sheets is None:
-        return []
-
-    result: list[str] = []
-    for sheet in sheets.findall("main:sheet", namespace):
-        name = sheet.attrib.get("name", "").strip()
-        if name:
-            result.append(name)
-    return result
+        namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        root = ET.fromstring(workbook_xml)
+        sheets = root.find("main:sheets", namespace)
+        if sheets is None:
+            return []
+        return [
+            name
+            for sheet in sheets.findall("main:sheet", namespace)
+            if (name := sheet.attrib.get("name", "").strip())
+        ]
 
 
 class DcEltekPage(QWidget):
-    """Страница DC Eltek: выбор проекта, расчета, листа, шаблона и формирование КП."""
-
     def __init__(self, owner) -> None:
         super().__init__(owner)
         self.owner = owner
         self.settings = owner.settings
         self._setting_currency_programmatically = False
+        self.last_output_path = self._saved("dc_eltek_last_output_path", "")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -119,18 +109,19 @@ class DcEltekPage(QWidget):
         self.currency_combo.currentIndexChanged.connect(self._on_currency_changed)
         owner._add_row(form, 4, "Валюта", self.currency_combo, None, None)
 
-        saved_template = self._saved("dc_eltek_template_path", "")
-        if not saved_template:
-            saved_template = find_default_dc_eltek_template()
+        saved_template = self._saved("dc_eltek_template_path", "") or find_default_dc_eltek_template()
         self.template_path_edit = QLineEdit(saved_template)
         self.template_path_edit.setPlaceholderText("Шаблон КП .docx")
         self.template_path_edit.editingFinished.connect(self._on_field_changed)
         owner._add_row(form, 5, "Шаблон КП", self.template_path_edit, "Выбрать", self.select_template_file)
 
-        self.output_path_edit = QLineEdit(self._saved("dc_eltek_last_output_path", ""))
-        self.output_path_edit.setReadOnly(True)
-        self.output_path_edit.setPlaceholderText("Путь появится после формирования КП")
-        owner._add_row(form, 6, "Путь сохранения КП", self.output_path_edit, None, None)
+        saved_output_dir = self._saved("dc_eltek_output_dir", "")
+        if not saved_output_dir:
+            saved_output_dir = self.project_dir_edit.text().strip()
+        self.output_path_edit = QLineEdit(saved_output_dir)
+        self.output_path_edit.setPlaceholderText("Папка для сохранения КП")
+        self.output_path_edit.editingFinished.connect(self._on_field_changed)
+        owner._add_row(form, 6, "Путь сохранения КП", self.output_path_edit, "Выбрать", self.select_output_dir)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
@@ -172,8 +163,7 @@ class DcEltekPage(QWidget):
         return self.project_dir_edit.text().strip()
 
     def _currency_value(self) -> str:
-        data = self.currency_combo.currentData()
-        return str(data or "").upper().strip()
+        return str(self.currency_combo.currentData() or "").upper().strip()
 
     def _set_currency_value(self, value: str) -> None:
         value = (value or "").upper().strip()
@@ -195,7 +185,8 @@ class DcEltekPage(QWidget):
         self.settings.setValue("dc_eltek_sheet_name", self.sheet_combo.currentText().strip())
         self.settings.setValue("dc_eltek_currency", self._currency_value())
         self.settings.setValue("dc_eltek_template_path", self.template_path_edit.text().strip())
-        self.settings.setValue("dc_eltek_last_output_path", self.output_path_edit.text().strip())
+        self.settings.setValue("dc_eltek_output_dir", self.output_path_edit.text().strip())
+        self.settings.setValue("dc_eltek_last_output_path", self.last_output_path)
         self.settings.sync()
 
     def clear_cache(self) -> None:
@@ -206,6 +197,7 @@ class DcEltekPage(QWidget):
             "dc_eltek_sheet_name",
             "dc_eltek_currency",
             "dc_eltek_template_path",
+            "dc_eltek_output_dir",
             "dc_eltek_last_output_path",
         ):
             self.settings.remove(key)
@@ -216,6 +208,7 @@ class DcEltekPage(QWidget):
         self._set_currency_value("")
         self.template_path_edit.setText(find_default_dc_eltek_template())
         self.output_path_edit.clear()
+        self.last_output_path = ""
         self.preview_box.clear()
         self._update_open_buttons()
         self.settings.sync()
@@ -252,17 +245,16 @@ class DcEltekPage(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", current)
         if not path:
             return
-
         self.project_dir_edit.setText(path)
         self._on_project_dir_changed(force_client=True)
 
     def _on_project_dir_changed(self, force_client: bool = False) -> None:
         path_text = self.project_dir_edit.text().strip()
         extracted_client = extract_client_from_project_path(path_text)
-
         if extracted_client and (force_client or not self.client_edit.text().strip()):
             self.client_edit.setText(extracted_client)
-
+        if path_text and not self.output_path_edit.text().strip():
+            self.output_path_edit.setText(path_text)
         self.remember_values()
         self._update_preview()
 
@@ -276,7 +268,6 @@ class DcEltekPage(QWidget):
         )
         if not path:
             return
-
         self.calc_path_edit.setText(path)
         self._load_sheet_names(initial=False)
         self._auto_detect_currency(force=True)
@@ -293,21 +284,31 @@ class DcEltekPage(QWidget):
         )
         if not path:
             return
-
         self.template_path_edit.setText(path)
         self.remember_values()
         self._update_preview()
+
+    def select_output_dir(self) -> None:
+        current = (
+            self.output_path_edit.text().strip()
+            or self.project_dir_edit.text().strip()
+            or str(Path.home())
+        )
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения КП", current)
+        if not path:
+            return
+        self.output_path_edit.setText(path)
+        self.remember_values()
+        self._update_open_buttons()
 
     def _load_sheet_names(self, initial: bool) -> None:
         current_sheet = self._saved("dc_eltek_sheet_name", "") if initial else self.sheet_combo.currentText().strip()
         self.sheet_combo.blockSignals(True)
         self.sheet_combo.clear()
-
         calc_path = self.calc_path_edit.text().strip()
         if not calc_path:
             self.sheet_combo.blockSignals(False)
             return
-
         try:
             sheet_names = read_excel_sheet_names(calc_path)
         except Exception as exc:
@@ -315,7 +316,6 @@ class DcEltekPage(QWidget):
             if not initial:
                 QMessageBox.warning(self, "DC Eltek", f"Не удалось прочитать листы Excel:\n{exc}")
             return
-
         self.sheet_combo.addItems(sheet_names)
         if current_sheet:
             index = self.sheet_combo.findText(current_sheet, Qt.MatchFixedString)
@@ -337,12 +337,10 @@ class DcEltekPage(QWidget):
             if force:
                 self._set_currency_value("")
             return
-
         try:
             detected = detect_dc_eltek_currency(calc_path, sheet_name)
         except Exception:
             detected = ""
-
         if force or detected:
             self._set_currency_value(detected)
 
@@ -367,7 +365,7 @@ class DcEltekPage(QWidget):
         manager = self._manager_profile()
         return {
             "project_dir": self.project_dir_edit.text().strip(),
-            "output_dir": self.project_dir_edit.text().strip(),
+            "output_dir": self.output_path_edit.text().strip() or self.project_dir_edit.text().strip(),
             "client": self.client_edit.text().strip(),
             "calc_path": self.calc_path_edit.text().strip(),
             "sheet_name": self.sheet_combo.currentText().strip(),
@@ -385,16 +383,16 @@ class DcEltekPage(QWidget):
         self.preview_box.setPlainText(build_dc_eltek_preview(self._context_dict()))
 
     def _update_open_buttons(self) -> None:
-        path = Path(self.output_path_edit.text().strip()) if self.output_path_edit.text().strip() else None
+        path = Path(self.last_output_path) if self.last_output_path else None
         exists = bool(path and path.exists())
         self.open_offer_btn.setEnabled(exists)
-        self.open_folder_btn.setEnabled(bool(path and path.parent.exists()))
+        selected_folder = Path(self.output_path_edit.text().strip()) if self.output_path_edit.text().strip() else None
+        self.open_folder_btn.setEnabled(bool((path and path.parent.exists()) or (selected_folder and selected_folder.exists())))
 
     def generate_offer(self) -> None:
         self.remember_values()
         data = self._context_dict()
-
-        missing = []
+        missing: list[str] = []
         if not data["project_dir"]:
             missing.append("папка проекта")
         if not data["client"]:
@@ -407,15 +405,22 @@ class DcEltekPage(QWidget):
             QMessageBox.warning(
                 self,
                 "DC Eltek",
-                "Валюта не указана в строках Price per unit / Total per quantity / TOTAL.\n"
-                "Выберите валюту вручную в поле «Валюта» перед формированием КП.",
+                "Валюта не указана в расчёте. Выберите валюту вручную перед формированием КП.",
             )
             return
         if not data["template_path"]:
             missing.append("шаблон КП")
-
+        if not data["output_dir"]:
+            missing.append("путь сохранения КП")
         if missing:
             QMessageBox.warning(self, "DC Eltek", "Заполните поля: " + ", ".join(missing))
+            return
+
+        output_dir = Path(data["output_dir"])
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.critical(self, "DC Eltek", f"Не удалось создать папку сохранения:\n{exc}")
             return
 
         try:
@@ -424,23 +429,25 @@ class DcEltekPage(QWidget):
             QMessageBox.critical(self, "DC Eltek", f"Не удалось сформировать КП:\n{exc}")
             return
 
-        self.output_path_edit.setText(str(result_path))
+        self.last_output_path = str(result_path)
         self.remember_values()
         self._update_open_buttons()
         self._update_preview()
         QMessageBox.information(self, "DC Eltek", f"КП сформировано:\n{result_path}")
 
     def open_generated_offer(self) -> None:
-        path = Path(self.output_path_edit.text().strip())
-        if not path.exists():
+        path = Path(self.last_output_path) if self.last_output_path else Path()
+        if not self.last_output_path or not path.exists():
             QMessageBox.warning(self, "DC Eltek", "Файл КП не найден.")
             self._update_open_buttons()
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def open_generated_folder(self) -> None:
-        path = Path(self.output_path_edit.text().strip())
-        folder = path.parent if path else Path(self.project_dir_edit.text().strip() or ".")
+        if self.last_output_path and Path(self.last_output_path).parent.exists():
+            folder = Path(self.last_output_path).parent
+        else:
+            folder = Path(self.output_path_edit.text().strip() or self.project_dir_edit.text().strip() or ".")
         if not folder.exists():
             QMessageBox.warning(self, "DC Eltek", "Папка КП не найдена.")
             self._update_open_buttons()
@@ -448,5 +455,4 @@ class DcEltekPage(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
 
-# Backward compatibility if older imports used the all-caps class name.
 DCEltekPage = DcEltekPage
