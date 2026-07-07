@@ -9,7 +9,6 @@ from core.project_scanner import clear_scan_cache
 from core.runtime_paths import app_icon_path
 from gui.ui_style import stylesheet, ui_scale
 
-
 APP_FOOTER = """
 Направления: Stulz · Riello · DC Eltek · Generator
 Разработчик: Литвинов Виталий Константинович
@@ -29,7 +28,7 @@ SIGNERS = {
 
 def run_gui() -> None:
     try:
-        from PySide6.QtCore import Qt, QSettings
+        from PySide6.QtCore import Qt, QSettings, QTimer
         from PySide6.QtGui import QFont, QIcon
         from PySide6.QtWidgets import (
             QApplication,
@@ -66,9 +65,9 @@ def run_gui() -> None:
     class OfferGeneratorWindow(QMainWindow):
         """Главное окно: только каркас приложения и общие сервисы.
 
-        Вся рабочая область справа принадлежит страницам брендов. MainWindow не хранит
-        поля проекта, расчета, шаблонов и не формирует КП — страницы сами собирают
-        свои формы, контексты и кнопки действий.
+        Вся рабочая область справа принадлежит страницам брендов. MainWindow не
+        хранит поля проекта, расчета, шаблонов и не формирует КП — страницы сами
+        собирают свои формы, контексты и кнопки действий.
         """
 
         def __init__(self) -> None:
@@ -95,6 +94,7 @@ def run_gui() -> None:
             self.signer_group = QButtonGroup(self)
             self.signer_saniya_radio = QRadioButton("Сания Санаткызы\nКоммерческий директор")
             self.signer_alisher_radio = QRadioButton("Анаркулов Алишер\nИсполнительный директор")
+
             for radio in (self.signer_saniya_radio, self.signer_alisher_radio):
                 radio.setObjectName("SidebarRadio")
                 self.signer_group.addButton(radio)
@@ -139,6 +139,7 @@ def run_gui() -> None:
                         page.clear_cache()
                     except Exception:
                         pass
+
             self.settings.sync()
 
         def _open_settings_dialog(self) -> None:
@@ -148,75 +149,29 @@ def run_gui() -> None:
 
         def _check_updates(self) -> None:
             try:
-                from core.update_client import (
-                    UpdateError,
-                    build_update_plan,
-                    download_update_packages,
-                    start_updater,
-                )
+                from core.lvk_updater_launcher import LVKUpdaterError, start_lvk_update_check
 
-                plan = build_update_plan()
-                release = plan.release
-                current = plan.current_version
-                latest = plan.latest_version or "неизвестно"
-
-                if not plan.has_update:
-                    QMessageBox.information(self, "Обновления", f"Установлена актуальная версия: {current}")
-                    return
-
-                if release.app_asset is None:
-                    QMessageBox.warning(
-                        self,
-                        "Обновления",
-                        "Новая версия найдена, но в GitHub Release нет App-модуля "
-                        "SAM-Offer-Generator-App-No-Runtime.zip",
-                    )
-                    return
-
-                size_mb = plan.total_size / 1024 / 1024 if plan.total_size else 0
-                module_lines = "\n".join(
-                    f"- {package.asset.name}: {package.asset.size / 1024 / 1024:.1f} MB"
-                    for package in plan.packages
-                )
-                runtime_note = (
-                    "Runtime-модуль тоже будет обновлен, потому что изменились настоящие runtime-файлы "
-                    "в папке _internal. Изменения config/prices/templates/assets теперь не считаются "
-                    "причиной для скачивания runtime.\n\n"
-                    if plan.runtime_required
-                    else ""
-                )
-                question = (
-                    f"Доступна новая версия: {latest}\n"
-                    f"Текущая версия: {current}\n\n"
-                    f"Будет скачано: {size_mb:.1f} MB.\n"
-                    f"{module_lines}\n\n"
-                    f"{runtime_note}"
-                    "После скачивания программа закроется, updater заменит файлы "
-                    "и запустит программу снова. Продолжить?"
-                )
                 answer = QMessageBox.question(
                     self,
                     "Обновление программы",
-                    question,
+                    "Проверка и установка обновлений теперь выполняется внешним LVKUpdater.\n\n"
+                    "Программа сейчас закроется, чтобы обновлятор смог заменить файлы.\n"
+                    "Если обновлений нет, LVKUpdater покажет сообщение.\n\n"
+                    "Продолжить?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
                 )
                 if answer != QMessageBox.Yes:
                     return
 
-                packages = download_update_packages(plan)
-                QMessageBox.information(
-                    self,
-                    "Обновление",
-                    "Обновление скачано. Сейчас программа закроется, updater применит обновление "
-                    "и запустит программу снова.",
-                )
-                start_updater(packages=packages, restart=True)
-                QApplication.instance().quit()
-            except UpdateError as exc:
+                start_lvk_update_check()
+                app = QApplication.instance()
+                if app is not None:
+                    QTimer.singleShot(250, app.quit)
+            except LVKUpdaterError as exc:
                 QMessageBox.warning(self, "Обновления", str(exc))
             except Exception as exc:
-                QMessageBox.critical(self, "Обновления", f"Ошибка обновления: {exc}")
+                QMessageBox.critical(self, "Обновления", f"Ошибка запуска обновлятора: {exc}")
 
         # ------------------------- общие данные -------------------------
         def _manager_profile(self) -> ManagerProfile:
@@ -357,19 +312,22 @@ def run_gui() -> None:
             self._updating_path_display = False
             line_edit.setToolTip(full)
 
-        def _add_row(self, grid, row: int, label: str, widget, button_text: str | None, command) -> None:
+        def _add_row(self, grid: QGridLayout, row: int, label: str, widget, button_text: str | None, command) -> None:
             lab = QLabel(label)
             lab.setObjectName("FormLabel")
             lab.setMinimumWidth(110)
             lab.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             widget.setMinimumWidth(0)
             if isinstance(widget, QComboBox):
                 widget.setMinimumContentsLength(1)
                 widget.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             self._responsive_widgets.append(widget)
+
             grid.addWidget(lab, row, 0)
             grid.addWidget(widget, row, 1)
+
             if button_text:
                 btn = QPushButton(button_text)
                 btn.setObjectName("GhostButton")
@@ -471,6 +429,7 @@ def run_gui() -> None:
             self.brand_tabs.addTab(self.genset_page, "Genset")
             self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
             self.brand_tabs.setCurrentIndex(self._tab_index_for_brand(self._saved("brand", "Stulz")))
+
             content_layout.addWidget(self.brand_tabs)
 
             scroll = QScrollArea()
@@ -523,7 +482,6 @@ def run_gui() -> None:
                 widget.setMinimumHeight(widget_h)
 
             self._apply_style(scale)
-
             for page in self._all_brand_pages():
                 if hasattr(page, "apply_responsive_metrics"):
                     try:

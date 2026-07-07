@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+env:
+  LVK_UPDATER_VERSION: "0.2.0"
+  LVK_UPDATER_RELEASE_URL: "https://github.com/vitalya482-glitch/LVK-Updater/releases/download/v0.2.0/LVKUpdater-win-x64.zip"
+
 jobs:
   build-windows-modular-release:
     runs-on: windows-latest
@@ -58,11 +62,12 @@ jobs:
           Write-Host "Release tag: $tag"
           Write-Host "Release title: $title"
 
-      - name: Write updater version into config/update.json
+      - name: Write legacy updater version into config/update.json
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $updatePath = "config/update.json"
+
           if (!(Test-Path $updatePath)) {
             throw "config/update.json was not found: $updatePath"
           }
@@ -90,17 +95,69 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           $runtimeSha = (python tools/runtime_signature.py "dist/SAM-Offer-Generator/_internal").Trim()
           if ($runtimeSha -notmatch '^[0-9a-f]{64}$') {
             throw "Bad runtime content signature: $runtimeSha"
           }
+
           "RUNTIME_CONTENT_SHA256=$runtimeSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Runtime content SHA256: $runtimeSha"
+
+      - name: Write LVK app.update.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $appUpdate = [ordered]@{
+            schemaVersion = 2
+            appId = "offer-generator"
+            name = "SAM Offer Generator"
+            channel = "stable"
+            mainExe = "SAM-Offer-Generator.exe"
+            manifestUrl = "https://github.com/${{ github.repository }}/releases/latest/download/offer-generator.json"
+            versions = [ordered]@{
+              app = $env:RELEASE_TAG
+              runtime = $env:RUNTIME_CONTENT_SHA256
+              updater = $env:LVK_UPDATER_VERSION
+            }
+          }
+
+          $appUpdate | ConvertTo-Json -Depth 10 | Set-Content "app.update.json" -Encoding UTF8
+          Copy-Item "app.update.json" "dist/SAM-Offer-Generator/app.update.json" -Force
+
+          Write-Host "Updated app.update.json:"
+          Get-Content "dist/SAM-Offer-Generator/app.update.json"
+
+      - name: Download LVKUpdater
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $zipPath = "LVKUpdater-win-x64.zip"
+          $extractDir = "lvk_updater"
+
+          Invoke-WebRequest -Uri $env:LVK_UPDATER_RELEASE_URL -OutFile $zipPath -UseBasicParsing
+
+          if (Test-Path $extractDir) {
+            Remove-Item $extractDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+
+          $updater = Get-ChildItem -Recurse $extractDir -Filter "LVKUpdater.exe" | Select-Object -First 1
+          if (-not $updater) {
+            throw "LVKUpdater.exe not found in downloaded archive"
+          }
+
+          Copy-Item $updater.FullName "dist/SAM-Offer-Generator/LVKUpdater.exe" -Force
+          Write-Host "LVKUpdater copied to dist/SAM-Offer-Generator/LVKUpdater.exe"
 
       - name: Write release metadata for updater
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           $releaseInfoPath = "dist/SAM-Offer-Generator/release_info.json"
           if (!(Test-Path $releaseInfoPath)) {
             throw "release_info.json was not found: $releaseInfoPath"
@@ -114,6 +171,7 @@ jobs:
           $json | Add-Member -NotePropertyName "github_repo" -NotePropertyValue "${{ github.event.repository.name }}" -Force
           $json | Add-Member -NotePropertyName "github_repository" -NotePropertyValue "${{ github.repository }}" -Force
           $json | Add-Member -NotePropertyName "runtime_content_sha256" -NotePropertyValue $env:RUNTIME_CONTENT_SHA256 -Force
+          $json | Add-Member -NotePropertyName "lvk_updater_version" -NotePropertyValue $env:LVK_UPDATER_VERSION -Force
           $json | ConvertTo-Json -Depth 10 | Set-Content $releaseInfoPath -Encoding UTF8
 
           Write-Host "Updated release_info.json:"
@@ -123,6 +181,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           $dist = "dist/SAM-Offer-Generator"
           $moduleRoot = "dist/distribution-modules"
           $runtimeStage = Join-Path $moduleRoot "runtime"
@@ -137,6 +196,7 @@ jobs:
           if (Test-Path $moduleRoot) {
             Remove-Item $moduleRoot -Recurse -Force
           }
+
           New-Item -ItemType Directory -Path $runtimeStage -Force | Out-Null
           New-Item -ItemType Directory -Path $appStage -Force | Out-Null
 
@@ -159,22 +219,83 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           $files = Get-ChildItem "dist/distribution-modules" -Filter "*.zip" | Sort-Object Name
           $expected = @(
             "SAM-Offer-Generator-App-No-Runtime.zip",
             "SAM-Offer-Generator-Runtime-Win64.zip"
           )
           $actual = @($files | ForEach-Object { $_.Name })
+
           if ($actual.Count -ne 2) {
             throw "Expected exactly 2 release ZIPs, got $($actual.Count): $($actual -join ', ')"
           }
+
           foreach ($name in $expected) {
             if ($actual -notcontains $name) {
               throw "Missing release ZIP: $name"
             }
           }
+
           Write-Host "Release ZIPs are OK:"
           $files | Select-Object Name, Length
+
+      - name: Build LVK manifest asset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $moduleRoot = "dist/distribution-modules"
+          $appZip = Join-Path $moduleRoot "SAM-Offer-Generator-App-No-Runtime.zip"
+          $runtimeZip = Join-Path $moduleRoot "SAM-Offer-Generator-Runtime-Win64.zip"
+          $manifestPath = "dist/offer-generator.json"
+
+          $appFile = Get-Item $appZip
+          $runtimeFile = Get-Item $runtimeZip
+          $appSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $appZip).Hash.ToLowerInvariant()
+          $runtimeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $runtimeZip).Hash.ToLowerInvariant()
+
+          $manifest = [ordered]@{
+            schemaVersion = 2
+            appId = "offer-generator"
+            name = "SAM Offer Generator"
+            channel = "stable"
+            mandatory = $false
+            mainExe = "SAM-Offer-Generator.exe"
+            versions = [ordered]@{
+              app = $env:RELEASE_TAG
+              runtime = $env:RUNTIME_CONTENT_SHA256
+              updater = $env:LVK_UPDATER_VERSION
+            }
+            packages = [ordered]@{
+              app = [ordered]@{
+                file = "SAM-Offer-Generator-App-No-Runtime.zip"
+                url = "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG/SAM-Offer-Generator-App-No-Runtime.zip"
+                sha256 = $appSha
+                size = $appFile.Length
+              }
+              runtime = [ordered]@{
+                file = "SAM-Offer-Generator-Runtime-Win64.zip"
+                url = "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG/SAM-Offer-Generator-Runtime-Win64.zip"
+                sha256 = $runtimeSha
+                size = $runtimeFile.Length
+              }
+              updater = [ordered]@{
+                file = "LVKUpdater-win-x64.zip"
+                url = $env:LVK_UPDATER_RELEASE_URL
+                sha256 = ""
+                size = 0
+              }
+            }
+            notes = @(
+              "Раздельное обновление app/runtime через LVKUpdater.",
+              "Runtime скачивается только если изменился runtime content signature."
+            )
+          }
+
+          $manifest | ConvertTo-Json -Depth 20 | Set-Content $manifestPath -Encoding UTF8
+          Write-Host "Generated LVK manifest:"
+          Get-Content $manifestPath
 
       - name: Upload runtime module artifact
         uses: actions/upload-artifact@v4
@@ -190,35 +311,48 @@ jobs:
           path: dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip
           retention-days: 30
 
+      - name: Upload LVK manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offer-generator-lvk-manifest
+          path: dist/offer-generator.json
+          retention-days: 30
+
       - name: Publish or update GitHub Release automatically
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
+
           $tag = $env:RELEASE_TAG
           $title = $env:RELEASE_TITLE
           $notesPath = "dist/RELEASE_NOTES.md"
+
           $notes = @"
           $env:RELEASE_NOTES
 
           Release assets:
           - SAM-Offer-Generator-Runtime-Win64.zip
           - SAM-Offer-Generator-App-No-Runtime.zip
+          - offer-generator.json
 
           Updater metadata:
           RUNTIME_CONTENT_SHA256=$env:RUNTIME_CONTENT_SHA256
+          LVK_UPDATER_VERSION=$env:LVK_UPDATER_VERSION
           "@
           $notes | Set-Content $notesPath -Encoding UTF8
 
           $files = @(
             "dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip",
-            "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip"
+            "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip",
+            "dist/offer-generator.json"
           )
 
-          Write-Host "Publishing release $tag with exactly two assets"
+          Write-Host "Publishing release $tag with LVK manifest"
+
           if (gh release view $tag --repo "${{ github.repository }}" *> $null) {
-            Write-Host "Release already exists. Removing old assets and uploading two clean modules."
+            Write-Host "Release already exists. Removing old assets and uploading clean assets."
             $existingAssetsJson = gh release view $tag --repo "${{ github.repository }}" --json assets
             $existingAssets = ($existingAssetsJson | ConvertFrom-Json).assets
             foreach ($asset in $existingAssets) {
@@ -238,6 +372,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
+
           $repo = "${{ github.repository }}"
           $keep = 3
           $currentTag = $env:RELEASE_TAG
