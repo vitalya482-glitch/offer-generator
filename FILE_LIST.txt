@@ -1,3 +1,0 @@
-.github/workflows/main.yml
-INSTALL_RELEASE_CLEANUP_PATCH.md
-FILE_LIST.txt

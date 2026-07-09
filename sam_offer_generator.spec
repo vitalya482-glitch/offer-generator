@@ -31,6 +31,7 @@ hiddenimports = [
 
     'core.docx_renderer',
     'core.excel_reader',
+    'core.excel_calc_parser',
     'core.riello_price',
     'core.riello_excel_exporter',
     'core.manager_profile',
@@ -65,7 +66,6 @@ datas = [
     ('assets', 'assets'),
     ('prices', 'prices'),
     ('templates', 'templates'),
-    ('brands/hvac/templates', 'brands/hvac/templates'),
 ]
 datas += collect_data_files('openpyxl')
 

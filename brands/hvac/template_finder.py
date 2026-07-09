@@ -3,43 +3,47 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-DEFAULT_TEMPLATE_NAME = "HVAC_offer_template_TAGS.docx"
+DEFAULT_TEMPLATE_NAME = "Offer_Company_22-05-26_TAGGED_HVAC.docx"
+DEFAULT_TEMPLATE_RELATIVE_PATH = Path("templates") / "HVAC" / DEFAULT_TEMPLATE_NAME
 
 
-def _candidate_roots() -> list[Path]:
-    """Return roots where the bundled template may exist.
-
-    Works both from source tree and from PyInstaller bundle.
-    """
+def _candidate_app_roots() -> list[Path]:
+    """Return possible application roots for source and PyInstaller builds."""
     roots: list[Path] = []
 
-    # Source layout: brands/hvac/template_finder.py -> brands/hvac/templates/...
-    roots.append(Path(__file__).resolve().parent)
+    # Source tree:
+    # <project>/brands/hvac/template_finder.py -> <project>
+    roots.append(Path(__file__).resolve().parents[2])
 
-    # PyInstaller --onefile/--onedir layout.
+    # PyInstaller extraction/bundle directory.
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        roots.append(Path(meipass) / "brands" / "hvac")
+        roots.append(Path(meipass))
 
-    # App root fallback: cwd/brands/hvac/templates/...
-    roots.append(Path.cwd() / "brands" / "hvac")
+    # Portable onedir build: templates may be next to the executable.
+    if getattr(sys, "frozen", False):
+        roots.append(Path(sys.executable).resolve().parent)
 
-    # Remove duplicates while preserving order.
+    # Useful when the program is launched from the project/application folder.
+    roots.append(Path.cwd())
+
     unique: list[Path] = []
     for root in roots:
-        if root not in unique:
-            unique.append(root)
+        resolved = root.resolve()
+        if resolved not in unique:
+            unique.append(resolved)
     return unique
 
 
 def find_default_hvac_template() -> str:
-    """Find bundled HVAC DOCX template.
+    """Find the standard HVAC DOCX template.
 
-    Returns an absolute path if the template exists. Returns an empty string if not found,
-    so the UI can leave the template field blank and let the user choose it manually.
+    Returns an absolute path when found. If the template is missing, returns an
+    empty string so the HVAC page leaves the field blank for manual selection.
     """
-    for root in _candidate_roots():
-        path = root / "templates" / DEFAULT_TEMPLATE_NAME
-        if path.exists():
-            return str(path)
+    for root in _candidate_app_roots():
+        template_path = root / DEFAULT_TEMPLATE_RELATIVE_PATH
+        if template_path.is_file():
+            return str(template_path)
+
     return ""

@@ -1,3 +1,0 @@
-openpyxl
-python-docx
-PySide6
