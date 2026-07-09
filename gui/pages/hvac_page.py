@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 import os
 import re
 
-from docx import Document
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -37,12 +35,11 @@ from core.excel_calc_parser import (
     parse_calculation,
     read_sheet_names,
 )
+from core.final_offer_word_maker import RepeatingTable, make_final_offer
 from core.project_scanner import clear_scan_cache, scan_project_files
 from gui.path_helpers import extract_client_from_project_dir, infer_output_dir
 
 
-_TAG_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
-_ITEM_TAGS = {"item_no", "item_name", "item_qty", "item_unit_price", "item_total"}
 _FROM_CLIENT_ALIASES = (
     "from client",
     "from customer",
@@ -697,20 +694,64 @@ class HVACPage(QWidget):
             f"Offer_{client}_{datetime.now():%d-%m-%y}(v{version}) HVAC.docx"
         )
 
+        price_divisor, _offer_currency = self._offer_price_settings()
         tags = self._collect_tags(items)
+        table_rows = [
+            {
+                "item_no": str(index),
+                "item_name": item.name,
+                "item_qty": format_qty(item.qty),
+                "item_unit_price": format_money(
+                    float(item.unit_price or 0) / price_divisor
+                ),
+                "item_total": format_money(
+                    float(item.total_price or 0) / price_divisor
+                ),
+            }
+            for index, item in enumerate(items, start=1)
+        ]
         try:
-            _render_hvac_template(template_path, output_path, tags, items)
+            build_result = make_final_offer(
+                template_path=template_path,
+                output_path=output_path,
+                tags=tags,
+                repeating_tables=[
+                    RepeatingTable(
+                        row_marker="item_name",
+                        rows=table_rows,
+                        required=True,
+                    )
+                ],
+                clear_unresolved=True,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "HVAC", f"Не удалось сформировать КП:\n{exc}")
             return
 
         self.remember_values()
-        QMessageBox.information(self, "HVAC", f"КП сформировано:\n{output_path}")
+        message = f"КП сформировано:\n{build_result.output_path}"
+        if build_result.warnings:
+            message += "\n\n" + "\n".join(build_result.warnings)
+        QMessageBox.information(self, "HVAC", message)
+
+    def _offer_price_settings(self) -> tuple[float, str]:
+        """Return calculation divisor and offer currency.
+
+        HVAC Word offers are issued in EUR.  If the calculation is in KZT and
+        contains an exchange rate, prices are converted to EUR here; the common
+        Excel parser itself always keeps the original calculation values.
+        """
+
+        result = self.parse_result
+        source_currency = ((result.currency if result else None) or "EUR").upper()
+        exchange_rate = float((result.exchange_rate if result else None) or 0)
+        if source_currency == "KZT" and exchange_rate > 0:
+            return exchange_rate, "EUR"
+        return 1.0, source_currency or "EUR"
 
     def _collect_tags(self, items: list[CalcItem]) -> dict[str, str]:
-        result = self.parse_result
-        currency = (result.currency if result else None) or "EUR"
-        grand_total = sum(float(item.total_price or 0) for item in items)
+        price_divisor, currency = self._offer_price_settings()
+        grand_total = sum(float(item.total_price or 0) for item in items) / price_divisor
         signer = self._selected_signer()
         manager = self._manager_profile_dict()
 
@@ -853,93 +894,6 @@ def _format_basis_documents(names: Iterable[str]) -> str:
     # The DOCX template already has a bullet before {{data_file_name}}.
     return clean[0] + "".join(f"\n• {name}" for name in clean[1:])
 
-
-# -------------------------------------------------------------------- DOCX
-def _render_hvac_template(
-    template_path: Path,
-    output_path: Path,
-    tags: dict[str, str],
-    items: list[CalcItem],
-) -> None:
-    document = Document(str(template_path))
-    item_table = None
-    template_row_index = None
-
-    for table in document.tables:
-        for row_index, row in enumerate(table.rows):
-            row_text = " | ".join(cell.text for cell in row.cells)
-            found = {match.group(1).casefold() for match in _TAG_RE.finditer(row_text)}
-            if found & _ITEM_TAGS:
-                item_table = table
-                template_row_index = row_index
-                break
-        if item_table is not None:
-            break
-
-    if item_table is None or template_row_index is None:
-        raise ValueError("В шаблоне не найдена строка {{item_name}} ценовой таблицы.")
-
-    template_row = item_table.rows[template_row_index]
-    row_xml = deepcopy(template_row._tr)
-    item_table._tbl.remove(template_row._tr)
-
-    for offset, item in enumerate(items):
-        insert_index = template_row_index + offset
-        new_xml = deepcopy(row_xml)
-        item_table._tbl.insert(insert_index, new_xml)
-        new_row = item_table.rows[insert_index]
-        item_tags = {
-            "item_no": str(offset + 1),
-            "item_name": item.name,
-            "item_qty": format_qty(item.qty),
-            "item_unit_price": format_money(item.unit_price),
-            "item_total": format_money(item.total_price),
-        }
-        for cell in new_row.cells:
-            for paragraph in cell.paragraphs:
-                _replace_tags_in_paragraph(paragraph, item_tags)
-
-    _replace_tags_everywhere(document, tags)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    document.save(str(output_path))
-
-
-def _replace_tags_everywhere(document: Document, tags: dict[str, str]) -> None:
-    for paragraph in document.paragraphs:
-        _replace_tags_in_paragraph(paragraph, tags)
-    for table in document.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    _replace_tags_in_paragraph(paragraph, tags)
-    for section in document.sections:
-        for part in (section.header, section.footer):
-            for paragraph in part.paragraphs:
-                _replace_tags_in_paragraph(paragraph, tags)
-            for table in part.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        for paragraph in cell.paragraphs:
-                            _replace_tags_in_paragraph(paragraph, tags)
-
-
-def _replace_tags_in_paragraph(paragraph, tags: dict[str, str]) -> None:
-    text = paragraph.text
-    if "{{" not in text:
-        return
-    normalized_tags = {key.casefold(): str(value or "") for key, value in tags.items()}
-    replaced = _TAG_RE.sub(
-        lambda match: normalized_tags.get(match.group(1).casefold(), ""),
-        text,
-    )
-    if replaced == text:
-        return
-    if paragraph.runs:
-        paragraph.runs[0].text = replaced
-        for run in paragraph.runs[1:]:
-            run.text = ""
-    else:
-        paragraph.add_run(replaced)
 
 
 # ------------------------------------------------------------------ helpers
