@@ -102,21 +102,37 @@ class SheetIndex:
 
     def __init__(self, worksheet) -> None:
         self.title = worksheet.title
-        self.values = [tuple(row) for row in worksheet.iter_rows(values_only=True)]
-        self.max_row = len(self.values)
-        self.max_column = max((len(row) for row in self.values), default=0)
+        value_rows: list[tuple[Any, ...]] = []
+        format_rows: list[tuple[str, ...]] = []
         self.text_cells: list[tuple[int, int, str]] = []
-        for row_no, row in enumerate(self.values, start=1):
-            for col_no, value in enumerate(row, start=1):
+        for row_no, cells in enumerate(worksheet.iter_rows(), start=1):
+            values: list[Any] = []
+            formats: list[str] = []
+            for col_no, cell in enumerate(cells, start=1):
+                value = cell.value
+                values.append(value)
+                formats.append(str(cell.number_format or ""))
                 text = normalize_text(value)
                 if text:
                     self.text_cells.append((row_no, col_no, text))
+            value_rows.append(tuple(values))
+            format_rows.append(tuple(formats))
+        self.values = value_rows
+        self.number_formats = format_rows
+        self.max_row = len(self.values)
+        self.max_column = max((len(row) for row in self.values), default=0)
 
     def value(self, row: int, col: int) -> Any:
         if row < 1 or col < 1 or row > self.max_row:
             return None
         values = self.values[row - 1]
         return values[col - 1] if col <= len(values) else None
+
+    def number_format(self, row: int, col: int) -> str:
+        if row < 1 or col < 1 or row > self.max_row:
+            return ""
+        formats = self.number_formats[row - 1]
+        return formats[col - 1] if col <= len(formats) else ""
 
     def find(self, aliases: Iterable[str], *, exact: bool = False) -> list[tuple[int, int]]:
         normalized = [normalize_text(x) for x in aliases if normalize_text(x)]
@@ -192,7 +208,7 @@ def parse_calculation(
         result.exchange_rate = _find_numeric_near_label(sheet, _RATE_ALIASES)
         result.vat_percent = _find_numeric_near_label(sheet, _VAT_ALIASES)
         result.vat_included = _detect_vat_included(sheet, grand_total_row)
-        result.currency = _detect_currency(sheet, result.exchange_rate)
+        result.currency = _detect_currency(sheet, result.exchange_rate, grand_total_row)
         result.delivery_basis = _detect_delivery_basis(sheet)
         result.grand_total = _find_row_total(sheet, grand_total_row)
         result.subtotal = _find_row_total(sheet, total_per_qty_row)
@@ -345,10 +361,45 @@ def _find_numeric_near_label(sheet: SheetIndex, aliases: Iterable[str]) -> float
     return None
 
 
-def _detect_currency(sheet: SheetIndex, exchange_rate: float | None) -> str | None:
+def _detect_currency(
+    sheet: SheetIndex,
+    exchange_rate: float | None,
+    grand_total_row: int | None = None,
+) -> str | None:
+    # 1. Explicit labels in the sheet are the strongest signal.
     for currency, aliases in _CURRENCY_LABELS.items():
         if sheet.find(aliases, exact=True):
             return currency
+
+    # 2. Inspect Excel financial/accounting number formats. The symbol may be
+    # stored only in the cell style and therefore absent from the cell value.
+    rows = [grand_total_row] if grand_total_row else []
+    rows.extend(range(1, sheet.max_row + 1))
+    seen_rows: set[int] = set()
+    format_markers = {
+        "KZT": ("₸", "kzt", "тенге", "тг", "[$₸"),
+        "EUR": ("€", "eur", "euro", "евро", "[$€"),
+        "USD": ("$", "usd", "доллар", "[$$"),
+        "RUB": ("₽", "rub", "руб", "[$₽"),
+    }
+    scores = {currency: 0 for currency in format_markers}
+    for row in rows:
+        if not row or row in seen_rows:
+            continue
+        seen_rows.add(row)
+        for col in range(1, sheet.max_column + 1):
+            if _to_number(sheet.value(row, col)) is None:
+                continue
+            fmt = normalize_text(sheet.number_format(row, col))
+            for currency, markers in format_markers.items():
+                if any(normalize_text(marker) in fmt for marker in markers):
+                    scores[currency] += 10 if row == grand_total_row else 1
+    best_currency, best_score = max(scores.items(), key=lambda item: item[1])
+    if best_score > 0:
+        return best_currency
+
+    # 3. A non-trivial exchange rate in SAM calculations normally means the
+    # monetary rows are in KZT. This is only a last fallback.
     if exchange_rate and exchange_rate > 1.01:
         return "KZT"
     return None

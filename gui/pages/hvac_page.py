@@ -37,7 +37,11 @@ from core.excel_calc_parser import (
     parse_calculation,
     read_sheet_names,
 )
-from core.final_offer_word_maker import RepeatingTable, make_final_offer
+from core.final_offer_word_maker import (
+    RepeatingTable,
+    format_amount_in_words,
+    make_final_offer,
+)
 from core.project_scanner import clear_scan_cache, scan_project_files
 from gui.path_helpers import extract_client_from_project_dir, infer_output_dir
 
@@ -588,7 +592,12 @@ class HVACPage(QWidget):
             self.engineering_check.setChecked(result.engineering.included)
         if result.installation.included is not None:
             self.installation_check.setChecked(result.installation.included)
-        if result.startup.included is not None:
+        # Для наших calculation монтаж обычно включает и ПНР. Поэтому при
+        # найденном монтаже ПНР включаем по умолчанию; пользователь всё равно
+        # может снять чекбокс вручную перед формированием КП.
+        if result.installation.included:
+            self.startup_check.setChecked(True)
+        elif result.startup.included is not None:
             self.startup_check.setChecked(result.startup.included)
         self._fill_items_table()
         self._update_status()
@@ -729,19 +738,14 @@ class HVACPage(QWidget):
                 return
             overwrite = True
 
-        price_divisor, _offer_currency = self._offer_price_settings()
         tags = self._collect_tags(items)
         table_rows = [
             {
                 "item_no": str(index),
                 "item_name": item.name,
                 "item_qty": format_qty(item.qty),
-                "item_unit_price": format_money(
-                    float(item.unit_price or 0) / price_divisor
-                ),
-                "item_total": format_money(
-                    float(item.total_price or 0) / price_divisor
-                ),
+                "item_unit_price": format_money(item.unit_price),
+                "item_total": format_money(item.total_price),
             }
             for index, item in enumerate(items, start=1)
         ]
@@ -797,34 +801,29 @@ class HVACPage(QWidget):
         if dialog.clickedButton() is open_button:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(saved_path)))
 
-    def _offer_price_settings(self) -> tuple[float, str]:
-        """Return calculation divisor and offer currency.
+    def _offer_currency(self) -> str:
+        """Return the source currency detected by the common Excel parser.
 
-        HVAC Word offers are issued in EUR.  If the calculation is in KZT and
-        contains an exchange rate, prices are converted to EUR here; the common
-        Excel parser itself always keeps the original calculation values.
+        Prices are no longer silently converted by an exchange rate. The offer
+        follows the financial currency of the calculation itself.
         """
 
         result = self.parse_result
-        source_currency = ((result.currency if result else None) or "EUR").upper()
-        exchange_rate = float((result.exchange_rate if result else None) or 0)
-        if source_currency == "KZT" and exchange_rate > 0:
-            return exchange_rate, "EUR"
-        return 1.0, source_currency or "EUR"
+        return ((result.currency if result else None) or "KZT").upper()
 
-    def _collect_tags(self, items: list[CalcItem]) -> dict[str, str]:
-        price_divisor, currency = self._offer_price_settings()
-        grand_total = sum(float(item.total_price or 0) for item in items) / price_divisor
+    def _collect_tags(self, items: list[CalcItem]) -> dict[str, object]:
+        currency = self._offer_currency()
+        grand_total = sum(float(item.total_price or 0) for item in items)
         signer = self._selected_signer()
         manager = self._manager_profile_dict()
 
         return {
-            "offer_date": datetime.now().strftime("%d.%m.%Y г."),
+            "offer_date": _format_russian_date(datetime.now()),
             "offer_version": self.offer_version.text().strip() or "1",
             "client_company_full": self.client_company,
             "intro_text": "",
             "project_name": self.project_name.text().strip(),
-            "data_file_name": _format_basis_documents(self.basis_files),
+            "data_file_name": list(self.basis_files),
             "delivery_terms": self.delivery_terms.text().strip(),
             "installation_terms": (
                 "Монтажные работы включены."
@@ -846,7 +845,8 @@ class HVACPage(QWidget):
             "total_price_header": f"Сумма, {currency}",
             "total_label": "Итого",
             "grand_total": format_money(grand_total),
-            "total_price_block": f"{format_money(grand_total)} {currency}",
+            "total_price_block": format_amount_in_words(grand_total, currency),
+            "currency_name": _currency_name_ru(currency),
             "payment_terms": self.payment_terms.text().strip(),
             "signer_name": signer.get("name", ""),
             "signer_position": signer.get("position", ""),
@@ -855,6 +855,25 @@ class HVACPage(QWidget):
             "manager_email": manager.get("email", ""),
             "manager_phone": manager.get("phone", ""),
         }
+
+
+_RU_MONTHS = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
+def _format_russian_date(value: datetime) -> str:
+    return f"{value.day} {_RU_MONTHS[value.month - 1]} {value.year} года"
+
+
+def _currency_name_ru(currency: str) -> str:
+    return {
+        "KZT": "ТЕНГЕ",
+        "EUR": "ЕВРО",
+        "USD": "ДОЛЛАРЫ США",
+        "RUB": "РУБЛИ",
+    }.get(str(currency or "").upper(), str(currency or "").upper())
 
 
 # ----------------------------------------------------------------- From Client
@@ -948,14 +967,6 @@ def _list_basis_files(folder: Path | None) -> list[str]:
         else:
             result.append(path.name)
     return result
-
-
-def _format_basis_documents(names: Iterable[str]) -> str:
-    clean = [str(name).strip() for name in names if str(name).strip()]
-    if not clean:
-        return ""
-    # The DOCX template already has a bullet before {{data_file_name}}.
-    return clean[0] + "".join(f"\n• {name}" for name in clean[1:])
 
 
 

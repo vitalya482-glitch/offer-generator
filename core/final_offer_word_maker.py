@@ -21,6 +21,7 @@ from docx.document import Document as DocumentObject
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.table import _Row
+from docx.text.paragraph import Paragraph
 
 
 _TAG_RE = re.compile(r"\{\{\s*([A-Za-zА-Яа-я0-9_\-.]+)\s*\}\}")
@@ -50,6 +51,98 @@ class OfferBuildResult:
     unresolved_tags: set[str] = field(default_factory=set)
     created_table_rows: int = 0
     warnings: list[str] = field(default_factory=list)
+
+
+
+
+_CURRENCY_WORDS = {
+    "KZT": (("тенге", "тенге", "тенге"), ("тиын", "тиына", "тиынов")),
+    "EUR": (("евро", "евро", "евро"), ("евроцент", "евроцента", "евроцентов")),
+    "USD": (("доллар США", "доллара США", "долларов США"), ("цент", "цента", "центов")),
+    "RUB": (("рубль", "рубля", "рублей"), ("копейка", "копейки", "копеек")),
+}
+
+
+def format_amount_in_words(value: Any, currency: str = "KZT") -> str:
+    """Return a formatted amount with a full Russian text spelling.
+
+    Example: ``92 932,88 EUR (Девяносто две тысячи девятьсот тридцать два
+    евро 88 евроцентов)``. The function has no brand-specific dependencies and
+    can be reused by every offer page.
+    """
+
+    try:
+        amount = round(float(value), 2)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Некорректная сумма: {value!r}") from exc
+    negative = amount < 0
+    amount = abs(amount)
+    major = int(amount)
+    minor = int(round((amount - major) * 100))
+    if minor == 100:
+        major += 1
+        minor = 0
+    code = str(currency or "KZT").upper()
+    major_forms, minor_forms = _CURRENCY_WORDS.get(code, ((code, code, code), ("", "", "")))
+    words = _integer_to_russian_words(major)
+    if negative:
+        words = "минус " + words
+    major_word = _plural_form(major, major_forms)
+    minor_word = _plural_form(minor, minor_forms).strip()
+    numeric = f"{('-' if negative else '')}{major:,}.{minor:02d}".replace(",", " ").replace(".", ",")
+    spelled = f"{words} {major_word} {minor:02d} {minor_word}".strip()
+    return f"{numeric} {code} ({spelled[:1].upper() + spelled[1:]})"
+
+
+def _plural_form(number: int, forms: Sequence[str]) -> str:
+    value = abs(int(number)) % 100
+    if 11 <= value <= 19:
+        return forms[2]
+    value %= 10
+    if value == 1:
+        return forms[0]
+    if 2 <= value <= 4:
+        return forms[1]
+    return forms[2]
+
+
+def _integer_to_russian_words(number: int) -> str:
+    if number == 0:
+        return "ноль"
+    units_m = ("", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять")
+    units_f = ("", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять")
+    teens = ("десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать")
+    tens = ("", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто")
+    hundreds = ("", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот")
+    scales = (
+        ("", "", "", False),
+        ("тысяча", "тысячи", "тысяч", True),
+        ("миллион", "миллиона", "миллионов", False),
+        ("миллиард", "миллиарда", "миллиардов", False),
+        ("триллион", "триллиона", "триллионов", False),
+    )
+    if number >= 10 ** (3 * len(scales)):
+        return str(number)
+    parts: list[str] = []
+    group_index = 0
+    while number:
+        group = number % 1000
+        number //= 1000
+        if group:
+            chunk: list[str] = []
+            chunk.append(hundreds[group // 100])
+            rest = group % 100
+            if 10 <= rest <= 19:
+                chunk.append(teens[rest - 10])
+            else:
+                chunk.append(tens[rest // 10])
+                units = units_f if scales[group_index][3] else units_m
+                chunk.append(units[rest % 10])
+            if group_index:
+                chunk.append(_plural_form(group, scales[group_index][:3]))
+            parts.insert(0, " ".join(word for word in chunk if word))
+        group_index += 1
+    return " ".join(parts)
 
 
 class OfferTemplateError(ValueError):
@@ -87,13 +180,22 @@ def make_final_offer(
 
     document = Document(str(template))
     result = OfferBuildResult(output_path=output)
-    normalized_tags = _normalize_mapping(tags or {})
+    scalar_tags, paragraph_list_tags = _split_tag_values(tags or {})
 
     for block in repeating_tables or ():
         created = _fill_repeating_table(document, block, result)
         result.created_table_rows += created
 
-    replaced = _replace_mapping_everywhere(document, normalized_tags)
+    for tag_name, items in paragraph_list_tags.items():
+        created = _replace_tag_with_paragraph_list(document, tag_name, items)
+        if created:
+            result.replaced_tags.add(tag_name)
+        else:
+            result.warnings.append(
+                f"В Word-шаблоне не найден отдельный абзац с тегом {{{{{tag_name}}}}}."
+            )
+
+    replaced = _replace_mapping_everywhere(document, scalar_tags)
     result.replaced_tags.update(replaced)
 
     unresolved = collect_unresolved_tags(document)
@@ -141,6 +243,70 @@ def _normalize_mapping(values: Mapping[str, Any]) -> dict[str, str]:
         if name:
             normalized[name] = "" if value is None else str(value)
     return normalized
+
+
+def _split_tag_values(
+    values: Mapping[str, Any],
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Split scalar tags from values that must become repeated paragraphs."""
+
+    scalar: dict[str, str] = {}
+    paragraph_lists: dict[str, list[str]] = {}
+    for key, value in values.items():
+        name = normalize_tag_name(key)
+        if not name:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            paragraph_lists[name] = [
+                str(item).strip() for item in value if str(item).strip()
+            ]
+        else:
+            scalar[name] = "" if value is None else str(value)
+    return scalar, paragraph_lists
+
+
+def _replace_tag_with_paragraph_list(
+    document: DocumentObject,
+    tag_name: str,
+    items: Sequence[str],
+) -> int:
+    """Clone a standalone tag paragraph once per list item.
+
+    The cloned paragraphs keep the bullet/numbering, indentation, spacing and
+    text formatting defined in the Word template.
+    """
+
+    marker = normalize_tag_name(tag_name)
+    if not marker:
+        return 0
+
+    matches = []
+    for paragraph in list(_iter_all_paragraphs(document)):
+        text = _paragraph_text(paragraph).strip()
+        found = _TAG_RE.fullmatch(text)
+        if found and found.group(1).strip().casefold() == marker:
+            matches.append(paragraph)
+
+    created_total = 0
+    for paragraph in matches:
+        if not items:
+            _replace_mapping_in_paragraph(paragraph, {marker: ""})
+            continue
+
+        template_xml = deepcopy(paragraph._p)
+        _replace_mapping_in_paragraph(paragraph, {marker: items[0]})
+        created_total += 1
+        insert_after = paragraph._p
+
+        for item in items[1:]:
+            new_xml = deepcopy(template_xml)
+            insert_after.addnext(new_xml)
+            insert_after = new_xml
+            new_paragraph = Paragraph(new_xml, paragraph._parent)
+            _replace_mapping_in_paragraph(new_paragraph, {marker: item})
+            created_total += 1
+
+    return created_total
 
 
 def _fill_repeating_table(
