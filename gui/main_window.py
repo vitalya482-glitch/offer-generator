@@ -151,23 +151,10 @@ def run_gui() -> None:
             try:
                 from core.lvk_updater_launcher import LVKUpdaterError, start_lvk_update_check
 
-                answer = QMessageBox.question(
-                    self,
-                    "Обновление программы",
-                    "Проверка и установка обновлений теперь выполняется внешним LVKUpdater.\n\n"
-                    "Программа сейчас закроется, чтобы обновлятор смог заменить файлы.\n"
-                    "Если обновлений нет, LVKUpdater покажет сообщение.\n\n"
-                    "Продолжить?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if answer != QMessageBox.Yes:
-                    return
-
+                # Проверка выполняется в отдельном процессе. Главное окно не
+                # закрывается. Если обновление найдено и пользователь согласен,
+                # LVKUpdater сам штатно закроет приложение перед заменой файлов.
                 start_lvk_update_check()
-                app = QApplication.instance()
-                if app is not None:
-                    QTimer.singleShot(250, app.quit)
             except LVKUpdaterError as exc:
                 QMessageBox.warning(self, "Обновления", str(exc))
             except Exception as exc:

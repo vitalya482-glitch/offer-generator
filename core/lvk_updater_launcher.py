@@ -51,11 +51,12 @@ def find_update_config(root: Path | None = None) -> Path:
 
 
 def start_lvk_update_check() -> None:
-    """Start external C++ LVKUpdater in manifest check mode.
+    """Start LVKUpdater without closing the running application.
 
-    The main app should quit immediately after this function returns. LVKUpdater
-    receives the current process PID and waits until the app exits before
-    replacing files.
+    LVKUpdater checks the manifest while Offer Generator remains open. If the
+    user confirms an available update, LVKUpdater closes this process
+    gracefully, installs the verified packages, and starts the application
+    again. If no update is available, this process is left untouched.
     """
     root = app_dir()
     updater = find_lvk_updater(root)
@@ -68,12 +69,21 @@ def start_lvk_update_check() -> None:
         str(root),
         "--config",
         str(config),
-        "--wait-pid",
+        "--app-pid",
         str(os.getpid()),
     ]
 
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
     try:
-        subprocess.Popen(cmd, cwd=str(root), close_fds=True)
+        subprocess.Popen(
+            cmd,
+            cwd=str(root),
+            close_fds=True,
+            creationflags=creationflags,
+        )
     except PermissionError as exc:
         raise LVKUpdaterError(
             "Windows не разрешил запустить LVKUpdater.exe.\n\n"
@@ -89,3 +99,4 @@ def start_lvk_update_check() -> None:
             f"Файл:\n{updater}\n\n"
             f"Техническая ошибка:\n{type(exc).__name__}: {exc}"
         ) from exc
+
