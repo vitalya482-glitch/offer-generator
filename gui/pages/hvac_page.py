@@ -4,10 +4,12 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+import ntpath
 import os
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -72,6 +74,7 @@ class HVACPage(QWidget):
         self.owner = owner
         self.settings = owner.settings
         self._updating_path_display = False
+        self._output_selected_manually = False
 
         self.project_dir_path = self._saved("hvac/project_dir", self._saved("project_dir", ""))
         self.output_dir_path = self._saved("hvac/output_dir", "")
@@ -377,8 +380,14 @@ class HVACPage(QWidget):
     def _on_project_text_changed(self) -> None:
         if self._updating_path_display:
             return
-        self.project_dir_path = self.project_edit.text().strip()
+        new_path = self.project_edit.text().strip()
+        project_changed = not _same_windows_path(new_path, self.project_dir_path)
+        self.project_dir_path = new_path
         self.project_edit.setToolTip(self.project_dir_path)
+        if project_changed:
+            self.output_dir_path = ""
+            self._output_selected_manually = False
+            self._set_line_path(self.output_edit, "", is_file=False)
         self._refresh_project_metadata()
         self.remember_values()
 
@@ -387,15 +396,24 @@ class HVACPage(QWidget):
             return
         self.output_dir_path = self.output_edit.text().strip()
         self.output_edit.setToolTip(self.output_dir_path)
+        self._output_selected_manually = bool(self.output_dir_path)
         self.remember_values()
 
     def browse_project_dir(self) -> None:
-        start = self.project_path_text() or str(Path.home())
+        old_project = self.project_path_text().strip()
+        start = old_project or str(Path.home())
         path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", start)
         if not path:
             return
+        project_changed = not _same_windows_path(path, old_project)
         self.project_dir_path = path
         self._set_line_path(self.project_edit, path, is_file=False)
+        if project_changed:
+            # Папка результата относится к конкретному проекту. Не переносим
+            # сохранённый путь от предыдущего проекта в новый расчёт.
+            self.output_dir_path = ""
+            self._output_selected_manually = False
+            self._set_line_path(self.output_edit, "", is_file=False)
         self.scan_project(force=True)
 
     def browse_output_dir(self) -> None:
@@ -404,6 +422,7 @@ class HVACPage(QWidget):
         if not path:
             return
         self.output_dir_path = path
+        self._output_selected_manually = True
         self._set_line_path(self.output_edit, path, is_file=False)
         self.remember_values()
 
@@ -471,7 +490,9 @@ class HVACPage(QWidget):
         finally:
             self.calc_combo.blockSignals(False)
 
-        if not self.output_path_text():
+        current_output = self.output_path_text().strip()
+        output_belongs_to_project = _path_is_inside(current_output, str(project_dir))
+        if not current_output or (not self._output_selected_manually and not output_belongs_to_project):
             self.output_dir_path = infer_output_dir(str(project_dir))
             self._set_line_path(self.output_edit, self.output_dir_path, is_file=False)
 
@@ -694,6 +715,20 @@ class HVACPage(QWidget):
             f"Offer_{client}_{datetime.now():%d-%m-%y}(v{version}) HVAC.docx"
         )
 
+        overwrite = False
+        if output_path.exists():
+            answer = QMessageBox.question(
+                self,
+                "HVAC",
+                "Файл с таким именем уже существует:\n"
+                f"{output_path}\n\nПерезаписать его?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            overwrite = True
+
         price_divisor, _offer_currency = self._offer_price_settings()
         tags = self._collect_tags(items)
         table_rows = [
@@ -723,16 +758,44 @@ class HVACPage(QWidget):
                     )
                 ],
                 clear_unresolved=True,
+                overwrite=overwrite,
             )
         except Exception as exc:
             QMessageBox.critical(self, "HVAC", f"Не удалось сформировать КП:\n{exc}")
             return
 
+        saved_path = Path(build_result.output_path)
+        try:
+            saved_size = saved_path.stat().st_size
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "HVAC",
+                "Word-файл был сформирован, но программа не смогла подтвердить его "
+                f"наличие по пути:\n{saved_path}\n\n{exc}",
+            )
+            return
+        if not saved_path.is_file() or saved_size <= 0:
+            QMessageBox.critical(
+                self,
+                "HVAC",
+                f"Файл не появился или имеет нулевой размер:\n{saved_path}",
+            )
+            return
+
         self.remember_values()
-        message = f"КП сформировано:\n{build_result.output_path}"
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("HVAC")
+        dialog.setIcon(QMessageBox.Information)
+        message = f"КП сформировано:\n{saved_path}"
         if build_result.warnings:
             message += "\n\n" + "\n".join(build_result.warnings)
-        QMessageBox.information(self, "HVAC", message)
+        dialog.setText(message)
+        open_button = dialog.addButton("Открыть КП", QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Ok)
+        dialog.exec()
+        if dialog.clickedButton() is open_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(saved_path)))
 
     def _offer_price_settings(self) -> tuple[float, str]:
         """Return calculation divisor and offer currency.
@@ -927,6 +990,29 @@ def _centered_widget(widget: QWidget) -> QWidget:
     layout.addWidget(widget)
     layout.addStretch(1)
     return box
+
+
+def _same_windows_path(left: str, right: str) -> bool:
+    left_text = str(left or "").strip().strip('"')
+    right_text = str(right or "").strip().strip('"')
+    if not left_text or not right_text:
+        return left_text == right_text
+    return ntpath.normcase(ntpath.normpath(left_text)) == ntpath.normcase(
+        ntpath.normpath(right_text)
+    )
+
+
+def _path_is_inside(child: str, parent: str) -> bool:
+    child_text = str(child or "").strip().strip('"')
+    parent_text = str(parent or "").strip().strip('"')
+    if not child_text or not parent_text:
+        return False
+    try:
+        child_norm = ntpath.normcase(ntpath.abspath(child_text))
+        parent_norm = ntpath.normcase(ntpath.abspath(parent_text))
+        return ntpath.commonpath([child_norm, parent_norm]) == parent_norm
+    except (ValueError, OSError):
+        return False
 
 
 def _safe_filename(value: str) -> str:

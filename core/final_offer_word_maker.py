@@ -64,6 +64,7 @@ def make_final_offer(
     *,
     clear_unresolved: bool = True,
     atomic_save: bool = True,
+    overwrite: bool = False,
 ) -> OfferBuildResult:
     """Fill a DOCX template and save the final commercial offer.
 
@@ -81,6 +82,8 @@ def make_final_offer(
         raise OfferTemplateError(f"Ожидается DOCX-шаблон: {template}")
     if output.suffix.casefold() != ".docx":
         output = output.with_suffix(".docx")
+    if output.exists() and not overwrite:
+        raise FileExistsError(f"Файл уже существует: {output}")
 
     document = Document(str(template))
     result = OfferBuildResult(output_path=output)
@@ -109,6 +112,7 @@ def make_final_offer(
         _save_atomic(document, output)
     else:
         document.save(str(output))
+    _verify_saved_file(output)
     return result
 
 
@@ -330,14 +334,15 @@ def _iter_all_paragraphs(document: DocumentObject):
 def _save_atomic(document: DocumentObject, output: Path) -> None:
     temp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
+        fd, raw_temp_path = tempfile.mkstemp(
             suffix=".docx",
             prefix=f".{output.stem}_",
             dir=str(output.parent),
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
+        )
+        os.close(fd)
+        temp_path = Path(raw_temp_path)
         document.save(str(temp_path))
+        _verify_saved_file(temp_path)
         os.replace(temp_path, output)
     finally:
         if temp_path is not None and temp_path.exists():
@@ -345,6 +350,15 @@ def _save_atomic(document: DocumentObject, output: Path) -> None:
                 temp_path.unlink()
             except OSError:
                 pass
+
+
+def _verify_saved_file(path: Path) -> None:
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise OSError(f"Не удалось подтвердить сохранение Word-файла: {path}") from exc
+    if not path.is_file() or stat.st_size <= 0:
+        raise OSError(f"Word-файл не создан или имеет нулевой размер: {path}")
 
 
 __all__ = [
