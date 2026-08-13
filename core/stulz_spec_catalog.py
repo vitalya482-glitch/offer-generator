@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,3 +94,40 @@ def discover_stulz_spec_entries(spec_dir: str | Path | None) -> list[StulzSpecEn
         )
 
     return entries
+
+
+def _patch_loaded_stulz_page() -> None:
+    """Upgrade an already loaded STULZ page without touching MainWindow.
+
+    brands.stulz_runtime imports this catalog while the STULZ page is already
+    alive. Replacing methods on the original class also updates that existing
+    page instance, so a second preview refresh immediately shows separate rows.
+    CLI use is unaffected because the GUI module is not loaded there.
+    """
+
+    page_module = sys.modules.get("gui.pages.stulz_page")
+    if page_module is None:
+        return
+
+    try:
+        from gui.pages.stulz_page_runtime import StulzPage as RuntimeStulzPage
+    except Exception:
+        return
+
+    page_class = getattr(page_module, "StulzPage", None)
+    if page_class is None or page_class is RuntimeStulzPage:
+        return
+
+    for method_name in (
+        "_row_metadata",
+        "_row_key",
+        "current_spec_model_state",
+        "selected_spec_models",
+        "_scan_calc_pdf_models",
+        "_short_source_label",
+        "refresh_spec_models",
+    ):
+        setattr(page_class, method_name, getattr(RuntimeStulzPage, method_name))
+
+
+_patch_loaded_stulz_page()
