@@ -43,19 +43,23 @@ class StulzPage(_BaseStulzPage):
         meta = self._row_metadata(model_item)
         return str(meta.get("key") or (model_item.text().strip() if model_item else ""))
 
-    def current_spec_model_state(self) -> dict[str, tuple[bool, str]]:
-        state: dict[str, tuple[bool, str]] = {}
+    def current_spec_model_state(self) -> dict[str, tuple[bool, str, bool]]:
+        """Preserve row enable/quantity/legend switches across rescans."""
+
+        state: dict[str, tuple[bool, str, bool]] = {}
         table = self.spec_models_table
         for row in range(table.rowCount()):
             enabled_item = table.item(row, 0)
             model_item = table.item(row, 1)
             qty_item = table.item(row, 2)
+            legend_item = table.item(row, 3) if table.columnCount() > 3 else None
             key = self._row_key(model_item)
             if not key:
                 continue
             enabled = enabled_item.checkState() == Qt.Checked if enabled_item else True
             qty = qty_item.text().strip() if qty_item else ""
-            state[key] = (enabled, qty)
+            legend_enabled = legend_item.checkState() == Qt.Checked if legend_item else True
+            state[key] = (enabled, qty, legend_enabled)
         return state
 
     def selected_spec_models(self) -> list[dict[str, object]]:
@@ -65,6 +69,7 @@ class StulzPage(_BaseStulzPage):
             enabled_item = table.item(row, 0)
             model_item = table.item(row, 1)
             qty_item = table.item(row, 2)
+            legend_item = table.item(row, 3) if table.columnCount() > 3 else None
             if not model_item:
                 continue
 
@@ -74,6 +79,7 @@ class StulzPage(_BaseStulzPage):
                 continue
 
             enabled = enabled_item.checkState() == Qt.Checked if enabled_item else True
+            legend_enabled = legend_item.checkState() == Qt.Checked if legend_item else True
             qty_text = qty_item.text().strip() if qty_item else ""
             try:
                 qty = float(qty_text.replace(",", ".")) if qty_text else 0.0
@@ -86,6 +92,7 @@ class StulzPage(_BaseStulzPage):
                     "model": model,
                     "qty": qty_text,
                     "qty_value": qty,
+                    "legend_enabled": legend_enabled,
                     "key": str(meta.get("key") or ""),
                     "source_dir": str(meta.get("source_dir") or ""),
                     "source_label": str(meta.get("source_label") or ""),
@@ -324,6 +331,16 @@ class StulzPage(_BaseStulzPage):
         if self._updating_spec_models:
             return
 
+        # The base page is created with three columns. Runtime adds a fourth
+        # per-row switch controlling whether the Excel legend is printed in the
+        # specification headings.
+        if table.columnCount() < 4:
+            table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Вкл", "Модель", "Кол-во", "Легенда"])
+        table.setColumnWidth(0, 52)
+        table.setColumnWidth(2, 80)
+        table.setColumnWidth(3, 82)
+
         previous = self.current_spec_model_state()
         self._updating_spec_models = True
         table.blockSignals(True)
@@ -370,10 +387,11 @@ class StulzPage(_BaseStulzPage):
                 row = table.rowCount()
                 table.insertRow(row)
 
+                old_state = previous.get(key, (True, "", True))
+
                 enabled_item = QTableWidgetItem("")
                 enabled_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
-                enabled = previous.get(key, (True, ""))[0]
-                enabled_item.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
+                enabled_item.setCheckState(Qt.Checked if old_state[0] else Qt.Unchecked)
 
                 source_short = self._short_source_label(entry)
                 caption = f"{model} · {source_short}" if source_short else model
@@ -395,13 +413,21 @@ class StulzPage(_BaseStulzPage):
                 model_item.setToolTip("\n".join(part for part in tooltip_parts if part))
 
                 default_qty = self._format_qty_for_table(entry.get("qty"))
-                qty_text = previous.get(key, (True, ""))[1] or default_qty
+                qty_text = old_state[1] or default_qty
                 qty_item = QTableWidgetItem(qty_text)
                 qty_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+
+                legend_item = QTableWidgetItem("")
+                legend_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+                legend_item.setCheckState(Qt.Checked if old_state[2] else Qt.Unchecked)
+                legend_item.setToolTip(
+                    "Добавлять легенду из Excel (например, город/объект) в заголовок этой спецификации"
+                )
 
                 table.setItem(row, 0, enabled_item)
                 table.setItem(row, 1, model_item)
                 table.setItem(row, 2, qty_item)
+                table.setItem(row, 3, legend_item)
 
             table.resizeRowsToContents()
         except Exception:
