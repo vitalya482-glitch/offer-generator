@@ -4,12 +4,30 @@ import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableWidgetItem,
+    QVBoxLayout,
+)
 
 from core.models import OfferContext
 from core.stulz_spec_catalog import discover_stulz_spec_entries, load_stulz_spec_entry
 from gui.path_helpers import infer_specifications_dir
 from gui.pages.stulz_page import StulzPage as _BaseStulzPage
+
+
+DESCRIPTION_OPTION_LABELS: dict[str, str] = {
+    "stulz_unit": "Прецизионный кондиционер Stulz",
+    "cooling_capacity": "Хладопроизводительность",
+    "unit_dimensions": "Размеры внутреннего блока (Ш×Г×В)",
+    "condenser": "Наружный блок (конденсор)",
+}
 
 
 class StulzPage(_BaseStulzPage):
@@ -153,6 +171,48 @@ class StulzPage(_BaseStulzPage):
         self._stulz_manual_controls_installed = True
         self._update_manual_mode_label()
 
+    def _ensure_description_options_controls(self) -> None:
+        """Move offer-description switches from the spec dialog into data preview."""
+
+        if getattr(self, "_stulz_description_controls_installed", False):
+            return
+
+        preview = getattr(self, "preview", None)
+        card = preview.parentWidget() if preview is not None else None
+        layout = card.layout() if card is not None else None
+        if layout is None:
+            return
+
+        group = QGroupBox("Текст для включения в описание КП")
+        group_layout = QVBoxLayout(group)
+        group_layout.setContentsMargins(10, 8, 10, 8)
+        group_layout.setSpacing(4)
+
+        saved_options = self.description_options()
+        checkboxes: dict[str, QCheckBox] = {}
+        for key, label in DESCRIPTION_OPTION_LABELS.items():
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(bool(saved_options.get(key, True)))
+            checkbox.toggled.connect(lambda _checked, option_key=key: self._on_description_option_changed(option_key))
+            checkboxes[key] = checkbox
+            group_layout.addWidget(checkbox)
+
+        # preview is already in the card layout. Adding the group now places the
+        # switches below all main preview data, exactly where they are needed.
+        layout.addWidget(group)
+
+        self._stulz_description_group = group
+        self._stulz_description_checkboxes = checkboxes
+        self._stulz_description_controls_installed = True
+
+    def _on_description_option_changed(self, _changed_key: str = "") -> None:
+        checkboxes = getattr(self, "_stulz_description_checkboxes", {})
+        if not checkboxes:
+            return
+        options = {key: checkbox.isChecked() for key, checkbox in checkboxes.items()}
+        self._save_description_options(options)
+        self.refresh_preview()
+
     def _update_manual_mode_label(self) -> None:
         label = getattr(self, "manual_spec_mode_label", None)
         if label is None:
@@ -214,6 +274,35 @@ class StulzPage(_BaseStulzPage):
         self.status_label.setText("Ручной выбор сброшен. Используется автопоиск спецификаций.")
         self.refresh_preview()
 
+    def open_spec_preview(self) -> None:
+        """Open spec details without the description-option block moved to main page."""
+
+        try:
+            from brands.registry import get_brand_module
+            from gui.spec_preview_dialog import SpecPreviewDialog
+
+            context = self.make_context()
+            self.validate_context(context)
+            module = get_brand_module(self.brand_name)
+            calc = module.load_calc(context)
+            spec_blocks, warnings = module.build_specification_blocks(context, calc)
+            dialog = SpecPreviewDialog(
+                spec_blocks,
+                warnings,
+                self,
+                description_options=self.description_options(),
+            )
+
+            # Older SpecPreviewDialog still creates this group. Hide it here so
+            # there is a single source of truth: the main "Проверка данных" card.
+            for group in dialog.findChildren(QGroupBox):
+                if group.title().strip() == "Текст для включения в описание в КП":
+                    group.setVisible(False)
+
+            dialog.exec()
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть предпросмотр спецификаций:\n{exc}")
+
     def _short_source_label(self, entry: dict[str, object]) -> str:
         source_dir = str(entry.get("source_dir") or "")
         folder = Path(source_dir).name if source_dir else ""
@@ -229,6 +318,7 @@ class StulzPage(_BaseStulzPage):
 
     def refresh_spec_models(self, context: OfferContext | None = None) -> None:
         self._ensure_manual_spec_controls()
+        self._ensure_description_options_controls()
 
         table = self.spec_models_table
         if self._updating_spec_models:

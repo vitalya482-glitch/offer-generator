@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,9 +10,9 @@ from core.stulz_spec_catalog import discover_stulz_spec_entries
 from core.stulz_specification import build_stulz_specification
 
 
-# Re-export the public surface of the existing STULZ module.  The original
-# module remains the single place for pricing, Word rendering and descriptions;
-# this wrapper only replaces specification selection/matching.
+# Re-export the public surface of the existing STULZ module. The original
+# module remains the single place for pricing and Word rendering; this wrapper
+# replaces physical specification matching and a few STULZ description rules.
 for _name in dir(_base):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_base, _name)
@@ -147,7 +148,7 @@ def _physical_specs(context: OfferContext, calc: CalcData) -> list[dict[str, Any
 def _calc_for_physical_spec(calc: CalcData, model: str, qty: float) -> CalcData:
     """Build an isolated CalcData only for specification parsing.
 
-    Price values are irrelevant for the PDF parsers.  Using a synthetic item also
+    Price values are irrelevant for the PDF parsers. Using a synthetic item also
     avoids accidentally binding all duplicate ASR552AS rows to the first Excel row.
     """
 
@@ -220,14 +221,135 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
     return blocks, warnings
 
 
-# Existing functions such as preview() and make_offer() execute in the namespace
-# of brands.stulz.  Replace the one global they call so the rest of the mature
-# STULZ implementation stays untouched.
+def _dimension_component(block: dict[str, Any], ru_name: str, en_name: str) -> str:
+    """Read one unit dimension from translated or original WinPlan labels."""
+
+    return (
+        _base._tech_value(block, (ru_name,), ("unit",))
+        or _base._tech_value(block, (en_name,), ("unit",))
+    )
+
+
+def _clean_dimension_component(value: str) -> str:
+    text = str(value or "").replace("\u00a0", " ").strip()
+    text = re.sub(r"\s*(?:мм|mm)\b\.?\s*$", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _unit_dimensions_text(block: dict[str, Any]) -> str:
+    """Return complete indoor-unit dimensions as W x D x H.
+
+    The old implementation first matched any row containing the word
+    "Габариты", which meant it often returned only the first component. WinPlan
+    provides height, width and depth separately, so require all three values and
+    combine them explicitly. A pre-combined dimensions row is used only as a
+    fallback when it visibly contains three dimensions.
+    """
+
+    width = _dimension_component(block, "ширина", "width")
+    depth = _dimension_component(block, "глубина", "depth")
+    height = _dimension_component(block, "высота", "height")
+
+    if width and depth and height:
+        values = [_clean_dimension_component(value) for value in (width, depth, height)]
+        if all(values):
+            return " × ".join(values) + " мм"
+
+    direct = _base._tech_value(block, ("габарит",), ("unit",))
+    if direct:
+        normalized = str(direct).replace("х", "×").replace("x", "×").replace("X", "×")
+        if normalized.count("×") >= 2:
+            return normalized.strip()
+
+    return ""
+
+
+def _build_offer_item_description(
+    item: OfferItem,
+    block: dict[str, Any] | None,
+    options: dict[str, bool],
+) -> str:
+    if not block:
+        return item.name
+
+    model = str(block.get("calc_model") or block.get("model") or item.name).strip() or item.name
+    parts: list[str] = []
+
+    if options.get("stulz_unit", True):
+        parts.append(f"Прецизионный кондиционер Stulz {model}")
+    else:
+        parts.append(model)
+
+    if options.get("cooling_capacity", True):
+        cooling = _base._cooling_capacity_text(block)
+        if cooling:
+            parts.append(f"хладопроизводительность {cooling}")
+
+    if options.get("unit_dimensions", True):
+        dimensions = _unit_dimensions_text(block)
+        if dimensions:
+            parts.append(f"размеры внутреннего блока (Ш×Г×В) {dimensions}")
+
+    if options.get("condenser", True):
+        condenser = _base._condenser_text(block)
+        if condenser:
+            parts.append(f"наружный блок (конденсор) - {condenser}")
+
+    return ", ".join(parts)
+
+
+# Existing functions such as make_offer() execute in the namespace of
+# brands.stulz. Patch the globals they call so the rest of the mature STULZ
+# implementation stays untouched.
 _base.build_specification_blocks = build_specification_blocks
+_base._unit_dimensions_text = _unit_dimensions_text
+_base._build_offer_item_description = _build_offer_item_description
 
 
 def preview(context: OfferContext) -> str:
-    return _base.preview(context)
+    """Preview the calculation and the exact item descriptions that will enter КП."""
+
+    calc = _base.load_calc(context)
+    spec_blocks, spec_warnings = build_specification_blocks(context, calc)
+    offer_items = _base.build_offer_items(context, calc, spec_blocks)
+    models: list[str] = []
+    for item in calc.items:
+        if item.name and item.name not in models:
+            models.append(item.name)
+
+    lines = [
+        f"Заказчик: {context.client_name}",
+        f"Лист Excel: {calc.sheet_name}",
+        f"Версия расчета: {calc.version}",
+        f"Версия КП: {_base.find_next_offer_version(context.output_dir, context.client_name, calc.sheet_name)}",
+        f"Валюта: {calc.currency}",
+        f"Курс: {_base.format_money(calc.exchange_rate)}",
+        f"НДС: {_base.format_qty(calc.vat_percent)}%",
+        f"Условия поставки: {calc.delivery_basis}",
+        f"Монтаж/ПНР: {'включены' if getattr(calc, 'installation_included', False) else 'не включены'}",
+        f"Моделей для спецификации: {len(spec_blocks)}",
+        f"Опций для спецификации: {sum(len(block.get('options', [])) for block in spec_blocks)}",
+        f"Строк тех. характеристик: {sum(len(block.get('technical_specs', [])) for block in spec_blocks)}",
+        f"Модели: {', '.join(models) if models else '-'}",
+        f"Количество: {_base.format_qty(calc.quantity)}",
+        f"Сумма: {_base.format_money(calc.total_price)} {_base.currency_name(calc.currency)}",
+        "",
+        "Предупреждения спецификации:",
+    ]
+    if spec_warnings:
+        lines.extend(f"- {warning}" for warning in spec_warnings)
+    else:
+        lines.append("- нет")
+
+    lines.extend(["", "Позиции для КП:"])
+    for source_item, offer_item in zip(calc.items, offer_items):
+        lines.append(
+            f"{source_item.no}. {offer_item['item_name']} | кол-во {_base.format_qty(source_item.qty)} | "
+            f"цена {_base.format_money(source_item.unit_price)} | "
+            f"сумма {_base.format_money(source_item.total_price)}"
+        )
+
+    return "\n".join(lines)
 
 
 def make_offer(context: OfferContext) -> Path:

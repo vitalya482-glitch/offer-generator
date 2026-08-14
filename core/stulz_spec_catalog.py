@@ -291,9 +291,12 @@ def _patch_loaded_stulz_page() -> None:
         "_manual_spec_files",
         "_manual_spec_models",
         "_ensure_manual_spec_controls",
+        "_ensure_description_options_controls",
+        "_on_description_option_changed",
         "_update_manual_mode_label",
         "browse_manual_spec_files",
         "clear_manual_spec_files",
+        "open_spec_preview",
         "_short_source_label",
         "refresh_spec_models",
     ):
@@ -309,6 +312,7 @@ def _patch_loaded_stulz_page() -> None:
             if isinstance(widget, page_class):
                 _restore_common_spec_dir(widget)
                 widget._ensure_manual_spec_controls()
+                widget._ensure_description_options_controls()
                 widget.refresh_spec_models()
                 _install_data_refresh_controls(widget)
     except Exception:
