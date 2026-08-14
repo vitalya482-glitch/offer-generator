@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import brands.stulz as _base
+import core.stulz_specification as _spec_core
 from core.models import CalcData, OfferContext, OfferItem
 from core.stulz_spec_catalog import discover_stulz_spec_entries
 from core.stulz_specification import build_stulz_specification
@@ -28,6 +29,152 @@ def _positive_qty(value: object, default: float = 1.0) -> float:
     except Exception:
         qty = default
     return qty if qty > 0 else default
+
+
+# ---------------------------------------------------------------------------
+# Safe STULZ drawing selection
+# ---------------------------------------------------------------------------
+# The supplier folder may contain several PDFs whose names all include the same
+# equipment model. In particular an Order specification can be named like
+# KCELL_ASR552AS_Almaty.pdf while the real drawing is
+# KCELL_ASR552AS_Almaty_ASR552AS.pdf. The old generic scorer gave these files
+# almost identical scores and could insert the order sheet as a picture.
+#
+# Drawing rule used here:
+# 1) Calc/WinPlan are never drawings.
+# 2) A model repeated in the file name or present as the final file-name token is
+#    a very strong signal (matches the supplier naming convention).
+# 3) PDF text is inspected when available: Order specification is rejected;
+#    dimensional/layout wording increases confidence.
+# 4) If confidence is low, return None. A missing picture is safer than a wrong
+#    business document embedded into the offer.
+_DRAWING_ORDER_MARKERS = (
+    "order specification",
+    "order confirmation",
+    "quotation",
+    "sales order",
+    "purchase order",
+)
+
+_DRAWING_TECH_MARKERS = (
+    "supply connections",
+    "liquid line",
+    "discharge line",
+    "electrical connection",
+    "condensate drain",
+    "solder connection",
+    "scale",
+    "layout",
+    "creation date",
+    "page 1 / 1",
+)
+
+
+def _pdf_text_for_drawing_check(path: Path, max_pages: int = 2) -> str:
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return ""
+
+    try:
+        with fitz.open(str(path)) as document:
+            parts: list[str] = []
+            for page_no in range(min(document.page_count, max_pages)):
+                try:
+                    parts.append(document.load_page(page_no).get_text("text"))
+                except Exception:
+                    continue
+        return re.sub(r"\s+", " ", " ".join(parts)).strip().lower()
+    except Exception:
+        return ""
+
+
+def _drawing_model_keys(calc: CalcData) -> list[str]:
+    keys: list[str] = []
+    for item in calc.items:
+        key = _model_key(item.name)
+        if key and key not in keys:
+            keys.append(key)
+    calc_model = _model_key(getattr(calc, "model", ""))
+    if calc_model and calc_model not in keys:
+        keys.append(calc_model)
+    return keys
+
+
+def _drawing_candidate_score(path: Path, model_keys: list[str]) -> tuple[int, bool]:
+    """Return (score, hard_reject) for a possible equipment drawing PDF."""
+
+    stem_normalized = re.sub(r"[^a-z0-9]+", " ", path.stem.lower()).strip()
+    if "calc" in stem_normalized or "winplan" in stem_normalized:
+        return -10_000, True
+
+    stem_key = _model_key(path.stem)
+    score = 0
+
+    # Strong supplier naming convention: the drawing ends with the model, and in
+    # project-prefixed files the model often occurs twice.
+    for model_key in model_keys:
+        if not model_key:
+            continue
+        occurrences = stem_key.count(model_key)
+        if occurrences:
+            score += 25
+        if occurrences >= 2:
+            score += 160 + (occurrences - 2) * 20
+        if stem_key.endswith(model_key):
+            score += 300
+
+    text = _pdf_text_for_drawing_check(path)
+    if text:
+        if any(marker in text for marker in _DRAWING_ORDER_MARKERS):
+            return -10_000, True
+
+        text_key = _model_key(text)
+        if any(model_key and model_key in text_key for model_key in model_keys):
+            score += 80
+
+        marker_hits = sum(1 for marker in _DRAWING_TECH_MARKERS if marker in text)
+        score += min(marker_hits, 6) * 15
+
+    return score, False
+
+
+def _safe_find_stulz_drawing_pdf(pdf_dir: str | Path | None, calc: CalcData) -> Path | None:
+    if not pdf_dir:
+        return None
+    root = Path(pdf_dir)
+    if not root.exists():
+        return None
+
+    model_keys = _drawing_model_keys(calc)
+    if not model_keys:
+        return None
+
+    candidates: list[tuple[int, Path]] = []
+    for path in root.rglob("*.pdf"):
+        if not path.is_file():
+            continue
+        score, rejected = _drawing_candidate_score(path, model_keys)
+        if rejected:
+            continue
+        candidates.append((score, path))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1].name.lower()), reverse=True)
+    best_score, best_path = candidates[0]
+
+    # A single model occurrence somewhere in a project/order filename is not
+    # enough. The threshold requires either the model-at-end naming convention,
+    # repeated model name, or strong drawing-like content plus model evidence.
+    return best_path if best_score >= 180 else None
+
+
+# build_stulz_specification() resolves find_stulz_drawing_pdf from its module
+# globals at call time, so patching this one function hardens every STULZ path
+# while leaving the mature Calc/WinPlan parsing untouched.
+_spec_core.find_stulz_drawing_pdf = _safe_find_stulz_drawing_pdf
 
 
 def _explicit_physical_rows(context: OfferContext) -> list[dict[str, Any]]:
@@ -181,6 +328,10 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
         specification = build_stulz_specification(source_dir, model_calc)
         label = str(selected.get("source_label") or source_dir.name or model)
         warnings.extend(f"{model} [{label}]: {warning}" for warning in specification.warnings)
+        if specification.drawing_pdf is None:
+            warnings.append(
+                f"{model} [{label}]: чертёж PDF уверенно не определён — изображение в КП не будет вставлено."
+            )
         totals = specification.totals
 
         blocks.append(
@@ -317,6 +468,12 @@ def preview(context: OfferContext) -> str:
         if item.name and item.name not in models:
             models.append(item.name)
 
+    drawing_files = [
+        Path(str(block.get("drawing_pdf"))).name
+        for block in spec_blocks
+        if block.get("drawing_pdf")
+    ]
+
     lines = [
         f"Заказчик: {context.client_name}",
         f"Лист Excel: {calc.sheet_name}",
@@ -327,19 +484,23 @@ def preview(context: OfferContext) -> str:
         f"НДС: {_base.format_qty(calc.vat_percent)}%",
         f"Условия поставки: {calc.delivery_basis}",
         f"Монтаж/ПНР: {'включены' if getattr(calc, 'installation_included', False) else 'не включены'}",
-        f"Моделей для спецификации: {len(spec_blocks)}",
+        f"Спецификации: найдено {len(spec_blocks)}",
+        f"Чертежи для вставки: {len(drawing_files)}",
         f"Опций для спецификации: {sum(len(block.get('options', [])) for block in spec_blocks)}",
         f"Строк тех. характеристик: {sum(len(block.get('technical_specs', [])) for block in spec_blocks)}",
         f"Модели: {', '.join(models) if models else '-'}",
         f"Количество: {_base.format_qty(calc.quantity)}",
         f"Сумма: {_base.format_money(calc.total_price)} {_base.currency_name(calc.currency)}",
-        "",
-        "Предупреждения спецификации:",
     ]
+
+    if drawing_files:
+        lines.append(f"Файлы чертежей: {'; '.join(drawing_files)}")
+
     if spec_warnings:
+        lines.extend(["", "Предупреждения:"])
         lines.extend(f"- {warning}" for warning in spec_warnings)
     else:
-        lines.append("- нет")
+        lines.extend(["", "Предупреждения: нет"])
 
     lines.extend(["", "Позиции для КП:"])
     for source_item, offer_item in zip(calc.items, offer_items):
