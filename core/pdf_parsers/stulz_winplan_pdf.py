@@ -71,29 +71,56 @@ def _segment(text: str, start_marker: str, end_marker: str | None = None) -> str
     return text[start:]
 
 
-def _extract_after_label(section_text: str, label: str, labels: list[str]) -> str:
-    pos = section_text.find(label)
-    if pos < 0:
-        return ""
+def _extract_single_label_value(section_text: str, pos: int, label: str, labels: list[str]) -> str:
+    """Extract one value occurrence, stopping at any following known label.
+
+    WinPlan can repeat the same parameter several times in one section, for
+    example once per compressor. The old parser deliberately ignored the same
+    label while looking for the end marker, so the second English label leaked
+    into the first value ("9,0 kW Electrical power consumption: 11,3 kW").
+    """
+
     start = pos + len(label)
     end = len(section_text)
     for other in labels:
-        if other == label:
-            continue
         other_pos = section_text.find(other, start)
         if other_pos >= 0:
             end = min(end, other_pos)
+
     raw = section_text[start:end]
     raw = raw.split("\n", 1)[0] if "\n" in raw and len(raw.split("\n", 1)[0].strip()) > 0 else raw
     cleaned = _clean_value(raw)
 
-    # Some PDF text layers put the value immediately before the label, e.g. "V9,1Control voltage:".
+    # Some PDF text layers put the value immediately before the label, e.g.
+    # "V9,1Control voltage:". Keep the existing recovery path per occurrence.
     if not cleaned:
         before = section_text[:pos][-30:]
         match = re.search(r"([0-9][0-9\s,.]*\s*(?:V|A|kW|Pa|rpm|°C|%|dB\(A\))?)\s*$", before)
         if match:
             cleaned = _clean_value(match.group(1))
     return cleaned
+
+
+def _extract_after_label(section_text: str, label: str, labels: list[str]) -> str:
+    """Extract all occurrences of a WinPlan parameter without leaking labels.
+
+    Some units have multiple compressors/fans. WinPlan then repeats labels such
+    as Electrical power consumption, COP, Number and Heat rejection. Preserve
+    every distinct value and render them compactly in the same Word value cell:
+    "9,0 кВт / 11,3 кВт".
+    """
+
+    positions = [match.start() for match in re.finditer(re.escape(label), section_text)]
+    if not positions:
+        return ""
+
+    values: list[str] = []
+    for pos in positions:
+        cleaned = _extract_single_label_value(section_text, pos, label, labels)
+        if cleaned and cleaned not in values:
+            values.append(cleaned)
+
+    return " / ".join(values)
 
 
 def _dedupe_rows(rows: list[StulzTechRow]) -> list[StulzTechRow]:
