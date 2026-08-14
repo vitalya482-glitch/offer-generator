@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from core.pdf_parsers.stulz_calc_pdf import parse_stulz_calc_totals
@@ -167,6 +168,97 @@ def _restore_common_spec_dir(widget: object) -> None:
         return
 
 
+def _install_data_refresh_controls(widget: object) -> None:
+    """Add explicit disk refresh controls to the STULZ preview card.
+
+    The refresh button and F5 intentionally re-read the already selected Excel
+    workbook and specification PDFs without forcing the user to reselect the
+    project. This is useful while the calculation is being edited in parallel.
+    """
+
+    if getattr(widget, "_stulz_data_refresh_installed", False):
+        return
+
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QKeySequence, QShortcut
+        from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton
+
+        preview = getattr(widget, "preview", None)
+        if preview is None:
+            return
+
+        card = preview.parentWidget()
+        layout = card.layout() if card is not None else None
+        if layout is None:
+            return
+
+        title_item = layout.takeAt(0)
+        title_widget = title_item.widget() if title_item is not None else None
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(10)
+        if title_widget is not None:
+            title_row.addWidget(title_widget)
+        title_row.addStretch(1)
+
+        refreshed_label = QLabel()
+        refreshed_label.setObjectName("Hint")
+        title_row.addWidget(refreshed_label)
+
+        refresh_button = QPushButton("↻ Обновить")
+        refresh_button.setObjectName("GhostButton")
+        refresh_button.setToolTip("Перечитать Excel и спецификации с диска (F5)")
+        refresh_button.setMinimumWidth(120)
+        title_row.addWidget(refresh_button)
+
+        layout.insertLayout(0, title_row)
+
+        def set_timestamp() -> str:
+            stamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            refreshed_label.setText(f"Обновлено: {stamp}")
+            return stamp
+
+        def refresh_from_disk() -> None:
+            if getattr(widget, "_stulz_data_refresh_busy", False):
+                return
+
+            setattr(widget, "_stulz_data_refresh_busy", True)
+            refresh_button.setEnabled(False)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                # Re-read the current workbook from disk while keeping the selected
+                # sheet when it still exists. refresh_preview() also re-scans the
+                # physical Calc.pdf specification rows through the runtime patch.
+                widget.load_sheets(refresh=False)  # type: ignore[attr-defined]
+                widget.refresh_preview()  # type: ignore[attr-defined]
+                set_timestamp()
+            finally:
+                QApplication.restoreOverrideCursor()
+                refresh_button.setEnabled(True)
+                setattr(widget, "_stulz_data_refresh_busy", False)
+
+        refresh_button.clicked.connect(refresh_from_disk)
+
+        refresh_shortcut = QShortcut(QKeySequence("F5"), widget)
+        refresh_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        refresh_shortcut.activated.connect(refresh_from_disk)
+
+        # Keep Python/Qt references alive for the lifetime of the STULZ page.
+        setattr(widget, "_stulz_data_refresh_button", refresh_button)
+        setattr(widget, "_stulz_data_refresh_label", refreshed_label)
+        setattr(widget, "_stulz_data_refresh_shortcut", refresh_shortcut)
+        setattr(widget, "_stulz_data_refresh_callback", refresh_from_disk)
+        setattr(widget, "_stulz_data_refresh_installed", True)
+
+        # The preview has already been loaded once by the page constructor when
+        # these runtime controls are injected, so show that initial read time too.
+        set_timestamp()
+    except Exception:
+        return
+
+
 def _patch_loaded_stulz_page() -> None:
     """Upgrade an already loaded STULZ page without touching MainWindow.
 
@@ -209,7 +301,7 @@ def _patch_loaded_stulz_page() -> None:
 
     # The STULZ runtime module is first imported from refresh_preview(), after the
     # original page object has already been constructed. Refresh existing page
-    # instances once so the manual-selection buttons appear without reopening it.
+    # instances once so runtime controls appear without reopening the application.
     try:
         from PySide6.QtWidgets import QApplication
 
@@ -218,6 +310,7 @@ def _patch_loaded_stulz_page() -> None:
                 _restore_common_spec_dir(widget)
                 widget._ensure_manual_spec_controls()
                 widget.refresh_spec_models()
+                _install_data_refresh_controls(widget)
     except Exception:
         pass
 
