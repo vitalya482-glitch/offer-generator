@@ -4,10 +4,10 @@ import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QTableWidgetItem
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidgetItem
 
 from core.models import OfferContext
-from core.stulz_spec_catalog import discover_stulz_spec_entries
+from core.stulz_spec_catalog import discover_stulz_spec_entries, load_stulz_spec_entry
 from gui.path_helpers import infer_specifications_dir
 from gui.pages.stulz_page import StulzPage as _BaseStulzPage
 
@@ -92,6 +92,128 @@ class StulzPage(_BaseStulzPage):
             for entry in discover_stulz_spec_entries(spec_dir)
         ]
 
+    def _manual_spec_files(self) -> list[str]:
+        raw = getattr(self, "_stulz_manual_spec_files", [])
+        return [str(path) for path in raw if str(path).strip()]
+
+    def _manual_spec_models(self) -> list[dict[str, object]]:
+        models: list[dict[str, object]] = []
+        for path_text in self._manual_spec_files():
+            entry = load_stulz_spec_entry(path_text)
+            if entry is None:
+                continue
+            models.append(
+                {
+                    "key": entry.key,
+                    "model": entry.model,
+                    "qty": entry.quantity,
+                    "files": [str(entry.calc_pdf)],
+                    "calc_pdf": str(entry.calc_pdf),
+                    "source_dir": str(entry.source_dir),
+                    "source_label": entry.source_label,
+                }
+            )
+        return models
+
+    def _ensure_manual_spec_controls(self) -> None:
+        """Inject manual Calc.pdf selection controls into the existing STULZ card."""
+
+        if getattr(self, "_stulz_manual_controls_installed", False):
+            return
+
+        parent = self.spec_models_table.parentWidget()
+        layout = parent.layout() if parent else None
+        if layout is None:
+            return
+
+        controls = QHBoxLayout()
+        manual_btn = QPushButton("Выбрать спецификации вручную")
+        manual_btn.setToolTip("Выбрать один или несколько STULZ Calc.pdf вручную")
+        auto_btn = QPushButton("Автопоиск")
+        auto_btn.setToolTip("Сбросить ручной выбор и снова искать все Calc.pdf в папке спецификаций")
+        mode_label = QLabel("Режим: автопоиск")
+        mode_label.setObjectName("Hint")
+
+        manual_btn.clicked.connect(self.browse_manual_spec_files)
+        auto_btn.clicked.connect(self.clear_manual_spec_files)
+
+        controls.addWidget(manual_btn)
+        controls.addWidget(auto_btn)
+        controls.addWidget(mode_label, stretch=1)
+
+        index = layout.indexOf(self.spec_preview_button)
+        if index >= 0 and hasattr(layout, "insertLayout"):
+            layout.insertLayout(index, controls)
+        else:
+            layout.addLayout(controls)
+
+        self.manual_spec_button = manual_btn
+        self.auto_spec_button = auto_btn
+        self.manual_spec_mode_label = mode_label
+        self._stulz_manual_controls_installed = True
+        self._update_manual_mode_label()
+
+    def _update_manual_mode_label(self) -> None:
+        label = getattr(self, "manual_spec_mode_label", None)
+        if label is None:
+            return
+        count = len(self._manual_spec_files())
+        label.setText(f"Режим: вручную ({count})" if count else "Режим: автопоиск")
+
+    def browse_manual_spec_files(self) -> None:
+        """Select concrete Calc.pdf files. Manual mode uses only these specifications."""
+
+        start_dir = self.spec_path_text() or self.project_path_text()
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Выберите STULZ Calc.pdf",
+            start_dir,
+            "PDF (*.pdf)",
+        )
+        if not paths:
+            return
+
+        valid: list[str] = []
+        invalid: list[str] = []
+        seen: set[str] = set()
+
+        for path_text in paths:
+            entry = load_stulz_spec_entry(path_text)
+            if entry is None:
+                invalid.append(Path(path_text).name)
+                continue
+            if entry.key in seen:
+                continue
+            seen.add(entry.key)
+            valid.append(str(entry.calc_pdf))
+
+        if not valid:
+            QMessageBox.warning(
+                self,
+                "STULZ",
+                "В выбранных PDF не удалось определить ни одной STULZ-спецификации.",
+            )
+            return
+
+        self._stulz_manual_spec_files = valid
+        self._update_manual_mode_label()
+        self.status_label.setText(f"Ручной выбор спецификаций: {len(valid)}")
+        self.refresh_preview()
+
+        if invalid:
+            QMessageBox.warning(
+                self,
+                "STULZ",
+                "Некоторые выбранные PDF пропущены, потому что не удалось прочитать модель из Calc.pdf:\n"
+                + "\n".join(invalid),
+            )
+
+    def clear_manual_spec_files(self) -> None:
+        self._stulz_manual_spec_files = []
+        self._update_manual_mode_label()
+        self.status_label.setText("Ручной выбор сброшен. Используется автопоиск спецификаций.")
+        self.refresh_preview()
+
     def _short_source_label(self, entry: dict[str, object]) -> str:
         source_dir = str(entry.get("source_dir") or "")
         folder = Path(source_dir).name if source_dir else ""
@@ -106,6 +228,8 @@ class StulzPage(_BaseStulzPage):
         return Path(label).name if label else ""
 
     def refresh_spec_models(self, context: OfferContext | None = None) -> None:
+        self._ensure_manual_spec_controls()
+
         table = self.spec_models_table
         if self._updating_spec_models:
             return
@@ -119,8 +243,10 @@ class StulzPage(_BaseStulzPage):
             if context.brand != self.brand_name:
                 return
 
-            models = self._scan_calc_pdf_models(context.pdf_dir)
-            if not models and context.project_dir.exists():
+            manual_models = self._manual_spec_models()
+            models = manual_models if self._manual_spec_files() else self._scan_calc_pdf_models(context.pdf_dir)
+
+            if not self._manual_spec_files() and not models and context.project_dir.exists():
                 fallback_dirs = [
                     Path(infer_specifications_dir(str(context.project_dir))),
                     context.project_dir,
@@ -139,6 +265,8 @@ class StulzPage(_BaseStulzPage):
                         context.pdf_dir = fallback_dir
                         self._set_spec_dir_path(str(fallback_dir))
                         break
+
+            self._update_manual_mode_label()
 
             if not models:
                 return
