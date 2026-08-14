@@ -117,6 +117,56 @@ def discover_stulz_spec_entries(spec_dir: str | Path | None) -> list[StulzSpecEn
     return entries
 
 
+def _restore_common_spec_dir(widget: object) -> None:
+    """Repair old saved state that points to one physical specification folder.
+
+    Earlier STULZ builds could remember a single leaf folder such as the Almaty
+    ASR552AS folder. With physical-spec matching enabled that would hide sibling
+    Astana/Karaganda Calc PDFs. If the project-level inferred folder contains
+    more valid Calc PDFs than the saved leaf, automatically move the GUI back to
+    that common parent. Explicit manual PDF selection is handled separately and
+    is never changed here.
+    """
+
+    try:
+        from gui.path_helpers import infer_specifications_dir
+
+        project_text = str(widget.project_path_text() or "").strip()  # type: ignore[attr-defined]
+        current_text = str(widget.spec_path_text() or "").strip()  # type: ignore[attr-defined]
+        if not project_text:
+            return
+
+        inferred_text = str(infer_specifications_dir(project_text) or "").strip()
+        if not inferred_text or inferred_text == current_text:
+            return
+
+        inferred = Path(inferred_text)
+        if not inferred.exists():
+            return
+
+        current_entries = discover_stulz_spec_entries(current_text) if current_text else []
+        inferred_entries = discover_stulz_spec_entries(inferred)
+        if len(inferred_entries) <= len(current_entries):
+            return
+
+        # Only auto-expand a saved folder when it is actually inside the inferred
+        # project specification root. This preserves unrelated user-selected dirs.
+        if current_text:
+            try:
+                Path(current_text).resolve().relative_to(inferred.resolve())
+            except Exception:
+                return
+
+        widget._set_spec_dir_path(str(inferred))  # type: ignore[attr-defined]
+        try:
+            widget.settings.setValue("spec_dir", str(inferred))  # type: ignore[attr-defined]
+            widget.settings.sync()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
 def _patch_loaded_stulz_page() -> None:
     """Upgrade an already loaded STULZ page without touching MainWindow.
 
@@ -165,6 +215,7 @@ def _patch_loaded_stulz_page() -> None:
 
         for widget in QApplication.allWidgets():
             if isinstance(widget, page_class):
+                _restore_common_spec_dir(widget)
                 widget._ensure_manual_spec_controls()
                 widget.refresh_spec_models()
     except Exception:
