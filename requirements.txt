@@ -1,6 +1,25 @@
-PySide6>=6.7.0
-python-docx>=1.1.0
-openpyxl>=3.1.0
-num2words>=0.5.13
-pypdf>=4.0.0
-PyMuPDF>=1.24.0
+# Runtime dependencies pinned to the versions used by the current Win64 runtime.
+# Do not loosen these pins without intentionally bumping config/runtime_version.txt.
+PySide6==6.11.1
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+shiboken6==6.11.1
+python-docx==1.2.0
+lxml==6.1.1
+typing_extensions==4.16.0
+openpyxl==3.1.5
+et_xmlfile==2.0.0
+num2words==0.5.14
+docopt==0.6.2
+pypdf==6.16.0
+PyMuPDF==1.28.2
+
+# Build dependencies are pinned as well. The workflow later runs
+# `pip install pyinstaller`; because this exact version is already installed,
+# pip keeps the pinned toolchain instead of silently moving to a newer build.
+pyinstaller==6.22.0
+pyinstaller-hooks-contrib==2026.6
+altgraph==0.17.5
+packaging==26.3
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
