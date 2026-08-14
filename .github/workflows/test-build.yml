@@ -1,0 +1,64 @@
+name: Build Windows test package
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/test-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall app.py updater.py brands core gui config tools
+
+      - name: Build Windows application
+        run: |
+          pyinstaller sam_offer_generator.spec --clean --noconfirm
+
+      - name: Add editable files to portable folder
+        run: |
+          python tools/prepare_portable_release.py --dist dist/SAM-Offer-Generator
+
+      - name: Write test build info
+        shell: pwsh
+        run: |
+          $info = [ordered]@{
+            build_type = "test"
+            run_number = "${{ github.run_number }}"
+            commit = "${{ github.sha }}"
+            built_at_utc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            note = "Standalone test build. LVKUpdater is intentionally not bundled by this workflow."
+          }
+          $info | ConvertTo-Json -Depth 5 | Set-Content "dist/SAM-Offer-Generator/TEST_BUILD.json" -Encoding UTF8
+
+      - name: Upload portable test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAM-Offer-Generator-Test-Win64
+          path: dist/SAM-Offer-Generator
+          if-no-files-found: error
+          retention-days: 14
