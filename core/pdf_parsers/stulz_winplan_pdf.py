@@ -72,13 +72,7 @@ def _segment(text: str, start_marker: str, end_marker: str | None = None) -> str
 
 
 def _extract_single_label_value(section_text: str, pos: int, label: str, labels: list[str]) -> str:
-    """Extract one value occurrence, stopping at any following known label.
-
-    WinPlan can repeat the same parameter several times in one section, for
-    example once per compressor. The old parser deliberately ignored the same
-    label while looking for the end marker, so the second English label leaked
-    into the first value ("9,0 kW Electrical power consumption: 11,3 kW").
-    """
+    """Extract one value occurrence, stopping at any following known label."""
 
     start = pos + len(label)
     end = len(section_text)
@@ -101,25 +95,30 @@ def _extract_single_label_value(section_text: str, pos: int, label: str, labels:
     return cleaned
 
 
-def _extract_after_label(section_text: str, label: str, labels: list[str]) -> str:
-    """Extract all occurrences of a WinPlan parameter without leaking labels.
+def _extract_occurrence_values(section_text: str, label: str, labels: list[str]) -> list[str]:
+    """Return every value occurrence for a label, preserving duplicates and order.
 
-    Some units have multiple compressors/fans. WinPlan then repeats labels such
-    as Electrical power consumption, COP, Number and Heat rejection. Preserve
-    every distinct value and render them compactly in the same Word value cell:
-    "9,0 кВт / 11,3 кВт".
+    This is important for compressor data. WinPlan may contain two compressor
+    records where both have ``Number: 1``. Those are two separate compressors,
+    not one duplicated value that should be removed.
     """
 
     positions = [match.start() for match in re.finditer(re.escape(label), section_text)]
-    if not positions:
-        return ""
-
     values: list[str] = []
     for pos in positions:
         cleaned = _extract_single_label_value(section_text, pos, label, labels)
-        if cleaned and cleaned not in values:
+        if cleaned:
             values.append(cleaned)
+    return values
 
+
+def _extract_after_label(section_text: str, label: str, labels: list[str]) -> str:
+    """Extract all distinct occurrences for ordinary WinPlan parameters."""
+
+    values: list[str] = []
+    for cleaned in _extract_occurrence_values(section_text, label, labels):
+        if cleaned not in values:
+            values.append(cleaned)
     return " / ".join(values)
 
 
@@ -133,6 +132,59 @@ def _dedupe_rows(rows: list[StulzTechRow]) -> list[StulzTechRow]:
         seen.add(key)
         result.append(row)
     return result
+
+
+def _append_standard_section(
+    rows: list[StulzTechRow],
+    section_title: str,
+    section_text: str,
+    all_labels: list[str],
+    output_labels: list[str],
+    ru_by_source: dict[str, str],
+) -> None:
+    if section_title:
+        rows.append(StulzTechRow(section_title, "", True))
+    for label in output_labels:
+        value = _extract_after_label(section_text, label, all_labels)
+        if not value:
+            continue
+        rows.append(StulzTechRow(ru_by_source.get(label, label), value, False))
+
+
+def _append_compressor_sections(
+    rows: list[StulzTechRow],
+    compressor_text: str,
+    compressor_labels: list[str],
+    output_labels: list[str],
+    ru_by_source: dict[str, str],
+) -> None:
+    """Render each WinPlan compressor as its own technical-spec subsection.
+
+    WinPlan prints compressor properties as parallel repeated fields, e.g. two
+    ``Electrical power consumption`` values, two ``COP`` values and two
+    ``Number: 1`` values. Group values by occurrence index instead of collapsing
+    them into ``value 1 / value 2`` so Word mirrors WinPlan's logical structure.
+    """
+
+    values_by_label = {
+        label: _extract_occurrence_values(compressor_text, label, compressor_labels)
+        for label in output_labels
+    }
+    compressor_count = max((len(values) for values in values_by_label.values()), default=0)
+    if compressor_count <= 0:
+        return
+
+    for index in range(compressor_count):
+        title = "Компрессор:" if compressor_count == 1 else f"Компрессор {index + 1}:"
+        rows.append(StulzTechRow(title, "", True))
+        for label in output_labels:
+            values = values_by_label.get(label) or []
+            if index >= len(values):
+                continue
+            value = values[index]
+            if not value:
+                continue
+            rows.append(StulzTechRow(ru_by_source.get(label, label), value, False))
 
 
 def parse_stulz_winplan_specs(path: str | Path) -> list[StulzTechRow]:
@@ -149,12 +201,10 @@ def parse_stulz_winplan_specs(path: str | Path) -> list[StulzTechRow]:
     compressor_labels = ["Electrical power consumption:", "Heat rejection:", "COP:", "Number:", "Evaporating temperature:"]
     condenser_labels = ["Unit type:", "Ambient temperature:", "Sound pressure group:", "LpA (5m freefield):", "Required condenser capacity:", "Available condenser capacity:", "Difference:", "Number of fans:", "Number of condensers:", "Weight:", "Current consumption (per fan):", "Power consumption (per fan):", "Height:", "Width:", "Depth:", "Airflow:"]
 
-    sections = [
-        ("", unit_text, unit_labels, ["Unit type:", "Cooling capacity (total):", "Net sensible cooling capacity:", "Condensing temperature:", "EER:", "Sound power level:", "LpA (2m freefield):", "Airflow:", "Return air temperature:", "Return air humidity:", "Supply air temperature:", "Height:", "Width:", "Depth:", "Weight:", "Refrigerant:", "Power supply:"]),
-        ("Вентилятор:", fan_text, fan_labels, ["Fan type:", "Number:", "Max. revolutions:", "Revolutions:", "Nominal power:", "Power consumption:", "ESP external static pressure:", "Total pressure drop:", "Control voltage:"]),
-        ("Компрессор:", compressor_text, compressor_labels, ["Electrical power consumption:", "COP:", "Number:", "Heat rejection:", "Evaporating temperature:"]),
-        ("Выносной блок (Конденсор):", condenser_text, condenser_labels, ["Unit type:", "Ambient temperature:", "LpA (5m freefield):", "Required condenser capacity:", "Available condenser capacity:", "Difference:", "Number of fans:", "Number of condensers:", "Weight:", "Current consumption (per fan):", "Power consumption (per fan):", "Height:", "Width:", "Depth:", "Airflow:"]),
-    ]
+    unit_output_labels = ["Unit type:", "Cooling capacity (total):", "Net sensible cooling capacity:", "Condensing temperature:", "EER:", "Sound power level:", "LpA (2m freefield):", "Airflow:", "Return air temperature:", "Return air humidity:", "Supply air temperature:", "Height:", "Width:", "Depth:", "Weight:", "Refrigerant:", "Power supply:"]
+    fan_output_labels = ["Fan type:", "Number:", "Max. revolutions:", "Revolutions:", "Nominal power:", "Power consumption:", "ESP external static pressure:", "Total pressure drop:", "Control voltage:"]
+    compressor_output_labels = ["Electrical power consumption:", "COP:", "Number:", "Heat rejection:", "Evaporating temperature:"]
+    condenser_output_labels = ["Unit type:", "Ambient temperature:", "LpA (5m freefield):", "Required condenser capacity:", "Available condenser capacity:", "Difference:", "Number of fans:", "Number of condensers:", "Weight:", "Current consumption (per fan):", "Power consumption (per fan):", "Height:", "Width:", "Depth:", "Airflow:"]
 
     ru_by_source: dict[str, str] = {}
     for row in config:
@@ -164,13 +214,9 @@ def parse_stulz_winplan_specs(path: str | Path) -> list[StulzTechRow]:
             ru_by_source[src] = ru
 
     rows: list[StulzTechRow] = []
-    for section_title, section_text, all_labels, output_labels in sections:
-        if section_title:
-            rows.append(StulzTechRow(section_title, "", True))
-        for label in output_labels:
-            value = _extract_after_label(section_text, label, all_labels)
-            if not value:
-                continue
-            rows.append(StulzTechRow(ru_by_source.get(label, label), value, False))
+    _append_standard_section(rows, "", unit_text, unit_labels, unit_output_labels, ru_by_source)
+    _append_standard_section(rows, "Вентилятор:", fan_text, fan_labels, fan_output_labels, ru_by_source)
+    _append_compressor_sections(rows, compressor_text, compressor_labels, compressor_output_labels, ru_by_source)
+    _append_standard_section(rows, "Выносной блок (Конденсор):", condenser_text, condenser_labels, condenser_output_labels, ru_by_source)
 
     return _dedupe_rows(rows)
