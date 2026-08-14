@@ -1,8 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
+
+ROOT_DIR = Path(SPECPATH).resolve()
+APP_ICON = ROOT_DIR / 'assets' / 'app_icon.ico'
+if not APP_ICON.exists():
+    raise FileNotFoundError(f'Application icon not found: {APP_ICON}')
 
 hiddenimports = [
     'gui.main_window',
@@ -22,6 +29,7 @@ hiddenimports = [
 
     'brands.stulz',
     'brands.stulz_runtime',
+    'brands.stulz_ui_runtime',
     'brands.riello',
     'brands.dc_eltek',
     'brands.generator',
@@ -114,7 +122,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon='assets/app_icon.ico',
+    icon=str(APP_ICON),
 )
 
 # Small updater process. It is collected into the same one-dir folder.
