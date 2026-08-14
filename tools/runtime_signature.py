@@ -2,13 +2,25 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
+import sys
 from pathlib import Path
+
+# The updater must decide whether the heavy _internal runtime package really
+# changed. Hashing the built _internal directory is NOT suitable for that:
+# PyInstaller output is not byte-for-byte deterministic between builds, so the
+# hash may change even when Python and all runtime libraries are identical.
+#
+# We therefore keep an explicit, stable runtime identity in
+# config/runtime_version.txt. It is bumped only when the actual runtime stack
+# changes (Python/PySide/dependencies/build layout). The runtime ZIP itself is
+# still protected by its own SHA256 in offer-generator.json.
+RUNTIME_VERSION_FILE = Path(__file__).resolve().parents[1] / "config" / "runtime_version.txt"
+RUNTIME_VERSION_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # These folders are bundled by PyInstaller into _internal, but in our portable
 # release they are also copied next to the EXE and are updated by the small
-# App-No-Runtime module. They must not affect the runtime signature, otherwise
-# every change in config/update.json, prices, templates or icons forces the
-# 60+ MB runtime ZIP to be downloaded again.
+# App-No-Runtime module. They are ignored only for the diagnostic build hash.
 IGNORED_TOP_LEVEL_DIRS = {"assets", "config", "prices", "templates"}
 IGNORED_FILES = {"release_info.json"}
 
@@ -25,10 +37,11 @@ def is_ignored_runtime_path(relative_path: Path) -> bool:
 
 
 def directory_content_sha256(root: Path) -> str:
-    """Stable hash of true runtime contents: relative paths + file bytes, no timestamps.
+    """Diagnostic hash of built runtime contents.
 
-    Application data/config folders are intentionally ignored. They are shipped in
-    the app module and resolved from the writable app root by core.runtime_paths.
+    This value is useful in CI logs, but it must NOT be used as the updater's
+    runtime version because PyInstaller builds are not guaranteed to be
+    reproducible byte-for-byte.
     """
     root = root.resolve()
     if not root.exists() or not root.is_dir():
@@ -54,11 +67,33 @@ def directory_content_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def declared_runtime_version() -> str:
+    if not RUNTIME_VERSION_FILE.exists():
+        raise FileNotFoundError(f"Runtime version file was not found: {RUNTIME_VERSION_FILE}")
+
+    value = RUNTIME_VERSION_FILE.read_text(encoding="utf-8").strip().lower()
+    if not RUNTIME_VERSION_RE.fullmatch(value):
+        raise ValueError(
+            "config/runtime_version.txt must contain exactly one 64-character lowercase hex runtime id"
+        )
+    return value
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Print stable content SHA256 for a runtime directory.")
+    parser = argparse.ArgumentParser(
+        description="Print stable runtime version and log the actual build hash for diagnostics."
+    )
     parser.add_argument("path", type=Path)
     args = parser.parse_args()
-    print(directory_content_sha256(args.path))
+
+    # Keep validating the built runtime and log its real content hash. This lets
+    # us investigate build drift without making the updater download 70+ MB on
+    # every harmless rebuild.
+    actual_build_hash = directory_content_sha256(args.path)
+    print(f"Runtime build content SHA256 (diagnostic): {actual_build_hash}", file=sys.stderr)
+
+    # stdout is consumed by GitHub Actions as versions.runtime.
+    print(declared_runtime_version())
     return 0
 
 
