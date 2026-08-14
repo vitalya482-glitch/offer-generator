@@ -22,6 +22,7 @@ for _name in dir(_ui):
 
 _ORIGINAL_LOAD_CALC = _runtime.load_calc
 _ORIGINAL_BUILD_DESCRIPTION = _runtime._build_offer_item_description
+_ORIGINAL_BUILD_SPECIFICATION_BLOCKS = _runtime.build_specification_blocks
 
 
 def _compact(value: object) -> str:
@@ -199,6 +200,123 @@ def load_calc(context):
     return calc
 
 
+def _source_legend_hint(block: dict[str, Any]) -> str:
+    """Extract a short physical-spec label when Excel does not provide one."""
+
+    source_dir = Path(str(block.get("source_dir") or ""))
+    folder = source_dir.name
+    if folder:
+        # Common supplier folder form:
+        # SAM Trade LLP@KCELL_ASR552AS_Almaty@ASR 552 AS
+        match = re.search(r"_([^_@]+)@[^@]+$", folder)
+        if match:
+            return _plain(match.group(1))
+
+    label = _plain(block.get("source_label") or "")
+    if label:
+        return Path(label).name
+    return ""
+
+
+def _legends_for_spec_blocks(calc: Any, blocks: list[dict[str, Any]]) -> list[str]:
+    """Align duplicate-model Excel legends with physical specification blocks.
+
+    A source-folder text match is preferred when possible; otherwise duplicate
+    models are paired in their original occurrence order. The physical folder is
+    used only as a fallback when the Excel header has no usable legend.
+    """
+
+    records: list[tuple[int, str, str]] = []
+    for index, item in enumerate(getattr(calc, "items", []) or []):
+        records.append(
+            (
+                index,
+                _compact(getattr(item, "name", "")),
+                _plain(getattr(item, "legend", "")),
+            )
+        )
+
+    used: set[int] = set()
+    result: list[str] = []
+
+    for block in blocks:
+        model_key = _compact(block.get("model") or block.get("calc_model") or "")
+        source_text = _compact(
+            f"{block.get('source_label', '')} {block.get('source_dir', '')}"
+        )
+
+        candidates = [
+            record
+            for record in records
+            if record[0] not in used and (not model_key or record[1] == model_key)
+        ]
+
+        chosen: tuple[int, str, str] | None = None
+        for record in candidates:
+            legend_key = _compact(record[2])
+            if legend_key and source_text and legend_key in source_text:
+                chosen = record
+                break
+
+        if chosen is None and candidates:
+            chosen = candidates[0]
+
+        if chosen is None:
+            remaining = [record for record in records if record[0] not in used]
+            if remaining:
+                chosen = remaining[0]
+
+        legend = ""
+        if chosen is not None:
+            used.add(chosen[0])
+            legend = chosen[2]
+
+        result.append(legend or _source_legend_hint(block))
+
+    return result
+
+
+def _spec_row_for_block(
+    context: Any,
+    block: dict[str, Any],
+    block_index: int,
+) -> dict[str, Any] | None:
+    rows = [row for row in (getattr(context, "spec_models", []) or []) if row.get("enabled", True)]
+    block_key = _plain(block.get("spec_key") or "").lower()
+    if block_key:
+        for row in rows:
+            row_key = _plain(row.get("key") or "").lower()
+            if row_key and row_key == block_key:
+                return row
+
+    if 0 <= block_index < len(rows):
+        return rows[block_index]
+    return None
+
+
+def build_specification_blocks(context, calc):
+    """Add the selected Excel legend to each physical STULZ specification block."""
+
+    blocks, warnings = _ORIGINAL_BUILD_SPECIFICATION_BLOCKS(context, calc)
+    legends = _legends_for_spec_blocks(calc, blocks)
+
+    for index, (block, legend) in enumerate(zip(blocks, legends)):
+        row = _spec_row_for_block(context, block, index)
+        legend_enabled = bool(row.get("legend_enabled", True)) if row is not None else True
+        block["legend"] = legend
+        block["legend_enabled"] = legend_enabled
+
+        if not legend_enabled or not legend:
+            continue
+
+        model = _plain(block.get("model") or block.get("calc_model") or "")
+        suffix = f" — {legend}"
+        block["options_title"] = f"Опции, включенные в комплектацию кондиционеров {model}{suffix}:"
+        block["technical_specs_title"] = f"Технические характеристики кондиционеров {model}{suffix}:"
+
+    return blocks, warnings
+
+
 def _build_offer_item_description(item, block, options: dict[str, bool]) -> str:
     text = _ORIGINAL_BUILD_DESCRIPTION(item, block, options)
     legend = _plain(getattr(item, "legend", ""))
@@ -270,6 +388,11 @@ _base.load_calc = load_calc
 _runtime.load_calc = load_calc
 _ui.load_calc = load_calc
 globals()["load_calc"] = load_calc
+
+_base.build_specification_blocks = build_specification_blocks
+_runtime.build_specification_blocks = build_specification_blocks
+_ui.build_specification_blocks = build_specification_blocks
+globals()["build_specification_blocks"] = build_specification_blocks
 
 _base._build_offer_item_description = _build_offer_item_description
 _runtime._build_offer_item_description = _build_offer_item_description
