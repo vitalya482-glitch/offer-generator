@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import ast
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
@@ -10,6 +11,33 @@ ROOT_DIR = Path(SPECPATH).resolve()
 APP_ICON = ROOT_DIR / 'assets' / 'app_icon.ico'
 if not APP_ICON.exists():
     raise FileNotFoundError(f'Application icon not found: {APP_ICON}')
+
+
+def registered_brand_modules() -> list[str]:
+    """Read BRANDS from brands/registry.py without importing application code.
+
+    Brand modules are loaded dynamically through import_module(), so PyInstaller
+    cannot discover them from normal static imports. Keep the registry as the
+    single source of truth and force every registered module into the frozen EXE.
+    """
+    registry_path = ROOT_DIR / 'brands' / 'registry.py'
+    tree = ast.parse(registry_path.read_text(encoding='utf-8'), filename=str(registry_path))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == 'BRANDS' for target in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            break
+        modules: list[str] = []
+        for value in node.value.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                modules.append(value.value)
+        if modules:
+            return modules
+        break
+    raise RuntimeError(f'Could not read BRANDS registry from {registry_path}')
+
 
 hiddenimports = [
     'gui.main_window',
@@ -30,6 +58,7 @@ hiddenimports = [
     'brands.stulz',
     'brands.stulz_runtime',
     'brands.stulz_ui_runtime',
+    'brands.stulz_legend_runtime',
     'brands.riello',
     'brands.dc_eltek',
     'brands.generator',
@@ -62,12 +91,18 @@ hiddenimports = [
     'PySide6.QtWidgets',
 ]
 
+# Dynamic modules named in brands.registry are mandatory. This is more reliable
+# than package discovery for local source packages and prevents a release from
+# missing a newly introduced runtime wrapper such as stulz_legend_runtime.
+hiddenimports += registered_brand_modules()
+
 # Dynamic brand loading is used by brands.registry and STULZ also patches its
-# page at runtime. Collect these small application packages as a safety net so
-# future runtime wrappers/pages cannot silently disappear from a frozen build.
+# page at runtime. Collect these small application packages as an additional
+# safety net for helper modules that are not themselves registry targets.
 hiddenimports += collect_submodules('brands')
 hiddenimports += collect_submodules('gui.pages')
 hiddenimports += collect_submodules('core.pdf_parsers')
+hiddenimports = list(dict.fromkeys(hiddenimports))
 
 # PyInstaller sometimes misses optional imports used by these libraries in the
 # frozen EXE. Collect them explicitly so the GitHub Actions artifact runs on a
