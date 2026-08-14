@@ -5,7 +5,7 @@ from types import ModuleType
 
 
 BRANDS = {
-    "Stulz": "brands.stulz_ui_runtime",
+    "Stulz": "brands.stulz_legend_runtime",
     "Riello": "brands.riello",
     "DC Eltek": "brands.dc_eltek",
     "Generator": "brands.generator",
