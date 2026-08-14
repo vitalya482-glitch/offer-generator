@@ -232,6 +232,7 @@ jobs:
           $runtimeTarget = Join-Path $runtimeStage "SAM-Offer-Generator"
           New-Item -ItemType Directory -Path $runtimeTarget -Force | Out-Null
           Copy-Item -Path (Join-Path $dist "_internal") -Destination (Join-Path $runtimeTarget "_internal") -Recurse -Force
+          Copy-Item -Path (Join-Path $dist "SAM-Offer-Generator.exe") -Destination (Join-Path $runtimeTarget "SAM-Offer-Generator.exe") -Force
 
           $appTarget = Join-Path $appStage "SAM-Offer-Generator"
           New-Item -ItemType Directory -Path $appTarget -Force | Out-Null
@@ -321,7 +322,8 @@ jobs:
             }
             notes = @(
               "Раздельное обновление app/runtime через LVKUpdater.",
-              "Runtime скачивается только если изменился runtime content signature."
+              "Runtime скачивается только если изменился runtime content signature.",
+              "Runtime-пакет содержит совместимый SAM-Offer-Generator.exe, чтобы исключить смешивание версий EXE/PYZ и бинарных библиотек."
             )
           }
 
