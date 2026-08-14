@@ -14,12 +14,14 @@ hiddenimports = [
     'gui.calc_builder_dialog',
     'gui.pages',
     'gui.pages.stulz_page',
+    'gui.pages.stulz_page_runtime',
     'gui.pages.riello_page',
     'gui.pages.battery_page',
     'gui.pages.genset_page',
     'gui.pages.hvac_page',
 
     'brands.stulz',
+    'brands.stulz_runtime',
     'brands.riello',
     'brands.dc_eltek',
     'brands.generator',
@@ -39,6 +41,7 @@ hiddenimports = [
     'core.project_scanner',
     'core.runtime_paths',
     'core.stulz_reference',
+    'core.stulz_spec_catalog',
     'core.stulz_specification',
     'core.update_client',
     'core.utils',
@@ -50,6 +53,13 @@ hiddenimports = [
     'PySide6.QtGui',
     'PySide6.QtWidgets',
 ]
+
+# Dynamic brand loading is used by brands.registry and STULZ also patches its
+# page at runtime. Collect these small application packages as a safety net so
+# future runtime wrappers/pages cannot silently disappear from a frozen build.
+hiddenimports += collect_submodules('brands')
+hiddenimports += collect_submodules('gui.pages')
+hiddenimports += collect_submodules('core.pdf_parsers')
 
 # PyInstaller sometimes misses optional imports used by these libraries in the
 # frozen EXE. Collect them explicitly so the GitHub Actions artifact runs on a
