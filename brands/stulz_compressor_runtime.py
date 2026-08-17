@@ -129,3 +129,7 @@ _winplan.parse_stulz_winplan_specs = parse_stulz_winplan_specs
 _spec_core.parse_stulz_winplan_specs = parse_stulz_winplan_specs
 
 globals()["parse_stulz_winplan_specs"] = parse_stulz_winplan_specs
+
+# The GUI mapping layer is imported last so it patches the already constructed
+# STULZ page after the mature runtime/legend/specification hooks are installed.
+import gui.pages.stulz_calc_mapping_runtime as _calc_mapping_ui  # noqa: E402,F401
