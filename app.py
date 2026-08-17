@@ -5,6 +5,15 @@ from pathlib import Path
 
 from brands.registry import get_brand_module
 from core.models import OfferContext
+
+# Riello has two explicit GUI stages. Import the old selection page first inside
+# riello_workspace, then expose the workspace class through the legacy module so
+# gui.main_window can keep its stable import path.
+from gui.pages.riello_workspace import RielloPage as RielloWorkspacePage
+import gui.pages.riello_page as _riello_page_module
+
+_riello_page_module.RielloPage = RielloWorkspacePage
+
 from gui.main_window import run_gui
 
 
