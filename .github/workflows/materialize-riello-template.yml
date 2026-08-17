@@ -1,0 +1,69 @@
+name: Materialize Riello Word template
+
+on:
+  push:
+    branches:
+      - feature/riello-two-stage-offer
+    paths:
+      - "templates/riello/.riello_template_parts/**"
+      - ".github/workflows/materialize-riello-template.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/riello-two-stage-offer
+
+      - name: Rebuild and validate Riello Word template
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="templates/riello/Offer_Company_17-08-26_TAGGED_UPS.docx"
+          cat templates/riello/.riello_template_parts/part*.txt | tr -d '\r\n' | base64 --decode > "$target"
+          echo "Template SHA256: $(sha256sum "$target" | awk '{print $1}')"
+          test "$(sha256sum "$target" | awk '{print $1}')" = "3dfa2c55cb4f313e3f4501afc63bf780c11d9f3184625a462bef9aa3e9a716dc"
+
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          from xml.etree import ElementTree as ET
+
+          path = Path("templates/riello/Offer_Company_17-08-26_TAGGED_UPS.docx")
+          with ZipFile(path) as z:
+              xml = z.read("word/document.xml")
+          root = ET.fromstring(xml)
+          ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+          text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+          required = {
+              "{{offer_date}}", "{{offer_version}}", "{{client_company_full}}",
+              "{{item_no}}", "{{item_name}}", "{{item_qty}}",
+              "{{item_unit_price}}", "{{item_total}}", "{{grand_total}}",
+              "{{payment_terms}}", "{{delivery_time}}", "{{delivery_terms}}",
+              "{{signer_name}}", "{{manager_name}}",
+          }
+          missing = sorted(tag for tag in required if tag not in text)
+          if missing:
+              raise SystemExit(f"Missing Riello template tags: {missing}")
+          print("Riello Word template tags validated")
+          PY
+
+      - name: Commit real DOCX to feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add templates/riello/Offer_Company_17-08-26_TAGGED_UPS.docx
+          if git diff --cached --quiet; then
+            echo "Template already materialized"
+            exit 0
+          fi
+          git commit -m "Add bundled Riello Word offer template"
+          git push origin HEAD:feature/riello-two-stage-offer
