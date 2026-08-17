@@ -24,16 +24,19 @@ def _fit_text_edit(widget: QTextEdit) -> None:
         widget.setLineWrapMode(QTextEdit.WidgetWidth)
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # documentSize() reflects wrapping for the current viewport width.
+        # Force wrapping to the current visible width, then size the widget to the
+        # resulting document height. This keeps every line visible without an
+        # internal scrollbar, even when the window is resized narrower/wider.
         document = widget.document()
-        document.adjustSize()
+        viewport_width = max(120, widget.viewport().width())
+        document.setTextWidth(viewport_width)
         document_height = float(document.documentLayout().documentSize().height())
         margins = widget.contentsMargins()
         extra = (
             widget.frameWidth() * 2
             + margins.top()
             + margins.bottom()
-            + 12
+            + 14
         )
         wanted = max(90, int(document_height + extra + 0.999))
         if abs(widget.height() - wanted) > 2:
@@ -78,7 +81,9 @@ def _ensure_full_content_layout(self) -> None:
 
         resize_filter = _PreviewResizeFilter(preview)
         preview.installEventFilter(resize_filter)
-        preview.document().contentsChanged.connect(lambda: QTimer.singleShot(0, lambda: _fit_text_edit(preview)))
+        preview.document().contentsChanged.connect(
+            lambda: QTimer.singleShot(0, lambda: _fit_text_edit(preview))
+        )
         self._stulz_preview_resize_filter = resize_filter
 
     position_table = getattr(self, "_stulz_calc_position_table", None)
