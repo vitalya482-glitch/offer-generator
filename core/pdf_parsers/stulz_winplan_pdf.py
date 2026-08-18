@@ -25,23 +25,28 @@ def extract_pdf_text(path: str | Path) -> str:
     #   "Fan type: R3G595 0,5Power consumption: kW"
     #   "Fan type: R3GPower consumption: 595 0,5 kW"
     # Both must become: "Fan type: R3G595 Power consumption: 0,5 kW".
+    #
+    # Keep numeric captures on the same physical PDF-text line. Using ``\s``
+    # here allowed an Italian SXL WinPlan value to swallow the following line,
+    # producing e.g. "Heat rejection: 8,2\n kWCOP...".
+    number_text = r"[0-9][0-9 \t,.]*"
     text = re.sub(
-        r"Fan type:\s*([A-Z]+\d+[A-Z]*\d{2,4})\s+([0-9][0-9\s,.]*)Power consumption:\s*kW",
+        rf"Fan type:\s*([A-Z]+\d+[A-Z]*\d{{2,4}})[ \t]+({number_text})Power consumption:\s*kW",
         r"Fan type: \1 Power consumption: \2 kW",
         text,
         flags=re.IGNORECASE,
     )
     text = re.sub(
-        r"Fan type:\s*([A-Z]+\d+[A-Z]*)Power consumption:\s*(\d{2,4})\s+([0-9][0-9\s,.]*)\s*kW",
+        rf"Fan type:\s*([A-Z]+\d+[A-Z]*)Power consumption:\s*(\d{{2,4}})[ \t]+({number_text})[ \t]*kW",
         r"Fan type: \1\2 Power consumption: \3 kW",
         text,
         flags=re.IGNORECASE,
     )
-    text = re.sub(r"([0-9][0-9\s,.]*)Power consumption:\s*kW", r"Power consumption: \1 kW", text)
-    text = re.sub(r"V([0-9][0-9\s,.]*)Control voltage:", r"Control voltage: \1 V", text)
-    text = re.sub(r"Heat rejection:\s*kW([0-9][0-9\s,.]*)", r"Heat rejection: \1 kW", text)
-    text = re.sub(r"kW/kW([0-9][0-9\s,.]*)COP:", r"COP: \1 kW/kW", text)
-    text = re.sub(r"(?<![A-Za-z])([0-9][0-9\s,.]*)Number:", r"Number: \1", text)
+    text = re.sub(rf"({number_text})Power consumption:\s*kW", r"Power consumption: \1 kW", text)
+    text = re.sub(rf"V({number_text})Control voltage:", r"Control voltage: \1 V", text)
+    text = re.sub(rf"Heat rejection:\s*kW\s*({number_text})", r"Heat rejection: \1 kW", text)
+    text = re.sub(rf"kW/kW\s*({number_text})COP:", r"COP: \1 kW/kW", text)
+    text = re.sub(rf"(?<![A-Za-z])({number_text})Number:", r"Number: \1", text)
     return text
 
 
@@ -142,13 +147,21 @@ def _append_standard_section(
     output_labels: list[str],
     ru_by_source: dict[str, str],
 ) -> None:
-    if section_title:
-        rows.append(StulzTechRow(section_title, "", True))
+    # Build the data rows first. Italian SXL WinPlan files may not have a
+    # separate "Condenser" section at all; do not render an empty condenser
+    # heading merely because the generic parser knows that section name.
+    section_rows: list[StulzTechRow] = []
     for label in output_labels:
         value = _extract_after_label(section_text, label, all_labels)
         if not value:
             continue
-        rows.append(StulzTechRow(ru_by_source.get(label, label), value, False))
+        section_rows.append(StulzTechRow(ru_by_source.get(label, label), value, False))
+
+    if not section_rows:
+        return
+    if section_title:
+        rows.append(StulzTechRow(section_title, "", True))
+    rows.extend(section_rows)
 
 
 def _append_compressor_sections(
@@ -196,15 +209,129 @@ def parse_stulz_winplan_specs(path: str | Path) -> list[StulzTechRow]:
     compressor_text = _segment(text, "Compressor (Data per compressor)", "Condenser")
     condenser_text = _segment(text, "Condenser", "Noise data")
 
-    unit_labels = ["Unit type:", "Cooling capacity (total):", "Cooling capacity (sensible):", "Net total cooling capacity:", "Net sensible cooling capacity:", "Condensing temperature:", "EER:", "AER:", "Sound power level:", "LpA (2m freefield):", "Number of refrigerant circuits:", "Number of compressors:", "Total power consumption:", "Airflow:", "Air velocity:", "Return air temperature:", "Return air humidity:", "Supply air temperature:", "Altitude above sea level:", "Height:", "Width:", "Depth:", "Weight:", "Belt type:", "Refrigerant:", "Power supply:"]
-    fan_labels = ["Fan type:", "Number:", "Max. revolutions:", "Revolutions:", "Nominal power:", "Power consumption:", "ESP external static pressure:", "Total pressure drop:", "Control voltage:"]
-    compressor_labels = ["Electrical power consumption:", "Heat rejection:", "COP:", "Number:", "Evaporating temperature:"]
-    condenser_labels = ["Unit type:", "Ambient temperature:", "Sound pressure group:", "LpA (5m freefield):", "Required condenser capacity:", "Available condenser capacity:", "Difference:", "Number of fans:", "Number of condensers:", "Weight:", "Current consumption (per fan):", "Power consumption (per fan):", "Height:", "Width:", "Depth:", "Airflow:"]
+    unit_labels = [
+        "Unit type:",
+        "Cooling capacity (total):",
+        "Cooling capacity (sensible):",
+        "Net total cooling capacity:",
+        "Net sensible cooling capacity:",
+        "Condensing temperature:",
+        "Ambient temperature:",
+        "EER:",
+        "AER:",
+        "Sound power level:",
+        "LpA (1m freefield):",
+        "LpA (2m freefield):",
+        "Number of refrigerant circuits:",
+        "Number of compressors:",
+        "Total power consumption:",
+        "Airflow:",
+        "Air velocity:",
+        "Return air temperature:",
+        "Return air humidity:",
+        "Supply air temperature:",
+        "Altitude above sea level:",
+        "Height:",
+        "Width:",
+        "Depth:",
+        "Weight:",
+        "Belt type:",
+        "Refrigerant:",
+        "Power supply:",
+    ]
+    fan_labels = [
+        "Fan type:",
+        "Number:",
+        "Max. revolutions:",
+        "Revolutions:",
+        "Nominal power:",
+        "Power consumption:",
+        "ESP external static pressure:",
+        "Total pressure drop:",
+        "Control voltage:",
+    ]
+    compressor_labels = [
+        "Electrical power consumption:",
+        "Heat rejection:",
+        "COP:",
+        "Number:",
+        "Evaporating temperature:",
+    ]
+    condenser_labels = [
+        "Unit type:",
+        "Ambient temperature:",
+        "Sound pressure group:",
+        "LpA (5m freefield):",
+        "Required condenser capacity:",
+        "Available condenser capacity:",
+        "Difference:",
+        "Number of fans:",
+        "Number of condensers:",
+        "Weight:",
+        "Current consumption (per fan):",
+        "Power consumption (per fan):",
+        "Height:",
+        "Width:",
+        "Depth:",
+        "Airflow:",
+    ]
 
-    unit_output_labels = ["Unit type:", "Cooling capacity (total):", "Net sensible cooling capacity:", "Condensing temperature:", "EER:", "Sound power level:", "LpA (2m freefield):", "Airflow:", "Return air temperature:", "Return air humidity:", "Supply air temperature:", "Height:", "Width:", "Depth:", "Weight:", "Refrigerant:", "Power supply:"]
-    fan_output_labels = ["Fan type:", "Number:", "Max. revolutions:", "Revolutions:", "Nominal power:", "Power consumption:", "ESP external static pressure:", "Total pressure drop:", "Control voltage:"]
-    compressor_output_labels = ["Electrical power consumption:", "COP:", "Number:", "Heat rejection:", "Evaporating temperature:"]
-    condenser_output_labels = ["Unit type:", "Ambient temperature:", "LpA (5m freefield):", "Required condenser capacity:", "Available condenser capacity:", "Difference:", "Number of fans:", "Number of condensers:", "Weight:", "Current consumption (per fan):", "Power consumption (per fan):", "Height:", "Width:", "Depth:", "Airflow:"]
+    unit_output_labels = [
+        "Unit type:",
+        "Cooling capacity (total):",
+        "Net sensible cooling capacity:",
+        "Ambient temperature:",
+        "Condensing temperature:",
+        "EER:",
+        "Sound power level:",
+        "LpA (1m freefield):",
+        "LpA (2m freefield):",
+        "Airflow:",
+        "Return air temperature:",
+        "Return air humidity:",
+        "Supply air temperature:",
+        "Height:",
+        "Width:",
+        "Depth:",
+        "Weight:",
+        "Refrigerant:",
+        "Power supply:",
+    ]
+    fan_output_labels = [
+        "Fan type:",
+        "Number:",
+        "Max. revolutions:",
+        "Revolutions:",
+        "Nominal power:",
+        "Power consumption:",
+        "ESP external static pressure:",
+        "Total pressure drop:",
+        "Control voltage:",
+    ]
+    compressor_output_labels = [
+        "Electrical power consumption:",
+        "COP:",
+        "Number:",
+        "Heat rejection:",
+        "Evaporating temperature:",
+    ]
+    condenser_output_labels = [
+        "Unit type:",
+        "Ambient temperature:",
+        "LpA (5m freefield):",
+        "Required condenser capacity:",
+        "Available condenser capacity:",
+        "Difference:",
+        "Number of fans:",
+        "Number of condensers:",
+        "Weight:",
+        "Current consumption (per fan):",
+        "Power consumption (per fan):",
+        "Height:",
+        "Width:",
+        "Depth:",
+        "Airflow:",
+    ]
 
     ru_by_source: dict[str, str] = {}
     for row in config:
@@ -213,10 +340,21 @@ def parse_stulz_winplan_specs(path: str | Path) -> list[StulzTechRow]:
         if src and src not in ru_by_source:
             ru_by_source[src] = ru
 
+    # Italian SXL data sheets use a 1 m LpA label, while the editable reference
+    # historically contained only the German 2 m variant.
+    ru_by_source.setdefault("LpA (1m freefield):", "Уровень звукового давления (на расстоянии 1 м):")
+
     rows: list[StulzTechRow] = []
     _append_standard_section(rows, "", unit_text, unit_labels, unit_output_labels, ru_by_source)
     _append_standard_section(rows, "Вентилятор:", fan_text, fan_labels, fan_output_labels, ru_by_source)
     _append_compressor_sections(rows, compressor_text, compressor_labels, compressor_output_labels, ru_by_source)
-    _append_standard_section(rows, "Выносной блок (Конденсор):", condenser_text, condenser_labels, condenser_output_labels, ru_by_source)
+    _append_standard_section(
+        rows,
+        "Выносной блок (Конденсор):",
+        condenser_text,
+        condenser_labels,
+        condenser_output_labels,
+        ru_by_source,
+    )
 
     return _dedupe_rows(rows)
