@@ -100,7 +100,7 @@ def preview(context) -> str:
         f"Строк тех. характеристик: {sum(len(block.get('technical_specs', [])) for block in spec_blocks)}",
         f"Модели: {', '.join(models) if models else '-'}",
         f"Количество: {_FORMAT_QTY(calc.quantity)}",
-        f"Сумма: {_FORMAT_MONEY(calc.total_price)} {_CURRENCY_NAME(calc.currency)}",
+        f"Общая стоимость: {_FORMAT_MONEY(calc.total_price)} {str(calc.currency or '').upper()}",
     ]
 
     if drawing_files:
