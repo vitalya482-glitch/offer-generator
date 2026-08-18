@@ -29,6 +29,7 @@ def smoke_test_stulz_runtime() -> None:
         sys.path.insert(0, root_text)
 
     importlib.import_module('gui.pages.stulz_page')
+    importlib.import_module('gui.pages.stulz_offer_options_runtime')
     runtime = importlib.import_module('brands.stulz_full_content_runtime')
     required = ('load_calc', 'preview', 'make_offer', 'build_specification_blocks')
     missing = [name for name in required if not callable(getattr(runtime, name, None))]
@@ -76,6 +77,9 @@ hiddenimports = [
     'gui.pages',
     'gui.pages.stulz_page',
     'gui.pages.stulz_page_runtime',
+    'gui.pages.stulz_full_content_runtime',
+    'gui.pages.stulz_currency_runtime',
+    'gui.pages.stulz_offer_options_runtime',
     'gui.pages.riello_page',
     'gui.pages.battery_page',
     'gui.pages.genset_page',
@@ -85,6 +89,9 @@ hiddenimports = [
     'brands.stulz_runtime',
     'brands.stulz_ui_runtime',
     'brands.stulz_legend_runtime',
+    'brands.stulz_compressor_runtime',
+    'brands.stulz_position_selection_runtime',
+    'brands.stulz_full_content_runtime',
     'brands.riello',
     'brands.dc_eltek',
     'brands.generator',
