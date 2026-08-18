@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 env:
-  LVK_UPDATER_VERSION: "0.3.0"
+  LVK_UPDATER_VERSION: "0.3.1"
   LVK_UPDATER_REPOSITORY: "vitalya482-glitch/LVK-Updater"
   LVK_UPDATER_ASSET_NAME: "LVKUpdater-win-x64.zip"
 
@@ -288,6 +288,13 @@ jobs:
           $runtimeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $runtimeZip).Hash.ToLowerInvariant()
           $updaterSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $updaterZip).Hash.ToLowerInvariant()
 
+          $commitSha = "${{ github.sha }}".Trim()
+          $commitShort = if ($commitSha.Length -ge 7) { $commitSha.Substring(0, 7) } else { $commitSha }
+          $commitMessage = (git log -1 --pretty=%s).Trim()
+          if ([string]::IsNullOrWhiteSpace($commitMessage)) {
+            $commitMessage = "Обновление приложения"
+          }
+
           $manifest = [ordered]@{
             schemaVersion = 2
             appId = "offer-generator"
@@ -321,9 +328,8 @@ jobs:
               }
             }
             notes = @(
-              "Раздельное обновление app/runtime через LVKUpdater.",
-              "Runtime скачивается только если изменился runtime content signature.",
-              "Runtime-пакет содержит совместимый SAM-Offer-Generator.exe, чтобы исключить смешивание версий EXE/PYZ и бинарных библиотек."
+              $commitMessage,
+              "Коммит: $commitShort"
             )
           }
 
