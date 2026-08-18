@@ -5,6 +5,7 @@ import sys
 
 from PySide6.QtWidgets import (
     QApplication,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -30,6 +31,20 @@ def _settings_bool(value: object, default: bool = True) -> bool:
     return default
 
 
+def _find_files_grid(self) -> QGridLayout | None:
+    client_edit = getattr(self, "client_edit", None)
+    card = client_edit.parentWidget() if client_edit is not None else None
+    layout = card.layout() if card is not None else None
+    if layout is None:
+        return None
+
+    for index in range(layout.count()):
+        child = layout.itemAt(index).layout()
+        if isinstance(child, QGridLayout):
+            return child
+    return None
+
+
 def payment_terms_value(self) -> str:
     edit = getattr(self, "payment_terms_edit", None)
     value = edit.text().strip() if edit is not None else ""
@@ -48,12 +63,8 @@ def _ensure_payment_control(self) -> None:
         return
 
     currency_combo = getattr(self, "currency_combo", None)
-    if currency_combo is None:
-        return
-
-    parent = currency_combo.parentWidget()
-    grid = parent.layout() if parent is not None else None
-    if grid is None or not hasattr(grid, "itemAtPosition"):
+    grid = _find_files_grid(self)
+    if currency_combo is None or grid is None:
         return
 
     # Currency was inserted by stulz_currency_runtime at row 3, column 1.
@@ -63,6 +74,7 @@ def _ensure_payment_control(self) -> None:
     if item is None or item.widget() is not currency_combo:
         return
 
+    parent = currency_combo.parentWidget()
     grid.removeWidget(currency_combo)
 
     container = QWidget(parent)
