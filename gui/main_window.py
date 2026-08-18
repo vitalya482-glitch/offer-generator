@@ -400,14 +400,6 @@ def run_gui() -> None:
             self.brand_tabs = QTabWidget()
             self.brand_tabs.setObjectName("BrandTabs")
             self.brand_tabs.setDocumentMode(True)
-            self.brand_tabs.setStyleSheet(
-                """
-                QTabBar::tab:selected {
-                    color: #D71920;
-                    font-weight: 800;
-                }
-                """
-            )
 
             self.stulz_page = StulzPage(self)
             self.riello_page = RielloPage(self)
@@ -488,12 +480,31 @@ def run_gui() -> None:
             super().resizeEvent(event)
             self._apply_responsive_metrics()
 
+        def _apply_brand_tabs_style(self) -> None:
+            if not hasattr(self, "brand_tabs"):
+                return
+            self.brand_tabs.setStyleSheet(
+                """
+                QTabWidget#BrandTabs QTabBar::tab {
+                    color: #344054;
+                }
+                QTabWidget#BrandTabs QTabBar::tab:selected {
+                    color: #D71920;
+                    font-weight: 800;
+                    border-bottom: 2px solid #D71920;
+                }
+                """
+            )
+
         def _apply_style(self, scale: float | None = None) -> None:
             scale = scale if scale is not None else self._ui_scale()
             app = QApplication.instance()
             if app:
                 app.setFont(QFont("Segoe UI", max(9, int(10 * scale))))
             self.setStyleSheet(stylesheet(scale))
+            # Apply the brand-tab override last so the selected tab stays red
+            # even after the global responsive stylesheet is refreshed.
+            self._apply_brand_tabs_style()
 
         def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
             for page in self._all_brand_pages():
