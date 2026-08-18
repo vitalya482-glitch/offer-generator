@@ -81,17 +81,6 @@ def stylesheet(scale: float) -> str:
         QScrollBar::sub-page:vertical {{
             background: transparent;
         }}
-        QTabWidget::pane {{
-            border: none;
-        }}
-        QTabBar::tab {{
-            color: #344054;
-        }}
-        QTabBar::tab:selected {{
-            color: #D71920;
-            font-weight: 800;
-            border-bottom: {px(2)}px solid #D71920;
-        }}
         #PageTitle {{ color: #171A1F; font-size: {px(28)}px; font-weight: 800; }}
         #PageSubtitle {{ color: #667085; font-size: {px(13)}px; }}
         #Card {{ background: #FFFFFF; border: 1px solid #E7EAF0; border-radius: {px(18)}px; }}
