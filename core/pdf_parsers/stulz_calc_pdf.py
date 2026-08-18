@@ -10,8 +10,6 @@ from pypdf import PdfReader
 from core.stulz_reference import load_stulz_options, load_missing_options, save_missing_options
 
 
-
-
 @dataclass
 class StulzCalcTotals:
     model: str = ""
@@ -32,8 +30,15 @@ class StulzOptionRow:
     translated: bool = True
 
 
-CODE_RE = r"(?:\d{6,8}|[A-ZА-Я]{1,3}\d{4,8})"
-ROW_START_RE = re.compile(rf"^\s*(?P<qty>\d+(?:[\.,]\d+)?)\s+(?P<code>{CODE_RE})\s+(?P<name>.+?)\s*$", re.IGNORECASE)
+# STULZ factories use several option-code families. German Calc files usually
+# contain numeric codes, while the Italian factory uses codes such as
+# ACTKPDC1010HM, PSC and WinterKit_05. Currency abbreviations are explicitly
+# excluded so price/footer rows cannot be mistaken for options.
+CODE_RE = r"(?!(?:EUR|USD|KZT)\b)(?:\d{6,8}|[A-ZА-Я][A-ZА-Я0-9_+\-]{1,30})"
+ROW_START_RE = re.compile(
+    rf"^\s*(?P<qty>\d+(?:[\.,]\d+)?)\s+(?P<code>{CODE_RE})\s+(?P<name>.+?)\s*$",
+    re.IGNORECASE,
+)
 WEIRD_ROW_RE = re.compile(
     rf"(?ms)^\s*(?P<qty>\d+(?:[\.,]\d+)?)\s+[^\n]*?\b(?:EUR|USD|KZT)\s*(?P<code>{CODE_RE})\s+(?P<name>.*?)(?=\n\s*\d+(?:[\.,]\d+)?\s+[^\n]*?\b(?:EUR|USD|KZT)\s*{CODE_RE}\s+|\nTotal per device:|\nQuantity:|\Z)",
     re.IGNORECASE,
@@ -131,6 +136,8 @@ def _parse_weird_price_before_code_rows(text: str) -> Iterable[tuple[str, str, s
     for match in WEIRD_ROW_RE.finditer(text):
         qty = match.group("qty").replace(",", ".").strip()
         code = match.group("code").strip()
+        if code.upper() in {"EUR", "USD", "KZT"}:
+            continue
         name = _strip_price_tail(match.group("name"))
         name = re.sub(r"\b(?:EUR|USD|KZT)\b.*$", "", name, flags=re.IGNORECASE).strip()
         if code and name and "total per device" not in name.lower():
@@ -171,6 +178,8 @@ def _parse_normal_rows(text: str) -> Iterable[tuple[str, str, str]]:
         rows.append(current)
 
     for qty, code, parts in rows:
+        if code.upper() in {"EUR", "USD", "KZT"}:
+            continue
         name = _strip_price_tail(" ".join(parts))
         name = re.sub(r"\b(?:EUR|USD|KZT)\b.*$", "", name, flags=re.IGNORECASE).strip()
         if code and name and "total per device" not in name.lower():
@@ -237,6 +246,7 @@ def parse_stulz_calc_options(path: str | Path, equipment_qty: float | int = 1) -
 
     return result
 
+
 MONEY_RE = re.compile(r"(?P<amount>\d[\d\s\u00a0]*[\.,]\d{2})\s*(?P<currency>EUR|USD|KZT)", re.IGNORECASE)
 
 
@@ -249,22 +259,59 @@ def _parse_money_value(value: str) -> float | None:
 
 
 def _fmt_model_from_code_row(text: str) -> str:
-    # Main equipment row can be extracted in different orders by PDF readers:
-    # 1401862 ASD 211 A 26 860,00 EUR ...
-    # ASD 211 A1401862 9 401,00 EUR ...
-    code_re = r"\b\d{6,8}\b"
+    """Extract the main equipment model from German and Italian STULZ Calc PDFs.
+
+    Common German text layers look like:
+        1401862 ASD 211 A 26 860,00 EUR
+        ASD 211 A1401862 9 401,00 EUR
+
+    Italian StulzSelect PDFs use an alphanumeric article code and may glue it
+    directly to a numeric model variant:
+        A02567 SXL 60 0 14 050,00 EUR
+        SXL 60 0A02567 4 917,50 EUR
+    """
+
+    equipment_code_re = r"(?:\d{6,8}|[A-Z]\d{4,8})"
     money_re = r"\d[\d\s\u00a0]*[\.,]\d{2}\s*(?:EUR|USD|KZT)"
+    model_re = r"[A-Z]{2,6}\s*\d{2,4}(?:\s*(?:[A-Z]{1,3}|\d{1,2}))?"
+
     patterns = (
-        re.compile(rf"(?m)^\s*{code_re}\s+(?P<model>.+?)\s+{money_re}", re.IGNORECASE),
-        re.compile(r"(?m)^\s*(?P<model>[A-Z]{2,5}\s*\d{2,4}\s*[A-Z]{0,3})\s*\d{6,8}\s+", re.IGNORECASE),
+        # Code first: A02567 SXL 60 0 ... / 1401862 ASD 211 A ...
+        re.compile(
+            rf"(?m)^\s*(?:{equipment_code_re})\s+(?P<model>{model_re})\s+{money_re}",
+            re.IGNORECASE,
+        ),
+        # Model first; code may be attached: SXL 60 0A02567 ... / ASD 211 A1401862 ...
+        re.compile(
+            rf"(?m)^\s*(?P<model>{model_re})\s*(?:{equipment_code_re})\s+{money_re}",
+            re.IGNORECASE,
+        ),
+        # Compatibility fallback for text layers that separate the model/code
+        # correctly but scramble the first price column.
+        re.compile(
+            rf"(?m)^\s*(?P<model>{model_re})\s*(?:{equipment_code_re})\s+",
+            re.IGNORECASE,
+        ),
     )
+
     for pattern in patterns:
         for match in pattern.finditer(text):
             model = _clean_text(match.group("model"))
             if not model:
                 continue
             low = model.lower()
-            if any(skip in low for skip in ("controller", "condenser", "display", "cable", "power supply", "shutdown", "unit-base")):
+            if any(
+                skip in low
+                for skip in (
+                    "controller",
+                    "condenser",
+                    "display",
+                    "cable",
+                    "power supply",
+                    "shutdown",
+                    "unit-base",
+                )
+            ):
                 continue
             return model
     return ""
@@ -292,7 +339,6 @@ def _final_star_amount(text: str) -> tuple[float, str] | None:
             if value is not None:
                 return value, match.group("currency").upper()
     return None
-
 
 
 def parse_stulz_calc_totals(path: str | Path) -> StulzCalcTotals:
