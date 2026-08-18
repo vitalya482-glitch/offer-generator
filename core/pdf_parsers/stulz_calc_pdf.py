@@ -132,11 +132,25 @@ def _remember_missing_option(code: str, source_name: str) -> None:
     save_missing_options(missing)
 
 
+def _looks_like_option_code(code: str) -> bool:
+    """Reject ordinary prose tokens while accepting factory-specific option codes."""
+
+    raw = (code or "").strip()
+    if not raw or raw.upper() in {"EUR", "USD", "KZT"}:
+        return False
+    # Numeric/alphanumeric/underscore codes are unambiguous:
+    # 1401862, ACTKPDC1010HM, WinterKit_05.
+    if re.search(r"[0-9_+\-]", raw):
+        return True
+    # A few Italian options use a short pure-uppercase code, e.g. PSC.
+    return raw.isupper() and 2 <= len(raw) <= 12
+
+
 def _parse_weird_price_before_code_rows(text: str) -> Iterable[tuple[str, str, str]]:
     for match in WEIRD_ROW_RE.finditer(text):
         qty = match.group("qty").replace(",", ".").strip()
         code = match.group("code").strip()
-        if code.upper() in {"EUR", "USD", "KZT"}:
+        if not _looks_like_option_code(code):
             continue
         name = _strip_price_tail(match.group("name"))
         name = re.sub(r"\b(?:EUR|USD|KZT)\b.*$", "", name, flags=re.IGNORECASE).strip()
@@ -178,7 +192,7 @@ def _parse_normal_rows(text: str) -> Iterable[tuple[str, str, str]]:
         rows.append(current)
 
     for qty, code, parts in rows:
-        if code.upper() in {"EUR", "USD", "KZT"}:
+        if not _looks_like_option_code(code):
             continue
         name = _strip_price_tail(" ".join(parts))
         name = re.sub(r"\b(?:EUR|USD|KZT)\b.*$", "", name, flags=re.IGNORECASE).strip()
