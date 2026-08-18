@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import ast
+import importlib
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
@@ -11,6 +13,30 @@ ROOT_DIR = Path(SPECPATH).resolve()
 APP_ICON = ROOT_DIR / 'assets' / 'app_icon.ico'
 if not APP_ICON.exists():
     raise FileNotFoundError(f'Application icon not found: {APP_ICON}')
+
+
+def smoke_test_stulz_runtime() -> None:
+    """Fail the Windows build if the final STULZ runtime chain cannot import.
+
+    STULZ is assembled from several runtime wrappers. PyInstaller can discover
+    those modules statically even when their Python import chain is broken, so a
+    normal executable build is not sufficient to catch circular/re-export
+    mistakes. Import the same top-level registry target used by the application
+    before Analysis starts and verify its generation API is present.
+    """
+    root_text = str(ROOT_DIR)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+
+    importlib.import_module('gui.pages.stulz_page')
+    runtime = importlib.import_module('brands.stulz_full_content_runtime')
+    required = ('load_calc', 'preview', 'make_offer', 'build_specification_blocks')
+    missing = [name for name in required if not callable(getattr(runtime, name, None))]
+    if missing:
+        raise RuntimeError(f'STULZ runtime smoke test failed; missing callables: {missing}')
+
+
+smoke_test_stulz_runtime()
 
 
 def registered_brand_modules() -> list[str]:
