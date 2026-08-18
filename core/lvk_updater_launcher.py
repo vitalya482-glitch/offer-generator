@@ -7,6 +7,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ class LVKUpdaterError(RuntimeError):
 
 
 _active_updater_process: subprocess.Popen | None = None
+_BUNDLED_UPDATER_ARCHIVE = "LVKUpdater-win-x64.zip"
+_BUNDLED_UPDATER_EXE = "LVKUpdater.exe"
 
 
 def app_dir() -> Path:
@@ -23,6 +26,54 @@ def app_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[1]
+
+
+def _refresh_bundled_lvk_updater(root: Path) -> None:
+    """Refresh LVKUpdater.exe from the bundled ZIP when it changed.
+
+    The running updater cannot overwrite itself during an application update.
+    The app package still receives the new LVKUpdater ZIP, so on the next app
+    start/check we can safely replace the updater before launching it.
+
+    This is intentionally best-effort: a missing/corrupt ZIP must not disable an
+    otherwise working installed updater.
+    """
+    archive = root / _BUNDLED_UPDATER_ARCHIVE
+    target = root / _BUNDLED_UPDATER_EXE
+    if not archive.exists() or not archive.is_file():
+        return
+
+    temp_target = root / f"{_BUNDLED_UPDATER_EXE}.new"
+    try:
+        with zipfile.ZipFile(archive, "r") as zf:
+            member = next(
+                (
+                    name
+                    for name in zf.namelist()
+                    if Path(name.replace("\\", "/")).name.lower() == _BUNDLED_UPDATER_EXE.lower()
+                ),
+                None,
+            )
+            if not member:
+                return
+            payload = zf.read(member)
+
+        if target.exists() and target.is_file():
+            try:
+                if target.read_bytes() == payload:
+                    return
+            except Exception:
+                pass
+
+        temp_target.write_bytes(payload)
+        os.replace(temp_target, target)
+    except Exception:
+        # Keep the already installed updater usable if the bundled copy cannot
+        # be refreshed for any reason.
+        try:
+            temp_target.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def find_lvk_updater(root: Path | None = None) -> Path:
@@ -221,6 +272,7 @@ def start_lvk_update_check() -> None:
         return
 
     root = app_dir()
+    _refresh_bundled_lvk_updater(root)
     updater = find_lvk_updater(root)
     config = _prepare_resolved_config(root, find_update_config(root))
 
