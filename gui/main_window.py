@@ -400,6 +400,14 @@ def run_gui() -> None:
             self.brand_tabs = QTabWidget()
             self.brand_tabs.setObjectName("BrandTabs")
             self.brand_tabs.setDocumentMode(True)
+            self.brand_tabs.setStyleSheet(
+                """
+                QTabBar::tab:selected {
+                    color: #D71920;
+                    font-weight: 800;
+                }
+                """
+            )
 
             self.stulz_page = StulzPage(self)
             self.riello_page = RielloPage(self)
