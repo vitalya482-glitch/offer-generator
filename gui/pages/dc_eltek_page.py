@@ -132,6 +132,10 @@ class DcEltekPage(QWidget):
         self.generate_btn.clicked.connect(self.generate_offer)
         buttons.addWidget(self.generate_btn, 2)
 
+        self.refresh_btn = QPushButton("Обновить")
+        self.refresh_btn.clicked.connect(self.refresh_data)
+        buttons.addWidget(self.refresh_btn, 1)
+
         self.open_offer_btn = QPushButton("Открыть КП")
         self.open_offer_btn.clicked.connect(self.open_generated_offer)
         buttons.addWidget(self.open_offer_btn, 1)
@@ -301,6 +305,13 @@ class DcEltekPage(QWidget):
         self.remember_values()
         self._update_open_buttons()
 
+    def refresh_data(self) -> None:
+        self._load_sheet_names(initial=False)
+        self._auto_detect_currency(force=True)
+        self.remember_values()
+        self._update_preview()
+        self._update_open_buttons()
+
     def _load_sheet_names(self, initial: bool) -> None:
         current_sheet = self._saved("dc_eltek_sheet_name", "") if initial else self.sheet_combo.currentText().strip()
         self.sheet_combo.blockSignals(True)
@@ -401,58 +412,54 @@ class DcEltekPage(QWidget):
             missing.append("Excel calc")
         if not data["sheet_name"]:
             missing.append("лист для КП")
-        if not data["currency"]:
-            QMessageBox.warning(
-                self,
-                "DC Eltek",
-                "Валюта не указана в расчёте. Выберите валюту вручную перед формированием КП.",
-            )
-            return
         if not data["template_path"]:
             missing.append("шаблон КП")
         if not data["output_dir"]:
             missing.append("путь сохранения КП")
         if missing:
-            QMessageBox.warning(self, "DC Eltek", "Заполните поля: " + ", ".join(missing))
+            QMessageBox.warning(self, "DC Eltek", "Заполните поля:\n- " + "\n- ".join(missing))
             return
-
-        output_dir = Path(data["output_dir"])
-        try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            QMessageBox.critical(self, "DC Eltek", f"Не удалось создать папку сохранения:\n{exc}")
+        if not data["currency"]:
+            QMessageBox.warning(
+                self,
+                "DC Eltek",
+                "В расчёте не удалось определить валюту. Выберите валюту вручную перед формированием КП.",
+            )
             return
-
         try:
-            result_path = make_dc_eltek_offer(data)
+            result = make_dc_eltek_offer(data)
         except Exception as exc:
             QMessageBox.critical(self, "DC Eltek", f"Не удалось сформировать КП:\n{exc}")
             return
-
-        self.last_output_path = str(result_path)
+        output_path = Path(str(result.get("output_path", ""))).resolve()
+        self.last_output_path = str(output_path)
         self.remember_values()
-        self._update_open_buttons()
         self._update_preview()
-        QMessageBox.information(self, "DC Eltek", f"КП сформировано:\n{result_path}")
+        self._update_open_buttons()
+        QMessageBox.information(self, "DC Eltek", f"КП сформировано:\n{output_path}")
 
     def open_generated_offer(self) -> None:
-        path = Path(self.last_output_path) if self.last_output_path else Path()
-        if not self.last_output_path or not path.exists():
-            QMessageBox.warning(self, "DC Eltek", "Файл КП не найден.")
+        if not self.last_output_path:
+            return
+        path = Path(self.last_output_path)
+        if not path.exists():
+            QMessageBox.warning(self, "DC Eltek", "Файл КП не найден. Сформируйте КП заново.")
             self._update_open_buttons()
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def open_generated_folder(self) -> None:
-        if self.last_output_path and Path(self.last_output_path).parent.exists():
-            folder = Path(self.last_output_path).parent
-        else:
-            folder = Path(self.output_path_edit.text().strip() or self.project_dir_edit.text().strip() or ".")
-        if not folder.exists():
-            QMessageBox.warning(self, "DC Eltek", "Папка КП не найдена.")
+        folder: Path | None = None
+        if self.last_output_path:
+            path = Path(self.last_output_path)
+            if path.parent.exists():
+                folder = path.parent
+        if folder is None and self.output_path_edit.text().strip():
+            candidate = Path(self.output_path_edit.text().strip())
+            if candidate.exists():
+                folder = candidate
+        if folder is None:
+            QMessageBox.warning(self, "DC Eltek", "Папка не найдена.")
             self._update_open_buttons()
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
-
-
-DCEltekPage = DcEltekPage
