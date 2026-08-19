@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from brands import registry
+from brands.registry import BRANDS
 from gui.main_window import run_gui
 
 
@@ -29,7 +29,7 @@ def _cleanup_legacy_updater_files() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SAM Offer Generator")
-    parser.add_argument("--brand", choices=registry.available_brands(), help="Open a specific brand tab")
+    parser.add_argument("--brand", choices=list(BRANDS.keys()), help="Open a specific brand tab")
     parser.add_argument("--project", help="Project folder path")
     parser.add_argument("--input", help="Input calculation file")
     parser.add_argument("--output", help="Output folder path")
