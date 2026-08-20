@@ -115,14 +115,6 @@ class DcEltekPage(QWidget):
         self.template_path_edit.editingFinished.connect(self._on_field_changed)
         owner._add_row(form, 5, "Шаблон КП", self.template_path_edit, "Выбрать", self.select_template_file)
 
-        saved_output_dir = self._saved("dc_eltek_output_dir", "")
-        if not saved_output_dir:
-            saved_output_dir = self.project_dir_edit.text().strip()
-        self.output_path_edit = QLineEdit(saved_output_dir)
-        self.output_path_edit.setPlaceholderText("Папка для сохранения КП")
-        self.output_path_edit.editingFinished.connect(self._on_field_changed)
-        owner._add_row(form, 6, "Путь сохранения КП", self.output_path_edit, "Выбрать", self.select_output_dir)
-
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(8)
@@ -166,6 +158,12 @@ class DcEltekPage(QWidget):
     def project_path_text(self) -> str:
         return self.project_dir_edit.text().strip()
 
+    def _calc_output_dir(self) -> str:
+        calc_path = self.calc_path_edit.text().strip()
+        if calc_path:
+            return str(Path(calc_path).parent)
+        return self.project_dir_edit.text().strip()
+
     def _currency_value(self) -> str:
         return str(self.currency_combo.currentData() or "").upper().strip()
 
@@ -189,7 +187,6 @@ class DcEltekPage(QWidget):
         self.settings.setValue("dc_eltek_sheet_name", self.sheet_combo.currentText().strip())
         self.settings.setValue("dc_eltek_currency", self._currency_value())
         self.settings.setValue("dc_eltek_template_path", self.template_path_edit.text().strip())
-        self.settings.setValue("dc_eltek_output_dir", self.output_path_edit.text().strip())
         self.settings.setValue("dc_eltek_last_output_path", self.last_output_path)
         self.settings.sync()
 
@@ -211,7 +208,6 @@ class DcEltekPage(QWidget):
         self.sheet_combo.clear()
         self._set_currency_value("")
         self.template_path_edit.setText(find_default_dc_eltek_template())
-        self.output_path_edit.clear()
         self.last_output_path = ""
         self.preview_box.clear()
         self._update_open_buttons()
@@ -243,6 +239,7 @@ class DcEltekPage(QWidget):
         self._auto_detect_currency(force=True)
         self.remember_values()
         self._update_preview()
+        self._update_open_buttons()
 
     def select_project_dir(self) -> None:
         current = self.project_dir_edit.text().strip() or str(Path.home())
@@ -257,10 +254,9 @@ class DcEltekPage(QWidget):
         extracted_client = extract_client_from_project_path(path_text)
         if extracted_client and (force_client or not self.client_edit.text().strip()):
             self.client_edit.setText(extracted_client)
-        if path_text and not self.output_path_edit.text().strip():
-            self.output_path_edit.setText(path_text)
         self.remember_values()
         self._update_preview()
+        self._update_open_buttons()
 
     def select_calc_file(self) -> None:
         start_dir = self.project_dir_edit.text().strip() or str(Path.home())
@@ -277,6 +273,7 @@ class DcEltekPage(QWidget):
         self._auto_detect_currency(force=True)
         self.remember_values()
         self._update_preview()
+        self._update_open_buttons()
 
     def select_template_file(self) -> None:
         start_dir = self.project_dir_edit.text().strip() or str(Path.home())
@@ -291,19 +288,6 @@ class DcEltekPage(QWidget):
         self.template_path_edit.setText(path)
         self.remember_values()
         self._update_preview()
-
-    def select_output_dir(self) -> None:
-        current = (
-            self.output_path_edit.text().strip()
-            or self.project_dir_edit.text().strip()
-            or str(Path.home())
-        )
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения КП", current)
-        if not path:
-            return
-        self.output_path_edit.setText(path)
-        self.remember_values()
-        self._update_open_buttons()
 
     def refresh_data(self) -> None:
         self._load_sheet_names(initial=False)
@@ -376,7 +360,7 @@ class DcEltekPage(QWidget):
         manager = self._manager_profile()
         return {
             "project_dir": self.project_dir_edit.text().strip(),
-            "output_dir": self.output_path_edit.text().strip() or self.project_dir_edit.text().strip(),
+            "output_dir": self._calc_output_dir(),
             "client": self.client_edit.text().strip(),
             "calc_path": self.calc_path_edit.text().strip(),
             "sheet_name": self.sheet_combo.currentText().strip(),
@@ -397,8 +381,8 @@ class DcEltekPage(QWidget):
         path = Path(self.last_output_path) if self.last_output_path else None
         exists = bool(path and path.exists())
         self.open_offer_btn.setEnabled(exists)
-        selected_folder = Path(self.output_path_edit.text().strip()) if self.output_path_edit.text().strip() else None
-        self.open_folder_btn.setEnabled(bool((path and path.parent.exists()) or (selected_folder and selected_folder.exists())))
+        calc_folder = Path(self._calc_output_dir()) if self._calc_output_dir() else None
+        self.open_folder_btn.setEnabled(bool((path and path.parent.exists()) or (calc_folder and calc_folder.exists())))
 
     def generate_offer(self) -> None:
         self.remember_values()
@@ -414,8 +398,6 @@ class DcEltekPage(QWidget):
             missing.append("лист для КП")
         if not data["template_path"]:
             missing.append("шаблон КП")
-        if not data["output_dir"]:
-            missing.append("путь сохранения КП")
         if missing:
             QMessageBox.warning(self, "DC Eltek", "Заполните поля:\n- " + "\n- ".join(missing))
             return
@@ -454,8 +436,8 @@ class DcEltekPage(QWidget):
             path = Path(self.last_output_path)
             if path.parent.exists():
                 folder = path.parent
-        if folder is None and self.output_path_edit.text().strip():
-            candidate = Path(self.output_path_edit.text().strip())
+        if folder is None and self._calc_output_dir():
+            candidate = Path(self._calc_output_dir())
             if candidate.exists():
                 folder = candidate
         if folder is None:
