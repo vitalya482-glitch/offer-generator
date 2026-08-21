@@ -46,6 +46,13 @@ hiddenimports = [
     "gui.pages.genset_page",
 ]
 
+# Brand modules are selected dynamically through brands.registry. PyInstaller
+# cannot discover those imports from the string module names, so include the
+# complete brand package. The STULZ feature stack also installs GUI runtime
+# layers dynamically; collect all page modules for the same reason. This keeps
+# new runtime files from being present in GitHub but missing from the EXE.
+hiddenimports += collect_submodules("brands")
+hiddenimports += collect_submodules("gui.pages")
 hiddenimports += collect_submodules("openpyxl")
 
 datas = []
