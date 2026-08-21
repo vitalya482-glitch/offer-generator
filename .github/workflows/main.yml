@@ -71,6 +71,30 @@ jobs:
         run: |
           python tools/prepare_portable_release.py --dist dist/SAM-Offer-Generator
 
+      - name: Verify built Windows package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dist = "dist/SAM-Offer-Generator"
+          $requiredPaths = @(
+            "$dist/SAM-Offer-Generator.exe",
+            "$dist/_internal"
+          )
+
+          foreach ($path in $requiredPaths) {
+            if (!(Test-Path $path)) {
+              throw "Required built package path is missing: $path"
+            }
+          }
+
+          & "$dist/SAM-Offer-Generator.exe" --self-check
+          if ($LASTEXITCODE -ne 0) {
+            throw "SAM-Offer-Generator.exe --self-check failed with exit code $LASTEXITCODE"
+          }
+
+          Write-Host "Built Windows package self-check passed."
+
       - name: Verify legacy updater is absent
         shell: pwsh
         run: |
@@ -197,7 +221,7 @@ jobs:
           Write-Host "Updated release_info.json:"
           Get-Content $releaseInfoPath
 
-      - name: Build only two distribution modules
+      - name: Build distribution modules
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -208,9 +232,14 @@ jobs:
           $appStage = Join-Path $moduleRoot "app"
           $runtimeZip = Join-Path $moduleRoot "SAM-Offer-Generator-Runtime-Win64.zip"
           $appZip = Join-Path $moduleRoot "SAM-Offer-Generator-App-No-Runtime.zip"
+          $fullZip = Join-Path $moduleRoot "SAM-Offer-Generator-Full-Win64.zip"
 
           if (!(Test-Path (Join-Path $dist "_internal"))) {
             throw "Runtime folder was not found: $dist/_internal"
+          }
+
+          if (!(Test-Path (Join-Path $dist "SAM-Offer-Generator.exe"))) {
+            throw "Application EXE was not found: $dist/SAM-Offer-Generator.exe"
           }
 
           if (Test-Path $moduleRoot) {
@@ -232,10 +261,11 @@ jobs:
 
           Compress-Archive -Path $runtimeTarget -DestinationPath $runtimeZip -Force
           Compress-Archive -Path $appTarget -DestinationPath $appZip -Force
+          Compress-Archive -Path $dist -DestinationPath $fullZip -Force
 
           Get-ChildItem $moduleRoot -Filter "*.zip" | Select-Object Name, Length
 
-      - name: Verify release contains exactly two modules
+      - name: Verify release ZIPs
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -243,12 +273,13 @@ jobs:
           $files = Get-ChildItem "dist/distribution-modules" -Filter "*.zip" | Sort-Object Name
           $expected = @(
             "SAM-Offer-Generator-App-No-Runtime.zip",
+            "SAM-Offer-Generator-Full-Win64.zip",
             "SAM-Offer-Generator-Runtime-Win64.zip"
           )
           $actual = @($files | ForEach-Object { $_.Name })
 
-          if ($actual.Count -ne 2) {
-            throw "Expected exactly 2 release ZIPs, got $($actual.Count): $($actual -join ', ')"
+          if ($actual.Count -ne 3) {
+            throw "Expected exactly 3 release ZIPs, got $($actual.Count): $($actual -join ', ')"
           }
 
           foreach ($name in $expected) {
@@ -259,6 +290,44 @@ jobs:
 
           Write-Host "Release ZIPs are OK:"
           $files | Select-Object Name, Length
+
+      - name: Verify full ZIP contents
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $moduleRoot = "dist/distribution-modules"
+          $fullZip = Join-Path $moduleRoot "SAM-Offer-Generator-Full-Win64.zip"
+          $extractDir = "dist/full-zip-check"
+
+          if (Test-Path $extractDir) {
+            Remove-Item $extractDir -Recurse -Force
+          }
+
+          Expand-Archive -Path $fullZip -DestinationPath $extractDir -Force
+
+          $root = Get-ChildItem $extractDir -Directory | Where-Object { $_.Name -eq "SAM-Offer-Generator" } | Select-Object -First 1
+          if (-not $root) {
+            throw "Full ZIP does not contain SAM-Offer-Generator root folder"
+          }
+
+          $requiredPaths = @(
+            (Join-Path $root.FullName "SAM-Offer-Generator.exe"),
+            (Join-Path $root.FullName "_internal")
+          )
+
+          foreach ($path in $requiredPaths) {
+            if (!(Test-Path $path)) {
+              throw "Full ZIP is missing: $path"
+            }
+          }
+
+          & (Join-Path $root.FullName "SAM-Offer-Generator.exe") --self-check
+          if ($LASTEXITCODE -ne 0) {
+            throw "Full ZIP self-check failed with exit code $LASTEXITCODE"
+          }
+
+          Write-Host "Full ZIP contents are verified."
 
       - name: Build LVK manifest asset
         shell: pwsh
@@ -303,7 +372,8 @@ jobs:
             }
             notes = @(
               "Раздельное обновление app/runtime через LVKUpdater.",
-              "Runtime скачивается только если изменился runtime content signature."
+              "Runtime скачивается при изменении замороженного кода, зависимостей или PyInstaller layout.",
+              "Для чистой установки можно скачать SAM-Offer-Generator-Full-Win64.zip."
             )
           }
 
@@ -325,13 +395,19 @@ jobs:
           path: dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip
           retention-days: 30
 
+      - name: Upload full portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAM-Offer-Generator-Full-Win64
+          path: dist/distribution-modules/SAM-Offer-Generator-Full-Win64.zip
+          retention-days: 30
+
       - name: Upload LVK manifest artifact
         uses: actions/upload-artifact@v4
         with:
           name: offer-generator-lvk-manifest
           path: dist/offer-generator.json
           retention-days: 30
-
 
       - name: Publish or update GitHub Release automatically
         shell: pwsh
@@ -348,6 +424,7 @@ jobs:
           $env:RELEASE_NOTES
 
           Release assets:
+          - SAM-Offer-Generator-Full-Win64.zip
           - SAM-Offer-Generator-Runtime-Win64.zip
           - SAM-Offer-Generator-App-No-Runtime.zip
           - offer-generator.json
@@ -359,6 +436,7 @@ jobs:
           $notes | Set-Content $notesPath -Encoding UTF8
 
           $files = @(
+            "dist/distribution-modules/SAM-Offer-Generator-Full-Win64.zip",
             "dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip",
             "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip",
             "dist/offer-generator.json"
