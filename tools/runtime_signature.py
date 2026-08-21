@@ -2,21 +2,18 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import platform
 import re
 import sys
 from pathlib import Path
 
-# The updater must decide whether the heavy _internal runtime package really
-# changed. Hashing the built _internal directory is NOT suitable for that:
-# PyInstaller output is not byte-for-byte deterministic between builds, so the
-# hash may change even when Python and all runtime libraries are identical.
-#
-# We therefore keep an explicit, stable runtime identity in
-# config/runtime_version.txt. It is bumped only when the actual runtime stack
-# changes (Python/PySide/dependencies/build layout). The runtime ZIP itself is
-# still protected by its own SHA256 in offer-generator.json.
-RUNTIME_VERSION_FILE = Path(__file__).resolve().parents[1] / "config" / "runtime_version.txt"
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_VERSION_FILE = REPO_ROOT / "config" / "runtime_version.txt"
+SPEC_FILE = REPO_ROOT / "sam_offer_generator.spec"
+REQUIREMENTS_FILE = REPO_ROOT / "requirements.txt"
 RUNTIME_VERSION_RE = re.compile(r"^[0-9a-f]{64}$")
+RUNTIME_FINGERPRINT_SCHEMA = "2"
 
 # These folders are bundled by PyInstaller into _internal, but in our portable
 # release they are also copied next to the EXE and are updated by the small
@@ -37,12 +34,13 @@ def is_ignored_runtime_path(relative_path: Path) -> bool:
 
 
 def directory_content_sha256(root: Path) -> str:
-    """Diagnostic hash of built runtime contents.
+    """Return a diagnostic hash of the built _internal directory.
 
-    This value is useful in CI logs, but it must NOT be used as the updater's
-    runtime version because PyInstaller builds are not guaranteed to be
-    reproducible byte-for-byte.
+    PyInstaller output is not guaranteed to be byte-for-byte reproducible, so
+    this hash is logged for diagnostics only. It is deliberately not used as
+    the updater's runtime version.
     """
+
     root = root.resolve()
     if not root.exists() or not root.is_dir():
         raise FileNotFoundError(f"Runtime folder was not found: {root}")
@@ -67,7 +65,9 @@ def directory_content_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
-def declared_runtime_version() -> str:
+def _read_manual_runtime_epoch() -> str:
+    """Read the optional manual runtime epoch used for exceptional ABI changes."""
+
     if not RUNTIME_VERSION_FILE.exists():
         raise FileNotFoundError(f"Runtime version file was not found: {RUNTIME_VERSION_FILE}")
 
@@ -79,21 +79,62 @@ def declared_runtime_version() -> str:
     return value
 
 
+def _file_sha256(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"Runtime fingerprint input was not found: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def effective_runtime_version() -> str:
+    """Return a stable runtime id derived from runtime-affecting build inputs.
+
+    The heavy _internal package must be refreshed when the Python runtime,
+    dependencies or PyInstaller layout changes. Previously the updater used only
+    config/runtime_version.txt, so a change to sam_offer_generator.spec could be
+    shipped while installations incorrectly kept an older _internal directory.
+
+    The effective id now changes automatically when any of these inputs changes:
+      * the manual runtime epoch;
+      * the pinned dependency/toolchain file requirements.txt;
+      * sam_offer_generator.spec (hidden imports/build layout);
+      * the exact Python interpreter version and target architecture;
+      * this fingerprint schema.
+
+    Ordinary application-source changes do not affect this id, so normal app
+    updates still avoid downloading the large runtime package.
+    """
+
+    components = [
+        f"schema={RUNTIME_FINGERPRINT_SCHEMA}",
+        f"epoch={_read_manual_runtime_epoch()}",
+        f"requirements={_file_sha256(REQUIREMENTS_FILE)}",
+        f"spec={_file_sha256(SPEC_FILE)}",
+        f"python={sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        f"implementation={platform.python_implementation()}",
+        f"machine={platform.machine().lower()}",
+    ]
+    payload = "\n".join(components).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Print stable runtime version and log the actual build hash for diagnostics."
+        description=(
+            "Print the stable effective runtime version and log the actual built "
+            "_internal content hash for diagnostics."
+        )
     )
     parser.add_argument("path", type=Path)
     args = parser.parse_args()
 
-    # Keep validating the built runtime and log its real content hash. This lets
-    # us investigate build drift without making the updater download 70+ MB on
-    # every harmless rebuild.
     actual_build_hash = directory_content_sha256(args.path)
+    runtime_version = effective_runtime_version()
+
     print(f"Runtime build content SHA256 (diagnostic): {actual_build_hash}", file=sys.stderr)
+    print(f"Effective runtime version: {runtime_version}", file=sys.stderr)
 
     # stdout is consumed by GitHub Actions as versions.runtime.
-    print(declared_runtime_version())
+    print(runtime_version)
     return 0
 
 
