@@ -162,6 +162,60 @@ def _manifest_asset_name(config: dict[str, Any]) -> str:
     return "offer-generator.json"
 
 
+def _manifest_url(config: dict[str, Any]) -> str:
+    return str(config.get("manifestUrl", "") or "").strip()
+
+
+def _uses_local_manifest(config: dict[str, Any]) -> bool:
+    manifest_url = _manifest_url(config).lower()
+    channel = str(config.get("channel", "") or "").strip().lower()
+    if manifest_url.startswith("file:"):
+        return True
+    if channel.endswith("-local") and not re.match(
+        r"https://github\.com/[^/]+/[^/]+/releases/",
+        manifest_url,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _read_release_info(root: Path) -> dict[str, Any]:
+    release_info = root / "release_info.json"
+    if not release_info.exists():
+        return {}
+    try:
+        data = json.loads(release_info.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _is_github_release_build(root: Path) -> bool:
+    info = _read_release_info(root)
+    github_sha = str(info.get("github_sha", "") or "").strip()
+    github_repository = str(info.get("github_repository", "") or "").strip()
+    return bool(github_sha and re.fullmatch(r"[^/\s]+/[^/\s]+", github_repository))
+
+
+def _ensure_github_update_allowed(root: Path, config: dict[str, Any]) -> None:
+    manifest_url = _manifest_url(config)
+    if not re.match(r"https://github\.com/[^/]+/[^/]+/releases/", manifest_url, re.IGNORECASE):
+        return
+    if _is_github_release_build(root):
+        return
+
+    raise LVKUpdaterError(
+        "Эта папка выглядит как локальная сборка, а не как GitHub Release.\n\n"
+        "Обновление из официального GitHub manifest остановлено, чтобы не смешать "
+        "локальный Python runtime с release-runtime и не сломать запуск программы.\n\n"
+        "Что сделать:\n"
+        "1. Для обычного обновления установите программу из GitHub Release.\n"
+        "2. Для проверки локальной сборки используйте локальный manifest file:// "
+        "или пересоберите полный локальный пакет."
+    )
+
+
 def _resolve_latest_manifest_url(repository: str, asset_name: str) -> str:
     """Resolve a version-specific manifest URL via the GitHub Releases API.
 
@@ -221,6 +275,10 @@ def _resolve_latest_manifest_url(repository: str, asset_name: str) -> str:
 
 def _prepare_resolved_config(root: Path, config_path: Path) -> Path:
     config = _read_json(config_path)
+    if _uses_local_manifest(config):
+        return config_path
+
+    _ensure_github_update_allowed(root, config)
     repository = _repository_from_config(root, config)
     asset_name = _manifest_asset_name(config)
     resolved_url = _resolve_latest_manifest_url(repository, asset_name)
