@@ -15,16 +15,17 @@ from core.docx_renderer import _find_table_with_tags, _find_tag_paragraph, _remo
 #
 # IMPORTANT: build a stable snapshot before writing anything into globals().
 # The previous runtime itself contains a private attribute named ``_previous``.
-# The old loop overwrote this module's own ``_previous`` variable midway through
-# the export and the very next ``getattr(_previous, ...)`` was executed against
-# brands.stulz_compressor_runtime instead of stulz_position_selection_runtime.
+# Keep a separate module reference because the export loop also writes private
+# names into globals() and can otherwise replace this module's ``_previous``.
+_POSITION_SELECTION_RUNTIME = _previous
 _runtime_exports = tuple(
-    (name, getattr(_previous, name))
-    for name in dir(_previous)
+    (name, getattr(_POSITION_SELECTION_RUNTIME, name))
+    for name in dir(_POSITION_SELECTION_RUNTIME)
     if not name.startswith("__")
 )
 for _name, _value in _runtime_exports:
     globals()[_name] = _value
+_previous = _POSITION_SELECTION_RUNTIME
 
 
 # ---------------------------------------------------------------------------

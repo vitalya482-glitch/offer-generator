@@ -3,13 +3,13 @@ from __future__ import annotations
 import argparse
 from importlib import import_module
 import sys
-from pathlib import Path
 
 from brands.registry import BRANDS
+from core.runtime_paths import app_root
 from gui.main_window import run_gui
 
 
-APP_DIR = Path(__file__).resolve().parent
+APP_DIR = app_root()
 
 SELF_CHECK_MODULES = (
     "brands.registry",
@@ -39,13 +39,14 @@ def _cleanup_legacy_updater_files() -> None:
 def run_self_check() -> int:
     """Verify that the frozen build contains the runtime modules used by GUI."""
 
-    required_paths = (
-        APP_DIR / "SAM-Offer-Generator.exe",
-        APP_DIR / "_internal",
-    )
-    for path in required_paths:
-        if not path.exists():
-            raise RuntimeError(f"Required runtime path is missing: {path}")
+    if getattr(sys, "frozen", False):
+        required_paths = (
+            APP_DIR / "SAM-Offer-Generator.exe",
+            APP_DIR / "_internal",
+        )
+        for path in required_paths:
+            if not path.exists():
+                raise RuntimeError(f"Required runtime path is missing: {path}")
 
     for module_name in SELF_CHECK_MODULES:
         module = import_module(module_name)

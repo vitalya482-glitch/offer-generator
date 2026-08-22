@@ -12,7 +12,6 @@ DEFAULT_DIST_DIR = ROOT_DIR / "dist" / "SAM-Offer-Generator"
 
 COPY_TO_ROOT = [
     "README.md",
-    "GITHUB_RELEASES.md",
     "MODULES_MANIFEST.json",
     "config.example.json",
     "requirements.txt",
@@ -69,7 +68,8 @@ Important:
   EXE depends on the files and folders shipped with it.
 
 Release modules:
-  GitHub Release publishes only two ZIP files:
+  GitHub Release publishes three ZIP files:
+  - SAM-Offer-Generator-Full-Win64.zip
   - SAM-Offer-Generator-Runtime-Win64.zip
   - SAM-Offer-Generator-App-No-Runtime.zip
 """

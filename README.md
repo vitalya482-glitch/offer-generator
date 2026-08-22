@@ -12,12 +12,12 @@
 
 - исходный код уже разделен на независимые папки `core/`, `brands/`, `gui/`, `config/`, `mcp/`, `prices/`;
 - `sam_offer_generator.spec` собирает Windows-приложение в режиме PyInstaller `onedir`, то есть не в один монолитный EXE, а в папку `SAM-Offer-Generator/`;
-- GitHub Actions публикует основной архив `SAM-Offer-Generator-windows-portable.zip` и отдельные ZIP-архивы модулей;
+- GitHub Actions публикует полный архив `SAM-Offer-Generator-Full-Win64.zip`, модуль runtime, модуль app без runtime и manifest `offer-generator.json`;
 - `MODULES_MANIFEST.json` описывает состав модулей и зависимости между ними;
-- `tools/package_modules.py` собирает отдельные архивы `offer-generator-core.zip`, `offer-generator-brands.zip`, `offer-generator-gui.zip` и другие;
-- `tools/prepare_portable_release.py` добавляет в релиз редактируемый `config/`, README и копии исходных модулей в `modules/source/`.
+- `tools/package_modules.py` собирает отдельные архивы исходных модулей для локальной диагностики;
+- `tools/prepare_portable_release.py` добавляет в релиз редактируемые `config/`, `templates/`, `prices/`, README и служебные файлы обновления.
 
-Подробная инструкция по релизам находится в `GITHUB_RELEASES.md`.
+Основной workflow релиза находится в `.github/workflows/main.yml`.
 
 Типовая структура Windows-релиза:
 
@@ -27,8 +27,9 @@ SAM-Offer-Generator/
   run_gui.cmd
   README_RELEASE.txt
   config/
-  modules/source/
+  templates/
   prices/
+  app.update.json
   _internal/
 ```
 
@@ -113,7 +114,6 @@ config/
 tools/                  # упаковка модулей и подготовка portable-релиза
 scripts/                # локальные PowerShell-команды сборки
 MODULES_MANIFEST.json   # описание модульных архивов
-GITHUB_RELEASES.md      # инструкция по GitHub Actions/Releases
 ```
 
 ---

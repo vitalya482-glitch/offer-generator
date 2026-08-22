@@ -12,9 +12,6 @@
         "app.py",
         "requirements.txt",
         "README.md",
-        "PROJECT_ANALYSIS.md",
-        "CHATGPT_CONTEXT.md",
-        "FILE_NOTES.md",
         "config.example.json",
         ".gitignore"
       ]
@@ -98,7 +95,6 @@
         ".github",
         "sam_offer_generator.spec",
         "MODULES_MANIFEST.json",
-        "GITHUB_RELEASES.md",
         "tools",
         "scripts"
       ]

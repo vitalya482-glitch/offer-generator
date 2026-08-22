@@ -1,5 +1,29 @@
 $ErrorActionPreference = "Stop"
 
+function Compress-WithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath,
+
+        [int]$Attempts = 5
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            Compress-Archive -Path $Path -DestinationPath $DestinationPath -Force
+            return
+        } catch {
+            if ($attempt -eq $Attempts) {
+                throw
+            }
+            Start-Sleep -Seconds $attempt
+        }
+    }
+}
+
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install pyinstaller
@@ -12,7 +36,7 @@ $zipPath = "dist/SAM-Offer-Generator-windows-portable.zip"
 if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force
 }
-Compress-Archive -Path "dist/SAM-Offer-Generator/*" -DestinationPath $zipPath -Force
+Compress-WithRetry -Path "dist/SAM-Offer-Generator/*" -DestinationPath $zipPath
 
 Write-Host "Portable release: $zipPath"
 Write-Host "Source modules: dist/source-modules"
