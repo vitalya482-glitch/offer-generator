@@ -235,6 +235,10 @@ jobs:
           $moduleRoot = "dist/distribution-modules"
           $runtimeStage = Join-Path $moduleRoot "runtime"
           $appStage = Join-Path $moduleRoot "app"
+          $artifactRoot = "dist/action-artifacts"
+          $runtimeArtifact = Join-Path $artifactRoot "runtime"
+          $appArtifact = Join-Path $artifactRoot "app"
+          $fullArtifact = Join-Path $artifactRoot "full"
           $runtimeZip = Join-Path $moduleRoot "SAM-Offer-Generator-Runtime-Win64.zip"
           $appZip = Join-Path $moduleRoot "SAM-Offer-Generator-App-No-Runtime.zip"
           $fullZip = Join-Path $moduleRoot "SAM-Offer-Generator-Full-Win64.zip"
@@ -250,9 +254,15 @@ jobs:
           if (Test-Path $moduleRoot) {
             Remove-Item $moduleRoot -Recurse -Force
           }
+          if (Test-Path $artifactRoot) {
+            Remove-Item $artifactRoot -Recurse -Force
+          }
 
           New-Item -ItemType Directory -Path $runtimeStage -Force | Out-Null
           New-Item -ItemType Directory -Path $appStage -Force | Out-Null
+          New-Item -ItemType Directory -Path $runtimeArtifact -Force | Out-Null
+          New-Item -ItemType Directory -Path $appArtifact -Force | Out-Null
+          New-Item -ItemType Directory -Path $fullArtifact -Force | Out-Null
 
           $runtimeTarget = Join-Path $runtimeStage "SAM-Offer-Generator"
           New-Item -ItemType Directory -Path $runtimeTarget -Force | Out-Null
@@ -267,6 +277,10 @@ jobs:
           Compress-Archive -Path $runtimeTarget -DestinationPath $runtimeZip -Force
           Compress-Archive -Path $appTarget -DestinationPath $appZip -Force
           Compress-Archive -Path $dist -DestinationPath $fullZip -Force
+
+          Copy-Item -Path $runtimeTarget -Destination $runtimeArtifact -Recurse -Force
+          Copy-Item -Path $appTarget -Destination $appArtifact -Recurse -Force
+          Copy-Item -Path $dist -Destination $fullArtifact -Recurse -Force
 
           Get-ChildItem $moduleRoot -Filter "*.zip" | Select-Object Name, Length
 
@@ -389,35 +403,68 @@ jobs:
           }
 
           $manifest | ConvertTo-Json -Depth 20 | Set-Content $manifestPath -Encoding UTF8
+          New-Item -ItemType Directory -Force -Path "dist/action-artifacts/manifest" | Out-Null
+          Copy-Item $manifestPath "dist/action-artifacts/manifest/offer-generator.json" -Force
           Write-Host "Generated LVK manifest:"
           Get-Content $manifestPath
+
+      - name: Verify unpacked GitHub Actions artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $artifactRoot = "dist/action-artifacts"
+          $requiredPaths = @(
+            "$artifactRoot/runtime/SAM-Offer-Generator/_internal",
+            "$artifactRoot/app/SAM-Offer-Generator/SAM-Offer-Generator.exe",
+            "$artifactRoot/full/SAM-Offer-Generator/SAM-Offer-Generator.exe",
+            "$artifactRoot/full/SAM-Offer-Generator/_internal",
+            "$artifactRoot/manifest/offer-generator.json"
+          )
+
+          foreach ($path in $requiredPaths) {
+            if (!(Test-Path $path)) {
+              throw "Unpacked artifact path is missing: $path"
+            }
+          }
+
+          $nestedZips = @(Get-ChildItem $artifactRoot -Recurse -Filter "*.zip")
+          if ($nestedZips.Count -gt 0) {
+            throw "GitHub Actions artifacts must be unpacked folders/files, not ZIP-inside-ZIP: $($nestedZips.FullName -join ', ')"
+          }
+
+          Write-Host "Unpacked GitHub Actions artifacts are ready."
 
       - name: Upload runtime module artifact
         uses: actions/upload-artifact@v4
         with:
           name: SAM-Offer-Generator-Runtime-Win64
-          path: dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip
+          path: dist/action-artifacts/runtime
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload app no-runtime module artifact
         uses: actions/upload-artifact@v4
         with:
           name: SAM-Offer-Generator-App-No-Runtime
-          path: dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip
+          path: dist/action-artifacts/app
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload full portable artifact
         uses: actions/upload-artifact@v4
         with:
           name: SAM-Offer-Generator-Full-Win64
-          path: dist/distribution-modules/SAM-Offer-Generator-Full-Win64.zip
+          path: dist/action-artifacts/full
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload LVK manifest artifact
         uses: actions/upload-artifact@v4
         with:
           name: offer-generator-lvk-manifest
-          path: dist/offer-generator.json
+          path: dist/action-artifacts/manifest
+          if-no-files-found: error
           retention-days: 30
 
       - name: Publish or update GitHub Release automatically
