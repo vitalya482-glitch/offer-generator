@@ -428,7 +428,10 @@ jobs:
             }
           }
 
-          $nestedZips = @(Get-ChildItem $artifactRoot -Recurse -Filter "*.zip")
+          $nestedZips = @(
+            Get-ChildItem $artifactRoot -Recurse -Filter "*.zip" |
+              Where-Object { $_.Name -ne "base_library.zip" -or $_.Directory.Name -ne "_internal" }
+          )
           if ($nestedZips.Count -gt 0) {
             throw "GitHub Actions artifacts must be unpacked folders/files, not ZIP-inside-ZIP: $($nestedZips.FullName -join ', ')"
           }
