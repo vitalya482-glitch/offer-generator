@@ -88,9 +88,14 @@ jobs:
             }
           }
 
-          & "$dist/SAM-Offer-Generator.exe" --self-check
-          if ($LASTEXITCODE -ne 0) {
-            throw "SAM-Offer-Generator.exe --self-check failed with exit code $LASTEXITCODE"
+          Push-Location $dist
+          try {
+            & ".\SAM-Offer-Generator.exe" --self-check
+            if ($LASTEXITCODE -ne 0) {
+              throw "SAM-Offer-Generator.exe --self-check failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Pop-Location
           }
 
           Write-Host "Built Windows package self-check passed."

@@ -30,6 +30,17 @@ pip install pyinstaller
 
 pyinstaller sam_offer_generator.spec --clean --noconfirm
 python tools/prepare_portable_release.py --dist dist/SAM-Offer-Generator
+
+Push-Location "dist/SAM-Offer-Generator"
+try {
+    & ".\SAM-Offer-Generator.exe" --self-check
+    if ($LASTEXITCODE -ne 0) {
+        throw "SAM-Offer-Generator.exe --self-check failed with exit code $LASTEXITCODE"
+    }
+} finally {
+    Pop-Location
+}
+
 python tools/package_modules.py --output dist/source-modules
 
 $zipPath = "dist/SAM-Offer-Generator-windows-portable.zip"

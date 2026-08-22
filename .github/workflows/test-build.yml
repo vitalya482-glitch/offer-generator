@@ -43,6 +43,21 @@ jobs:
         run: |
           python tools/prepare_portable_release.py --dist dist/SAM-Offer-Generator
 
+      - name: Verify built Windows package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Push-Location "dist/SAM-Offer-Generator"
+          try {
+            & ".\SAM-Offer-Generator.exe" --self-check
+            if ($LASTEXITCODE -ne 0) {
+              throw "SAM-Offer-Generator.exe --self-check failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Pop-Location
+          }
+
       - name: Write test build info
         shell: pwsh
         run: |
