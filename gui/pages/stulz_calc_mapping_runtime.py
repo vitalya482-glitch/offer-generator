@@ -349,6 +349,9 @@ def refresh_spec_models(self, context=None) -> None:
         context = context or self.make_context()
         if context.brand != self.brand_name:
             return
+        if not Path(getattr(context, "calc_path", "") or "").exists():
+            table.setRowCount(0)
+            return
 
         # Use the legend-aware loader directly; calling the registry here while
         # the top-level STULZ runtime is importing could recurse into itself.

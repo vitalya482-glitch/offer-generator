@@ -178,6 +178,7 @@ class StulzPage(QWidget):
         bottom.addWidget(spec_card, stretch=1)
         layout.addLayout(bottom)
 
+        self._ensure_runtime_layers_loaded()
         self._connect_changes()
         self.load_sheets(refresh=False)
         self.scan_project(force=False)
@@ -258,6 +259,24 @@ class StulzPage(QWidget):
             self.sheet_combo.currentTextChanged,
         ):
             widget_signal.connect(lambda *_: self.remember_values())
+
+    def _ensure_runtime_layers_loaded(self):
+        if getattr(self, "_stulz_runtime_layers_loaded", False):
+            return getattr(self, "_stulz_runtime_module", None)
+        if getattr(self, "_stulz_runtime_layers_loading", False):
+            return getattr(self, "_stulz_runtime_module", None)
+
+        self._stulz_runtime_layers_loading = True
+        try:
+            module = get_brand_module(self.brand_name)
+        except Exception:
+            return None
+        finally:
+            self._stulz_runtime_layers_loading = False
+
+        self._stulz_runtime_module = module
+        self._stulz_runtime_layers_loaded = True
+        return module
 
     # ------------------------- description/spec options -------------------------
     def _load_description_options(self) -> dict[str, bool]:
@@ -691,11 +710,12 @@ class StulzPage(QWidget):
     def refresh_preview(self) -> None:
         try:
             context = self.make_context()
+            module = self._ensure_runtime_layers_loaded()
             self.refresh_spec_models(context)
             if not context.calc_path.exists():
                 self.preview.setPlainText("Excel-файл пока не выбран или не найден.")
                 return
-            module = get_brand_module(context.brand)
+            module = module or get_brand_module(context.brand)
             self.preview.setPlainText(module.preview(context))
         except Exception as exc:
             self.preview.setPlainText(f"Не удалось прочитать данные: {exc}")
