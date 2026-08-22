@@ -90,9 +90,9 @@ jobs:
 
           Push-Location $dist
           try {
-            & ".\SAM-Offer-Generator.exe" --self-check
-            if ($LASTEXITCODE -ne 0) {
-              throw "SAM-Offer-Generator.exe --self-check failed with exit code $LASTEXITCODE"
+            $selfCheck = Start-Process -FilePath ".\SAM-Offer-Generator.exe" -ArgumentList "--self-check" -WindowStyle Hidden -Wait -PassThru
+            if ($selfCheck.ExitCode -ne 0) {
+              throw "SAM-Offer-Generator.exe --self-check failed with exit code $($selfCheck.ExitCode)"
             }
           } finally {
             Pop-Location
@@ -327,9 +327,15 @@ jobs:
             }
           }
 
-          & (Join-Path $root.FullName "SAM-Offer-Generator.exe") --self-check
-          if ($LASTEXITCODE -ne 0) {
-            throw "Full ZIP self-check failed with exit code $LASTEXITCODE"
+          $selfCheck = Start-Process `
+            -FilePath (Join-Path $root.FullName "SAM-Offer-Generator.exe") `
+            -ArgumentList "--self-check" `
+            -WorkingDirectory $root.FullName `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru
+          if ($selfCheck.ExitCode -ne 0) {
+            throw "Full ZIP self-check failed with exit code $($selfCheck.ExitCode)"
           }
 
           Write-Host "Full ZIP contents are verified."

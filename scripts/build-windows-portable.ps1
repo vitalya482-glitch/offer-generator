@@ -33,9 +33,9 @@ python tools/prepare_portable_release.py --dist dist/SAM-Offer-Generator
 
 Push-Location "dist/SAM-Offer-Generator"
 try {
-    & ".\SAM-Offer-Generator.exe" --self-check
-    if ($LASTEXITCODE -ne 0) {
-        throw "SAM-Offer-Generator.exe --self-check failed with exit code $LASTEXITCODE"
+    $selfCheck = Start-Process -FilePath ".\SAM-Offer-Generator.exe" -ArgumentList "--self-check" -WindowStyle Hidden -Wait -PassThru
+    if ($selfCheck.ExitCode -ne 0) {
+        throw "SAM-Offer-Generator.exe --self-check failed with exit code $($selfCheck.ExitCode)"
     }
 } finally {
     Pop-Location
