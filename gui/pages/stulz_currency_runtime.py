@@ -11,18 +11,45 @@ from core.excel_reader import parse_stulz_calc
 
 
 _SUPPORTED_CURRENCIES = {"KZT", "EUR", "USD"}
+_KZT_RATE_THRESHOLD = 10.0
+_RATE_LABEL_MARKERS = (
+    "rate of currency",
+    "currency rate",
+    "exchange rate",
+    "курс валют",
+    "курс",
+)
+_MONEY_TOTAL_LABEL_MARKERS = (
+    "price + margin",
+    "total per quantity",
+    "total per unit",
+    "total",
+    "итого",
+    "сумма",
+    "ddp",
+    "dap",
+    "exw",
+    "fca",
+    "cpt",
+    "cip",
+)
 
 
 def _plain(value: object) -> str:
     return str(value or "").replace("\xa0", " ").strip()
 
 
+def _norm_text(value: object) -> str:
+    text = _plain(value).lower().replace("ё", "е")
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _currency_from_text(value: object) -> str:
     raw = _plain(value)
     if not raw:
         return ""
-    text = raw.lower().replace("ё", "е")
-    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = _norm_text(raw)
 
     if "₸" in raw or re.search(r"(?:^|[^a-zа-я0-9])(kzt|тенге|тг)(?:$|[^a-zа-я0-9])", text):
         return "KZT"
@@ -33,27 +60,204 @@ def _currency_from_text(value: object) -> str:
     return ""
 
 
-def detect_stulz_currency(calc_path: str | Path, sheet_name: str | None) -> str:
-    """Conservatively detect the customer currency of a STULZ Excel calculation.
+def _currency_from_number_format(value: object) -> str:
+    """Detect currency from Excel number format text.
 
-    Unlike the legacy STULZ parser this helper never assumes EUR merely because
-    no currency marker was found. A non-trivial exchange rate is a strong KZT
-    signal in the SAM calculation templates. Otherwise explicit currency text or
-    Excel number formats are used. Ambiguous sheets return an empty string so the
-    user must confirm the currency manually before generating the offer.
+    Excel can store visible currency symbols in several ways:
+      * # ##0,00 "€"
+      * # ##0,00 [$€-409]
+      * # ##0,00 [$₸-kk-KZ]
+      * # ##0,00 [$KZT]
+      * # ##0,00 [$?-kk-KZ]  (old Office/fonts may show tenge as '?')
+
+    The function checks EUR/KZT before USD because Excel currency format tokens
+    often contain a literal "$" as part of bracket syntax, e.g. [$€-409].
+    """
+
+    raw = _plain(value)
+    if not raw:
+        return ""
+    text = _norm_text(raw)
+
+    if (
+        "₸" in raw
+        or "₮" in raw
+        or re.search(r"(?:^|[^a-zа-я0-9])(kzt|тенге|тг)(?:$|[^a-zа-я0-9])", text)
+        or "kk-kz" in text
+        or "kk_kz" in text
+    ):
+        return "KZT"
+    if "€" in raw or re.search(r"(?:^|[^a-zа-я0-9])(eur|euro|евро)(?:$|[^a-zа-я0-9])", text):
+        return "EUR"
+    if re.search(r"(?:^|[^a-zа-я0-9])(usd|доллар(?:ов|а|ы)?)(?:$|[^a-zа-я0-9])", text):
+        return "USD"
+
+    # A plain dollar sign is USD only when no other currency marker was found.
+    if "$" in raw:
+        return "USD"
+    return ""
+
+
+def _number(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = _plain(value)
+    if not text:
+        return None
+    text = text.replace(" ", "").replace(",", ".").replace("%", "")
+    text = re.sub(r"[^0-9.+\-]", "", text)
+    if not text or text in {"+", "-", ".", "+.", "-."}:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _is_rate_label(value: object) -> bool:
+    text = _norm_text(value)
+    return bool(text) and any(marker in text for marker in _RATE_LABEL_MARKERS)
+
+
+def _is_money_total_label(value: object) -> bool:
+    text = _norm_text(value)
+    if not text:
+        return False
+    if "total exw for us" in text:
+        return False
+    return any(marker in text for marker in _MONEY_TOTAL_LABEL_MARKERS)
+
+
+def _detect_exchange_rate_from_sheet(ws) -> float | None:
+    max_row = min(int(ws.max_row or 0), 120)
+    max_col = min(int(ws.max_column or 0), 60)
+    if max_row <= 0 or max_col <= 0:
+        return None
+
+    for row in range(1, max_row + 1):
+        label_cols = [
+            col
+            for col in range(1, max_col + 1)
+            if _is_rate_label(getattr(ws.cell(row, col), "value", None))
+        ]
+        if not label_cols:
+            continue
+
+        first_label_col = min(label_cols)
+        for col in range(first_label_col + 1, max_col + 1):
+            rate = _number(getattr(ws.cell(row, col), "value", None))
+            if rate is not None and rate > 0:
+                return rate
+
+    return None
+
+
+def _collect_row_currencies(ws, row: int, max_col: int) -> set[str]:
+    found: set[str] = set()
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row, col)
+
+        # In total rows the displayed currency usually lives in number_format of
+        # formula/value cells. Check the format even when cached formula value is
+        # empty, because old Excel files may not expose formula results.
+        currency = _currency_from_number_format(getattr(cell, "number_format", ""))
+        if currency:
+            found.add(currency)
+
+        currency = _currency_from_text(getattr(cell, "value", None))
+        if currency:
+            found.add(currency)
+
+    return found
+
+
+def _detect_currency_from_money_rows(ws) -> str:
+    max_row = min(int(ws.max_row or 0), 180)
+    max_col = min(int(ws.max_column or 0), 100)
+    if max_row <= 0 or max_col <= 0:
+        return ""
+
+    row_hits: list[str] = []
+    for row in range(1, max_row + 1):
+        has_money_total_label = any(
+            _is_money_total_label(getattr(ws.cell(row, col), "value", None))
+            for col in range(1, min(max_col, 12) + 1)
+        )
+        if not has_money_total_label:
+            continue
+
+        currencies = _collect_row_currencies(ws, row, max_col)
+        if len(currencies) == 1:
+            row_hits.append(next(iter(currencies)))
+        elif len(currencies) > 1:
+            return ""
+
+    unique = set(row_hits)
+    if len(unique) == 1:
+        return next(iter(unique))
+    return ""
+
+
+def _detect_currency_from_sheet_scan(ws) -> str:
+    found: set[str] = set()
+    max_row = min(int(ws.max_row or 0), 140)
+    max_col = min(int(ws.max_column or 0), 100)
+    if max_row <= 0 or max_col <= 0:
+        return ""
+
+    for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+        for cell in row:
+            currency = _currency_from_text(getattr(cell, "value", None))
+            if currency:
+                found.add(currency)
+
+            currency = _currency_from_number_format(getattr(cell, "number_format", ""))
+            if currency:
+                found.add(currency)
+
+    if len(found) == 1:
+        return next(iter(found))
+    return ""
+
+
+def _resolve_currency(rate: float | None, detected: str) -> str:
+    if rate is not None and rate > _KZT_RATE_THRESHOLD:
+        # A high exchange rate in SAM STULZ calculations means the customer price
+        # is in tenge. If the total rows explicitly say another currency, do not
+        # guess silently.
+        return "KZT" if detected in {"", "KZT"} else ""
+
+    if detected:
+        return detected
+
+    if rate is not None and abs(rate - 1.0) <= 0.01:
+        return "EUR"
+
+    return ""
+
+
+def detect_stulz_currency(calc_path: str | Path, sheet_name: str | None) -> str:
+    """Detect the customer currency of a STULZ Excel calculation.
+
+    Priority:
+      1) high Rate of currency (>10) => KZT, unless total rows conflict;
+      2) Excel number formats / explicit currency in final money rows;
+      3) explicit currency markers elsewhere on the selected sheet;
+      4) Rate of currency = 1 with no currency markers => EUR.
     """
 
     path = Path(calc_path)
     if not path.exists() or path.suffix.lower() not in {".xlsx", ".xlsm"}:
         return ""
 
+    parsed_rate: float | None = None
     try:
         calc = parse_stulz_calc(path, sheet_name or None)
-        rate = float(getattr(calc, "exchange_rate", 1) or 1)
-        if rate > 1.01:
-            return "KZT"
+        parsed_rate = float(getattr(calc, "exchange_rate", 1) or 1)
     except Exception:
-        pass
+        parsed_rate = None
 
     workbook = None
     try:
@@ -63,26 +267,28 @@ def detect_stulz_currency(calc_path: str | Path, sheet_name: str | None) -> str:
         else:
             ws = workbook[workbook.sheetnames[0]]
 
-        # Prefer an explicit marker in the selected sheet title.
+        rate = parsed_rate
+        if rate is None:
+            rate = _detect_exchange_rate_from_sheet(ws)
+
+        # Prefer an explicit marker in the selected sheet title when there is no
+        # high-rate KZT signal.
         title_currency = _currency_from_text(ws.title)
         if title_currency:
-            return title_currency
+            resolved = _resolve_currency(rate, title_currency)
+            if resolved:
+                return resolved
 
-        found: set[str] = set()
-        max_row = min(int(ws.max_row or 0), 140)
-        max_col = min(int(ws.max_column or 0), 100)
-        if max_row <= 0 or max_col <= 0:
-            return ""
+        money_rows_currency = _detect_currency_from_money_rows(ws)
+        resolved = _resolve_currency(rate, money_rows_currency)
+        if resolved:
+            return resolved
 
-        for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
-            for cell in row:
-                for source in (getattr(cell, "value", None), getattr(cell, "number_format", "")):
-                    currency = _currency_from_text(source)
-                    if currency:
-                        found.add(currency)
+        sheet_currency = _detect_currency_from_sheet_scan(ws)
+        resolved = _resolve_currency(rate, sheet_currency)
+        if resolved:
+            return resolved
 
-        if len(found) == 1:
-            return next(iter(found))
         return ""
     except Exception:
         return ""
