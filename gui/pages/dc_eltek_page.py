@@ -22,9 +22,10 @@ from PySide6.QtWidgets import (
 from brands.dc_eltek import (
     detect_dc_eltek_currency,
     find_default_dc_eltek_template,
-    make_offer as make_dc_eltek_offer,
+    make_offer as make_dc_eltek_offer_ru,
     preview as build_dc_eltek_preview,
 )
+from brands.dc_eltek_en import make_offer as make_dc_eltek_offer_en
 
 
 PROJECTS_MARKER = "02_Projects"
@@ -119,10 +120,14 @@ class DcEltekPage(QWidget):
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(8)
 
-        self.generate_btn = QPushButton("Сформировать КП")
-        self.generate_btn.setObjectName("PrimaryButton")
-        self.generate_btn.clicked.connect(self.generate_offer)
-        buttons.addWidget(self.generate_btn, 2)
+        self.generate_ru_btn = QPushButton("Сформировать КП RU")
+        self.generate_ru_btn.setObjectName("PrimaryButton")
+        self.generate_ru_btn.clicked.connect(lambda: self.generate_offer("ru"))
+        buttons.addWidget(self.generate_ru_btn, 2)
+
+        self.generate_en_btn = QPushButton("Generate offer EN")
+        self.generate_en_btn.clicked.connect(lambda: self.generate_offer("en"))
+        buttons.addWidget(self.generate_en_btn, 2)
 
         self.refresh_btn = QPushButton("Обновить")
         self.refresh_btn.clicked.connect(self.refresh_data)
@@ -355,7 +360,7 @@ class DcEltekPage(QWidget):
                 pass
         return None
 
-    def _context_dict(self) -> dict[str, str]:
+    def _context_dict(self, language: str = "ru") -> dict[str, str]:
         signer = self._selected_signer()
         manager = self._manager_profile()
         return {
@@ -366,6 +371,7 @@ class DcEltekPage(QWidget):
             "sheet_name": self.sheet_combo.currentText().strip(),
             "currency": self._currency_value(),
             "template_path": self.template_path_edit.text().strip(),
+            "offer_language": language,
             "signer_name": str(signer.get("name", "")),
             "signer_position": str(signer.get("position", "")),
             "manager_name": str(getattr(manager, "name", "") if manager else ""),
@@ -375,7 +381,7 @@ class DcEltekPage(QWidget):
         }
 
     def _update_preview(self) -> None:
-        self.preview_box.setPlainText(build_dc_eltek_preview(self._context_dict()))
+        self.preview_box.setPlainText(build_dc_eltek_preview(self._context_dict("ru")))
 
     def _update_open_buttons(self) -> None:
         path = Path(self.last_output_path) if self.last_output_path else None
@@ -384,9 +390,10 @@ class DcEltekPage(QWidget):
         calc_folder = Path(self._calc_output_dir()) if self._calc_output_dir() else None
         self.open_folder_btn.setEnabled(bool((path and path.parent.exists()) or (calc_folder and calc_folder.exists())))
 
-    def generate_offer(self) -> None:
+    def generate_offer(self, language: str = "ru") -> None:
         self.remember_values()
-        data = self._context_dict()
+        language = "en" if language == "en" else "ru"
+        data = self._context_dict(language)
         missing: list[str] = []
         if not data["project_dir"]:
             missing.append("папка проекта")
@@ -409,16 +416,22 @@ class DcEltekPage(QWidget):
             )
             return
         try:
-            result = make_dc_eltek_offer(data)
+            maker = make_dc_eltek_offer_en if language == "en" else make_dc_eltek_offer_ru
+            result = maker(data)
         except Exception as exc:
             QMessageBox.critical(self, "DC Eltek", f"Не удалось сформировать КП:\n{exc}")
             return
-        output_path = Path(str(result.get("output_path", ""))).resolve()
+        if isinstance(result, dict):
+            output_value = result.get("output_path", "")
+        else:
+            output_value = result
+        output_path = Path(str(output_value)).resolve()
         self.last_output_path = str(output_path)
         self.remember_values()
         self._update_preview()
         self._update_open_buttons()
-        QMessageBox.information(self, "DC Eltek", f"КП сформировано:\n{output_path}")
+        title = "КП сформировано" if language == "ru" else "English offer generated"
+        QMessageBox.information(self, "DC Eltek", f"{title}:\n{output_path}")
 
     def open_generated_offer(self) -> None:
         if not self.last_output_path:
