@@ -73,6 +73,10 @@ datas += [
     ("config.example.json", "."),
     ("requirements.txt", "."),
     ("app.update.json", "."),
+    # Hotfix packages shadow these modules at import time, but still load the
+    # original source files as data to preserve the existing page/parser logic.
+    ("core/excel_calc_parser.py", "core"),
+    ("gui/pages/hvac_page.py", "gui/pages"),
 ]
 
 app_a = Analysis(
