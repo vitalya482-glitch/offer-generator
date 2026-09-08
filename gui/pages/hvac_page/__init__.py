@@ -83,8 +83,22 @@ class HVACPage(_legacy.HVACPage):
         self._sync_output_dir_to_calc_or_sales()
         self.remember_values()
 
-    def scan_project(self) -> None:
-        _legacy.HVACPage.scan_project(self)
+    def scan_project(self, force: bool = False, *args: Any, **kwargs: Any) -> None:
+        """Keep compatibility with main_window.scan_project(force=False).
+
+        Some existing brand pages expose scan_project(force=...), while the
+        first HVAC page had scan_project() without arguments.  The hotfix page
+        accepts both forms and calls the legacy implementation safely.
+        """
+
+        try:
+            _legacy.HVACPage.scan_project(self, force=force, *args, **kwargs)
+        except TypeError as exc:
+            message = str(exc)
+            if "unexpected keyword argument" in message or "positional" in message:
+                _legacy.HVACPage.scan_project(self)
+            else:
+                raise
         self._sync_output_dir_to_calc_or_sales()
 
     def _on_calc_changed(self) -> None:
