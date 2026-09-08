@@ -5,22 +5,28 @@ import datetime as dt
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_DIST_DIR = ROOT_DIR / "dist" / "SAM-Offer-Generator"
 
-COPY_TO_ROOT = [
-    "app.py",
-    "README.md",
-    "MODULES_MANIFEST.json",
-    "config.example.json",
-    "requirements.txt",
-]
-SOURCE_MODULE_DIRS = ["brands", "core", "gui", "tools"]
-OPTIONAL_ROOT_DIRS = ["assets", "prices", "templates"]
-EXCLUDED_DIR_NAMES = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
-EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from tools.update_layout_policy import (  # noqa: E402
+    APP_CONFIG_DIR,
+    APP_OPTIONAL_ROOT_DIRS,
+    APP_ROOT_FILES,
+    APP_SOURCE_MODULE_DIRS,
+    EXCLUDED_DIR_NAMES,
+    EXCLUDED_SUFFIXES,
+    RELEASE_LAYOUT_NAME,
+    RELEASE_LAYOUT_NOTE,
+    validate_update_layout_policy,
+)
+
+
+DEFAULT_DIST_DIR = ROOT_DIR / "dist" / "SAM-Offer-Generator"
 
 
 def ignore_patterns(directory: str, names: list[str]) -> set[str]:
@@ -49,7 +55,8 @@ def copy_tree_if_exists(relative_path: str, target: Path) -> None:
 
 
 def write_release_readme(dist_dir: Path) -> None:
-    text = """SAM Offer Generator - portable Windows release
+    app_dirs = ", ".join((APP_CONFIG_DIR,) + APP_SOURCE_MODULE_DIRS + APP_OPTIONAL_ROOT_DIRS)
+    text = f"""SAM Offer Generator - portable Windows release
 
 Run / first install:
   1. Extract SAM-Offer-Generator-Runtime-Win64.zip.
@@ -67,6 +74,10 @@ Folder layout:
   prices/                  - optional reference price files, when present
   templates/               - Excel/Word templates used by brand modules
 
+App-No-Runtime package contains:
+  {', '.join(APP_ROOT_FILES)}
+  {app_dirs}
+
 Important:
   Do not move only the EXE to another folder. This is a one-dir build, so the
   EXE depends on the files and folders shipped with it.
@@ -81,6 +92,9 @@ Update model:
   Normal Python/UI fixes are delivered through App-No-Runtime.zip. Runtime is
   downloaded only when Python, dependencies, PyInstaller runtime layout or the
   manual runtime epoch changes.
+
+Single source of truth:
+  tools/update_layout_policy.py
 """
     (dist_dir / "README_RELEASE.txt").write_text(text, encoding="utf-8")
 
@@ -93,11 +107,12 @@ def write_run_cmd(dist_dir: Path) -> None:
 def write_release_info(dist_dir: Path) -> None:
     info = {
         "project": "SAM Offer Generator",
-        "layout": "pyinstaller-onedir-portable-with-editable-app-sources",
+        "layout": RELEASE_LAYOUT_NAME,
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
         "github_ref": os.environ.get("GITHUB_REF_NAME", ""),
         "github_sha": os.environ.get("GITHUB_SHA", ""),
-        "notes": "Keep the full folder together; app Python sources live next to the EXE and override frozen copies.",
+        "notes": RELEASE_LAYOUT_NOTE,
+        "update_layout_policy": "tools/update_layout_policy.py",
     }
     (dist_dir / "release_info.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -107,19 +122,20 @@ def main() -> int:
     parser.add_argument("--dist", type=Path, default=DEFAULT_DIST_DIR)
     args = parser.parse_args()
 
+    validate_update_layout_policy()
     dist_dir = args.dist.resolve()
     if not dist_dir.exists():
         raise SystemExit(f"Build folder does not exist: {dist_dir}")
 
-    for relative_path in COPY_TO_ROOT:
+    for relative_path in APP_ROOT_FILES:
         copy_file_if_exists(relative_path, dist_dir)
 
-    copy_tree_if_exists("config", dist_dir / "config")
+    copy_tree_if_exists(APP_CONFIG_DIR, dist_dir / APP_CONFIG_DIR)
 
-    for source_dir in SOURCE_MODULE_DIRS:
+    for source_dir in APP_SOURCE_MODULE_DIRS:
         copy_tree_if_exists(source_dir, dist_dir / source_dir)
 
-    for optional_dir in OPTIONAL_ROOT_DIRS:
+    for optional_dir in APP_OPTIONAL_ROOT_DIRS:
         copy_tree_if_exists(optional_dir, dist_dir / optional_dir)
 
     write_release_readme(dist_dir)
