@@ -66,6 +66,7 @@ class HVACPage(_legacy.HVACPage):
 
         saved_currency = self._saved("hvac/currency", "Авто").strip()
         self.currency_combo.setCurrentText(saved_currency if saved_currency in _CURRENCY_OPTIONS else "Авто")
+        self._sync_output_dir_to_calc_or_sales()
 
     def remember_values(self) -> None:
         _legacy.HVACPage.remember_values(self)
@@ -79,19 +80,79 @@ class HVACPage(_legacy.HVACPage):
         self.vat_check.setChecked(False)
         self.vat_check.setText("НДС включён")
         self.payment_terms.setText(_PAYMENT_DEFAULT)
+        self._sync_output_dir_to_calc_or_sales()
         self.remember_values()
+
+    def scan_project(self) -> None:
+        _legacy.HVACPage.scan_project(self)
+        self._sync_output_dir_to_calc_or_sales()
+
+    def _on_calc_changed(self) -> None:
+        _legacy.HVACPage._on_calc_changed(self)
+        self._sync_output_dir_to_calc_or_sales()
 
     def _parse_excel(self) -> None:
         _legacy.HVACPage._parse_excel(self)
         result = getattr(self, "parse_result", None)
         if result is None or not hasattr(self, "vat_check"):
+            self._sync_output_dir_to_calc_or_sales()
             return
         if result.vat_included is not None:
             self.vat_check.setChecked(bool(result.vat_included))
         percent = _format_percent(result.vat_percent)
         self.vat_check.setText(f"НДС включён ({percent}%)" if percent else "НДС включён")
+        self._sync_output_dir_to_calc_or_sales()
         self._update_status()
         self.remember_values()
+
+    def generate(self) -> None:
+        self._sync_output_dir_to_calc_or_sales()
+        _legacy.HVACPage.generate(self)
+
+    def _preferred_output_dir(self) -> Path | None:
+        """Prefer the folder where the selected calc file is located.
+
+        In real project folders the HVAC calculation is normally placed directly
+        in Sales docs. Saving the offer next to that calc is the safest rule and
+        also avoids stale saved paths from older projects.
+        """
+
+        try:
+            calc_value = self._path_from_combo(self.calc_combo)
+        except Exception:
+            calc_value = ""
+        calc_path = Path(str(calc_value or "").strip())
+        if calc_path.is_file():
+            return calc_path.parent
+
+        project_text = self.project_path_text().strip() if hasattr(self, "project_path_text") else ""
+        project_dir = Path(project_text)
+        if project_dir.is_dir():
+            try:
+                inferred = _legacy.infer_output_dir(str(project_dir))
+            except Exception:
+                inferred = ""
+            inferred_path = Path(str(inferred or "").strip())
+            if inferred_path:
+                return inferred_path
+        return None
+
+    def _sync_output_dir_to_calc_or_sales(self) -> None:
+        preferred = self._preferred_output_dir()
+        if preferred is None:
+            return
+        preferred_text = str(preferred)
+        current = self.output_path_text().strip() if hasattr(self, "output_path_text") else ""
+        if current and _paths_equal(current, preferred_text):
+            return
+        self.output_dir_path = preferred_text
+        try:
+            self._set_line_path(self.output_edit, preferred_text, is_file=False)
+        except Exception:
+            try:
+                self.output_edit.setText(preferred_text)
+            except Exception:
+                pass
 
     def _sync_startup_with_installation(self, *_args: Any) -> None:
         if self.installation_check.isChecked():
@@ -117,6 +178,9 @@ class HVACPage(_legacy.HVACPage):
             f"валюта КП: {self._offer_currency()}",
             _vat_status_text(bool(self.vat_check.isChecked()), getattr(result, "vat_percent", None)),
         ]
+        preferred = self._preferred_output_dir()
+        if preferred is not None:
+            extra.append(f"папка КП: {preferred.name}")
         current = self.status_label.text().strip()
         self.status_label.setText((current + " | " if current else "") + " | ".join(extra))
 
@@ -138,6 +202,16 @@ class HVACPage(_legacy.HVACPage):
         tags["currency_name"] = _legacy._currency_name_ru(currency)
         tags["payment_terms"] = self.payment_terms.text().strip() or _PAYMENT_DEFAULT
         return tags
+
+
+def _paths_equal(left: str, right: str) -> bool:
+    try:
+        legacy_equal = getattr(_legacy, "_same_windows_path", None)
+        if legacy_equal is not None:
+            return bool(legacy_equal(left, right))
+    except Exception:
+        pass
+    return str(left or "").strip().casefold() == str(right or "").strip().casefold()
 
 
 def _format_percent(value: Any) -> str:
