@@ -36,6 +36,8 @@ class HVACPage(_legacy.HVACPage):
 
     def _build_ui(self) -> None:
         _legacy.HVACPage._build_ui(self)
+        self._hide_output_dir_row()
+
         self.currency_combo = QComboBox()
         self.currency_combo.addItems(_CURRENCY_OPTIONS)
         self.vat_check = QCheckBox("НДС включён")
@@ -57,6 +59,38 @@ class HVACPage(_legacy.HVACPage):
         self.currency_combo.currentTextChanged.connect(lambda *_: (self.remember_values(), self._update_status()))
         self.vat_check.stateChanged.connect(lambda *_: (self.remember_values(), self._update_status()))
         self.installation_check.stateChanged.connect(self._sync_startup_with_installation)
+
+    def _hide_output_dir_row(self) -> None:
+        """Hide the legacy manual output-folder row.
+
+        HVAC offers are saved automatically next to the selected Excel
+        calculation file. Keeping the old manual row visible made it look like a
+        separate user decision and also exposed stale saved folders.
+        """
+
+        output_widget = getattr(self, "output_edit", None)
+        if output_widget is None:
+            return
+        try:
+            for grid in self.findChildren(QGridLayout):
+                index = grid.indexOf(output_widget)
+                if index < 0:
+                    continue
+                row, _col, _row_span, _col_span = grid.getItemPosition(index)
+                for column in range(grid.columnCount()):
+                    item = grid.itemAtPosition(row, column)
+                    if item is None:
+                        continue
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.hide()
+                return
+        except Exception:
+            pass
+        try:
+            output_widget.hide()
+        except Exception:
+            pass
 
     def _load_saved_values(self) -> None:
         _legacy.HVACPage._load_saved_values(self)
@@ -194,7 +228,7 @@ class HVACPage(_legacy.HVACPage):
         ]
         preferred = self._preferred_output_dir()
         if preferred is not None:
-            extra.append(f"папка КП: {preferred.name}")
+            extra.append(f"КП сохранится в: {preferred.name}")
         current = self.status_label.text().strip()
         self.status_label.setText((current + " | " if current else "") + " | ".join(extra))
 
