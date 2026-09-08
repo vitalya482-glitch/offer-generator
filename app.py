@@ -2,7 +2,34 @@ from __future__ import annotations
 
 import argparse
 from importlib import import_module
+from pathlib import Path
 import sys
+
+
+def _prefer_editable_source_packages() -> None:
+    """Use source packages placed next to the EXE before frozen modules.
+
+    PyInstaller keeps compiled Python modules in ``_internal``.  For modular
+    updates we also ship ``brands/``, ``core/`` and ``gui/`` next to the EXE in
+    the small App-No-Runtime package.  Putting the app folder first lets small
+    Python-only fixes override the frozen copy without forcing a heavy runtime
+    download on every release.
+    """
+
+    if getattr(sys, "frozen", False):
+        root = Path(sys.executable).resolve().parent
+    else:
+        root = Path(__file__).resolve().parent
+
+    root_text = str(root)
+    try:
+        sys.path.remove(root_text)
+    except ValueError:
+        pass
+    sys.path.insert(0, root_text)
+
+
+_prefer_editable_source_packages()
 
 from brands.registry import BRANDS
 from core.runtime_paths import app_root
@@ -43,10 +70,13 @@ def run_self_check() -> int:
         required_paths = (
             APP_DIR / "SAM-Offer-Generator.exe",
             APP_DIR / "_internal",
+            APP_DIR / "brands",
+            APP_DIR / "core",
+            APP_DIR / "gui",
         )
         for path in required_paths:
             if not path.exists():
-                raise RuntimeError(f"Required runtime path is missing: {path}")
+                raise RuntimeError(f"Required runtime/app path is missing: {path}")
 
     for module_name in SELF_CHECK_MODULES:
         module = import_module(module_name)
