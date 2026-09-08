@@ -98,8 +98,20 @@ def _detect_currency(sheet, exchange_rate: float | None, grand_total_row: int | 
     best_currency, best_score = max(scores.items(), key=lambda item: item[1])
     if best_score > 0:
         return best_currency
-    if exchange_rate and exchange_rate > 1.01:
-        return "KZT"
+
+    # Fallback from the common SAM logic:
+    # - if exchange rate is 1, the calculation is normally already in EUR;
+    # - if exchange rate is not 1, the monetary rows are normally in KZT.
+    # This is used only when Excel values/formats do not provide any currency.
+    try:
+        rate = float(exchange_rate) if exchange_rate is not None else None
+    except (TypeError, ValueError):
+        rate = None
+    if rate is not None:
+        if 0.99 <= rate <= 1.01:
+            return "EUR"
+        if rate > 1.01:
+            return "KZT"
     return None
 
 
