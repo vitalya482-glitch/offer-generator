@@ -78,44 +78,118 @@ def _extract_items(
 
 
 def _detect_currency(sheet, exchange_rate: float | None, grand_total_row: int | None = None) -> str | None:
-    scores: dict[str, int] = {currency: 0 for currency in _legacy._CURRENCY_LABELS}
+    """Detect the offer currency without letting helper conversion blocks win.
 
-    for currency, aliases in _legacy._CURRENCY_LABELS.items():
-        for row, col in sheet.find(aliases):
-            weight = 8 if row == grand_total_row else 2
-            if _nearest_number_distance(sheet, row, col) is not None:
-                weight += 4
-            scores[currency] += weight
+    HVAC calculations may contain two currency blocks at the same time, for
+    example a working EUR block and a lower KZT conversion block.  The offer
+    currency must follow the decisive price rows first.  Only if those rows do
+    not carry any currency marker do we apply the SAM fallback: rate=1 means the
+    sheet is already in EUR, while rate>1 normally means KZT.
+    """
 
-    for row, row_weight in _candidate_money_rows(sheet, grand_total_row):
-        for col in range(1, sheet.max_column + 1):
-            if _legacy._to_number(sheet.value(row, col)) is None:
-                continue
-            detected = _currency_from_number_format(sheet.number_format(row, col))
-            if detected:
-                scores[detected] += row_weight
+    # 1. The strongest source is the currency used directly in the decisive
+    # money rows: TOTAL, Total per quantity, Total per unit, unit price rows.
+    decisive_scores = _money_row_currency_scores(sheet, grand_total_row, include_all_rows=False)
+    decisive_currency = _best_currency(decisive_scores)
+    if decisive_currency:
+        return decisive_currency
 
-    best_currency, best_score = max(scores.items(), key=lambda item: item[1])
-    if best_score > 0:
-        return best_currency
+    # 2. Fallback from the common SAM calculation logic.  This must be stronger
+    # than broad text labels because sheets often contain both "€, euro" and a
+    # lower helper "kzt" block.  If the rate is 1, the active values are EUR.
+    rate_currency = _currency_from_exchange_rate(exchange_rate)
+    if rate_currency:
+        return rate_currency
 
-    # Fallback from the common SAM logic:
-    # - if exchange rate is 1, the calculation is normally already in EUR;
-    # - if exchange rate is not 1, the monetary rows are normally in KZT.
-    # This is used only when Excel values/formats do not provide any currency.
+    # 3. Only now look at broad currency labels in the sheet.  Return a value
+    # only when the signal is not ambiguous.
+    label_currency = _best_currency(_label_currency_scores(sheet, grand_total_row), require_unique=True)
+    if label_currency:
+        return label_currency
+
+    # 4. Last fallback: any remaining Excel number formats/cell text markers on
+    # the sheet.  Keep it conservative so a mixed EUR/KZT sheet does not pick the
+    # wrong one by accident.
+    broad_money_currency = _best_currency(
+        _money_row_currency_scores(sheet, grand_total_row, include_all_rows=True),
+        require_unique=True,
+    )
+    if broad_money_currency:
+        return broad_money_currency
+    return None
+
+
+def _currency_from_exchange_rate(exchange_rate: float | None) -> str | None:
     try:
         rate = float(exchange_rate) if exchange_rate is not None else None
     except (TypeError, ValueError):
         rate = None
-    if rate is not None:
-        if 0.99 <= rate <= 1.01:
-            return "EUR"
-        if rate > 1.01:
-            return "KZT"
+    if rate is None:
+        return None
+    if 0.99 <= rate <= 1.01:
+        return "EUR"
+    if rate > 1.01:
+        return "KZT"
     return None
 
 
-def _candidate_money_rows(sheet, grand_total_row: int | None) -> list[tuple[int, int]]:
+def _money_row_currency_scores(
+    sheet,
+    grand_total_row: int | None,
+    *,
+    include_all_rows: bool,
+) -> dict[str, int]:
+    scores: dict[str, int] = {currency: 0 for currency in _legacy._CURRENCY_LABELS}
+    rows = _priority_money_rows(sheet, grand_total_row)
+
+    if include_all_rows:
+        seen = {row for row, _weight in rows}
+        for row in range(1, sheet.max_row + 1):
+            if row not in seen:
+                rows.append((row, 1))
+                seen.add(row)
+
+    for row, row_weight in rows:
+        for col in range(1, sheet.max_column + 1):
+            detected = _currency_from_number_format(sheet.number_format(row, col))
+            if detected:
+                scores[detected] += row_weight
+                continue
+
+            # Some calculations store money as text like "24 486,00 €" instead
+            # of a numeric value with a currency format.  Treat the currency
+            # marker in the cell text as a valid signal for the row.
+            detected = _currency_from_cell_text(sheet.value(row, col))
+            if detected:
+                scores[detected] += row_weight
+    return scores
+
+
+def _label_currency_scores(sheet, grand_total_row: int | None) -> dict[str, int]:
+    scores: dict[str, int] = {currency: 0 for currency in _legacy._CURRENCY_LABELS}
+    priority_rows = {row for row, _weight in _priority_money_rows(sheet, grand_total_row)}
+
+    for currency, aliases in _legacy._CURRENCY_LABELS.items():
+        for row, col in sheet.find(aliases):
+            weight = 3 if row in priority_rows else 1
+            if row == grand_total_row:
+                weight += 10
+            if _nearest_number_distance(sheet, row, col) is not None:
+                weight += 1
+            scores[currency] += weight
+    return scores
+
+
+def _best_currency(scores: dict[str, int], *, require_unique: bool = False) -> str | None:
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    if not ranked or ranked[0][1] <= 0:
+        return None
+    if require_unique and len(ranked) > 1 and ranked[1][1] == ranked[0][1]:
+        return None
+    return ranked[0][0]
+
+
+def _priority_money_rows(sheet, grand_total_row: int | None) -> list[tuple[int, int]]:
     weighted: list[tuple[int, int]] = []
     seen: set[int] = set()
 
@@ -124,17 +198,27 @@ def _candidate_money_rows(sheet, grand_total_row: int | None) -> list[tuple[int,
             weighted.append((row, weight))
             seen.add(row)
 
-    add(grand_total_row, 40)
+    add(grand_total_row, 50)
     for aliases, weight in (
-        (_legacy._GRAND_TOTAL_ALIASES, 35),
-        (_legacy._TOTAL_PER_QTY_ALIASES, 30),
-        (_legacy._UNIT_PRICE_ALIASES, 25),
+        (_legacy._GRAND_TOTAL_ALIASES, 45),
+        (_legacy._TOTAL_PER_QTY_ALIASES, 40),
+        (_legacy._UNIT_PRICE_ALIASES, 35),
     ):
         for row, _col in sheet.find(aliases):
             add(row, weight)
-    for row in range(1, sheet.max_row + 1):
-        add(row, 1)
     return weighted
+
+
+def _candidate_money_rows(sheet, grand_total_row: int | None) -> list[tuple[int, int]]:
+    """Compatibility helper retained for older hotfix code."""
+
+    rows = _priority_money_rows(sheet, grand_total_row)
+    seen = {row for row, _weight in rows}
+    for row in range(1, sheet.max_row + 1):
+        if row not in seen:
+            rows.append((row, 1))
+            seen.add(row)
+    return rows
 
 
 def _currency_from_number_format(number_format: str) -> str | None:
@@ -144,6 +228,22 @@ def _currency_from_number_format(number_format: str) -> str | None:
         "EUR": ("€", "eur", "euro", "евро", "[$€", "[$eur", "-euro"),
         "USD": ("$", "usd", "доллар", "[$$", "[$usd", "-en-us"),
         "RUB": ("₽", "rub", "руб", "[$₽", "[$rub", "-ru-ru"),
+    }
+    for currency, aliases in markers.items():
+        if any(alias in compact for alias in aliases):
+            return currency
+    return None
+
+
+def _currency_from_cell_text(value: Any) -> str | None:
+    compact = str(value or "").casefold().replace(" ", "")
+    if not compact:
+        return None
+    markers = {
+        "KZT": ("₸", "kzt", "тенге", "тг"),
+        "EUR": ("€", "eur", "euro", "евро"),
+        "USD": ("$", "usd", "доллар"),
+        "RUB": ("₽", "rub", "руб"),
     }
     for currency, aliases in markers.items():
         if any(alias in compact for alias in aliases):
@@ -166,7 +266,13 @@ def _nearest_number_distance(sheet, row: int, col: int) -> int | None:
 _legacy._extract_items = _extract_items
 _legacy._detect_currency = _detect_currency
 _legacy._candidate_money_rows = _candidate_money_rows
+_legacy._priority_money_rows = _priority_money_rows
+_legacy._currency_from_exchange_rate = _currency_from_exchange_rate
+_legacy._money_row_currency_scores = _money_row_currency_scores
+_legacy._label_currency_scores = _label_currency_scores
+_legacy._best_currency = _best_currency
 _legacy._currency_from_number_format = _currency_from_number_format
+_legacy._currency_from_cell_text = _currency_from_cell_text
 _legacy._nearest_number_distance = _nearest_number_distance
 
 for _name, _value in vars(_legacy).items():
