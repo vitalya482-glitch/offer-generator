@@ -29,6 +29,20 @@ from brands.dc_eltek_en import make_offer as make_dc_eltek_offer_en
 
 
 PROJECTS_MARKER = "02_Projects"
+EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
+SALES_DIR_MARKERS = (
+    "sales",
+    "sale",
+    "commercial",
+    "коммер",
+    "кп",
+)
+CALC_FILE_MARKERS = (
+    "calc",
+    "calculation",
+    "расчет",
+    "расчёт",
+)
 
 
 def extract_client_from_project_path(path_text: str) -> str:
@@ -43,7 +57,7 @@ def extract_client_from_project_path(path_text: str) -> str:
 
 def read_excel_sheet_names(path_text: str) -> list[str]:
     path = Path(path_text)
-    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+    if path.suffix.lower() not in EXCEL_SUFFIXES:
         raise ValueError("Пока поддерживаются только Excel-файлы .xlsx и .xlsm")
     if not path.exists():
         raise FileNotFoundError(f"Файл не найден: {path}")
@@ -60,6 +74,145 @@ def read_excel_sheet_names(path_text: str) -> list[str]:
             for sheet in sheets.findall("main:sheet", namespace)
             if (name := sheet.attrib.get("name", "").strip())
         ]
+
+
+def _safe_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except Exception:
+        return False
+
+
+def _safe_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except Exception:
+        return False
+
+
+def _safe_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except Exception:
+        return False
+
+
+def _safe_iterdir(path: Path):
+    try:
+        yield from path.iterdir()
+    except Exception:
+        return
+
+
+def _safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def _is_sales_dir_name(name: str) -> bool:
+    normalized = name.lower().replace("_", " ").replace("-", " ")
+    return any(marker in normalized for marker in SALES_DIR_MARKERS)
+
+
+def _is_excel_calc_candidate(path: Path) -> bool:
+    if path.name.startswith("~$"):
+        return False
+    if path.suffix.lower() not in EXCEL_SUFFIXES:
+        return False
+    if not _safe_is_file(path):
+        return False
+    return True
+
+
+def _iter_dirs_limited(root: Path, max_depth: int = 4):
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    seen: set[str] = set()
+    while stack:
+        current, depth = stack.pop()
+        current_key = str(current).lower()
+        if current_key in seen:
+            continue
+        seen.add(current_key)
+        yield current, depth
+        if depth >= max_depth:
+            continue
+        for child in _safe_iterdir(current):
+            if _safe_is_dir(child):
+                stack.append((child, depth + 1))
+
+
+def _find_sales_dirs(project_dir: Path) -> list[Path]:
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = str(path).lower()
+        if key not in seen and _safe_is_dir(path):
+            seen.add(key)
+            found.append(path)
+
+    for name in (
+        "sales",
+        "Sales",
+        "03_sales docs",
+        "02_sales docs",
+        "sales docs",
+        "Sales docs",
+    ):
+        add(project_dir / name)
+
+    for folder, _depth in _iter_dirs_limited(project_dir, max_depth=4):
+        if folder == project_dir:
+            continue
+        if _is_sales_dir_name(folder.name):
+            add(folder)
+
+    return found
+
+
+def _score_calc_candidate(path: Path, sales_dir: Path) -> tuple[int, float, str]:
+    name = path.name.lower()
+    stem = path.stem.lower()
+    score = 0
+    if any(marker in stem for marker in CALC_FILE_MARKERS):
+        score += 1000
+    if "dc" in stem or "eltek" in stem:
+        score += 200
+    if "hvac" in stem:
+        score -= 250
+    if "offer" in stem or "кп" in stem:
+        score -= 200
+    if path.parent == sales_dir:
+        score += 80
+    if name.startswith("calc"):
+        score += 80
+    return (score, _safe_mtime(path), str(path))
+
+
+def find_calc_file_in_sales(project_dir_text: str) -> str:
+    project_dir = Path(project_dir_text.strip()) if project_dir_text else Path()
+    if not project_dir_text or not _safe_is_dir(project_dir):
+        return ""
+
+    sales_dirs = _find_sales_dirs(project_dir)
+    search_dirs = sales_dirs or [project_dir]
+    candidates: list[tuple[tuple[int, float, str], Path]] = []
+
+    for sales_dir in search_dirs:
+        for folder, depth in _iter_dirs_limited(sales_dir, max_depth=3):
+            if depth > 3:
+                continue
+            for child in _safe_iterdir(folder):
+                if _is_excel_calc_candidate(child):
+                    candidates.append((_score_calc_candidate(child, sales_dir), child))
+
+    if not candidates:
+        return ""
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return str(candidates[0][1])
 
 
 class DcEltekPage(QWidget):
@@ -93,9 +246,9 @@ class DcEltekPage(QWidget):
         owner._add_row(form, 1, "Клиент", self.client_edit, None, None)
 
         self.calc_path_edit = QLineEdit(self._saved("dc_eltek_calc_path", ""))
-        self.calc_path_edit.setPlaceholderText("Excel calc")
-        self.calc_path_edit.editingFinished.connect(self._on_calc_path_edited)
-        owner._add_row(form, 2, "Расчёт Excel", self.calc_path_edit, "Выбрать", self.select_calc_file)
+        self.calc_path_edit.setPlaceholderText("Excel calc из папки sales")
+        self.calc_path_edit.setReadOnly(True)
+        owner._add_row(form, 2, "Расчёт Excel", self.calc_path_edit, None, None)
 
         self.sheet_combo = QComboBox()
         self.sheet_combo.setEditable(False)
@@ -151,6 +304,8 @@ class DcEltekPage(QWidget):
         layout.addWidget(card)
         layout.addStretch(1)
 
+        if self.project_dir_edit.text().strip() and not self.calc_path_edit.text().strip():
+            self._auto_find_calc_from_project(show_warning=False)
         self._load_sheet_names(initial=True)
         self._restore_or_detect_currency()
         self._update_open_buttons()
@@ -239,8 +394,8 @@ class DcEltekPage(QWidget):
         self.remember_values()
         self._update_preview()
 
-    def _on_calc_path_edited(self) -> None:
-        self._load_sheet_names(initial=False)
+    def _reload_calc_dependent_data(self, *, initial: bool = False) -> None:
+        self._load_sheet_names(initial=initial)
         self._auto_detect_currency(force=True)
         self.remember_values()
         self._update_preview()
@@ -252,33 +407,42 @@ class DcEltekPage(QWidget):
         if not path:
             return
         self.project_dir_edit.setText(path)
-        self._on_project_dir_changed(force_client=True)
+        self._on_project_dir_changed(force_client=True, show_calc_warning=True)
 
-    def _on_project_dir_changed(self, force_client: bool = False) -> None:
+    def _on_project_dir_changed(self, force_client: bool = False, show_calc_warning: bool = False) -> None:
         path_text = self.project_dir_edit.text().strip()
         extracted_client = extract_client_from_project_path(path_text)
         if extracted_client and (force_client or not self.client_edit.text().strip()):
             self.client_edit.setText(extracted_client)
+        self._auto_find_calc_from_project(show_warning=show_calc_warning)
         self.remember_values()
         self._update_preview()
         self._update_open_buttons()
 
-    def select_calc_file(self) -> None:
-        start_dir = self.project_dir_edit.text().strip() or str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Выберите Excel calc",
-            start_dir,
-            "Excel files (*.xlsx *.xlsm);;All files (*.*)",
-        )
-        if not path:
-            return
-        self.calc_path_edit.setText(path)
-        self._load_sheet_names(initial=False)
-        self._auto_detect_currency(force=True)
-        self.remember_values()
-        self._update_preview()
-        self._update_open_buttons()
+    def _auto_find_calc_from_project(self, show_warning: bool = False) -> bool:
+        project_dir = self.project_dir_edit.text().strip()
+        if not project_dir:
+            return False
+
+        calc_path = find_calc_file_in_sales(project_dir)
+        if not calc_path:
+            self.calc_path_edit.clear()
+            self.sheet_combo.clear()
+            self._set_currency_value("")
+            self.last_output_path = ""
+            if show_warning:
+                QMessageBox.warning(
+                    self,
+                    "DC Eltek",
+                    "В папке проекта не найден Excel calc в папке sales / sales docs.",
+                )
+            return False
+
+        if self.calc_path_edit.text().strip() != calc_path:
+            self.calc_path_edit.setText(calc_path)
+            self.last_output_path = ""
+        self._reload_calc_dependent_data(initial=False)
+        return True
 
     def select_template_file(self) -> None:
         start_dir = self.project_dir_edit.text().strip() or str(Path.home())
@@ -295,10 +459,10 @@ class DcEltekPage(QWidget):
         self._update_preview()
 
     def refresh_data(self) -> None:
-        self._load_sheet_names(initial=False)
-        self._auto_detect_currency(force=True)
-        self.remember_values()
-        self._update_preview()
+        if self.project_dir_edit.text().strip():
+            self._auto_find_calc_from_project(show_warning=False)
+        else:
+            self._reload_calc_dependent_data(initial=False)
         self._update_open_buttons()
 
     def _load_sheet_names(self, initial: bool) -> None:
