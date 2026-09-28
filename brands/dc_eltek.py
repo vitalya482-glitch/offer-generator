@@ -824,6 +824,39 @@ def _currency_from_text(text: str) -> str | None:
     return None
 
 
+def _detect_currency_from_rate(matrix: dict[int, dict[int, Any]]) -> str:
+    """Fallback для старых калькуляций Eltek.
+
+    В этих расчетах строка Course / Rate / Курс используется как коэффициент
+    пересчета. Если в такой строке коэффициент равен 1, исходная валюта — EUR.
+    Правило применяется только когда явное обозначение валюты не найдено.
+    """
+    rate_aliases = (
+        "course",
+        "rate",
+        "exchange rate",
+        "currency rate",
+        "курс",
+        "курс валют",
+        "курс валюты",
+    )
+
+    for row in sorted(matrix):
+        values = matrix.get(row, {})
+        row_text = " ".join(_normalize_text(value) for value in values.values()).strip()
+        if not row_text:
+            continue
+        if not any(_alias_matches(row_text, alias) for alias in rate_aliases):
+            continue
+
+        for value in values.values():
+            number = _to_number(value)
+            if number is not None and abs(float(number) - 1.0) < 1e-9:
+                return "EUR"
+
+    return ""
+
+
 def _detect_currency(
     matrix: dict[int, dict[int, Any]],
     formats: dict[int, dict[int, str]] | None = None,
@@ -831,10 +864,13 @@ def _detect_currency(
     unit_price_row: int | None = None,
     total_row: int | None = None,
 ) -> str:
-    """Ищет валюту только рядом с ценовыми строками.
+    """Определяет валюту расчета DC Eltek.
 
-    Важно: если валюта не указана в блоке Price per unit / Total per quantity / TOTAL,
-    возвращаем пустую строку, а не KZT по умолчанию.
+    Приоритет:
+    1. Явное обозначение валюты (EUR/USD/KZT или символ) возле ценовых строк.
+    2. Если явной валюты нет: строка Course/Rate/Курс со значением 1 означает EUR.
+    3. Если определить валюту нельзя — возвращается пустая строка, чтобы пользователь
+       выбрал валюту вручную в интерфейсе.
     """
     formats = formats or {}
     candidate_rows: list[int] = []
@@ -853,7 +889,8 @@ def _detect_currency(
                 currency = _currency_from_text(str(source or ""))
                 if currency:
                     return currency
-    return ""
+
+    return _detect_currency_from_rate(matrix)
 
 
 def detect_dc_eltek_currency(calc_path: str | Path, sheet_name: str) -> str:
