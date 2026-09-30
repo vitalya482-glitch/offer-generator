@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import sys
+from importlib import import_module
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from brands.registry import BRANDS
-from core.manager_profile import ManagerProfile
+if TYPE_CHECKING:
+    from core.manager_profile import ManagerProfile
 from core.project_scanner import clear_scan_cache
 from core.runtime_paths import app_icon_path
 from gui.ui_style import stylesheet, ui_scale
@@ -53,14 +56,6 @@ def run_gui() -> None:
         )
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("Для запуска GUI установите PySide6: pip install PySide6") from exc
-
-    from gui.settings_dialog import SettingsDialog
-    from gui.pages.stulz_page import StulzPage
-    from gui.pages.riello_page import RielloPage
-    from gui.pages.dc_eltek_page import DcEltekPage
-    from gui.pages.battery_page import BatteryPage
-    from gui.pages.hvac_page import HVACPage
-    from gui.pages.genset_page import GensetPage
 
     class OfferGeneratorWindow(QMainWindow):
         """Главное окно: только каркас приложения и общие сервисы.
@@ -143,6 +138,8 @@ def run_gui() -> None:
             self.settings.sync()
 
         def _open_settings_dialog(self) -> None:
+            from gui.settings_dialog import SettingsDialog
+
             dialog = SettingsDialog(self)
             if dialog.exec() == QDialog.Accepted:
                 dialog.apply_to_owner()
@@ -162,6 +159,8 @@ def run_gui() -> None:
 
         # ------------------------- общие данные -------------------------
         def _manager_profile(self) -> ManagerProfile:
+            from core.manager_profile import ManagerProfile
+
             return ManagerProfile(
                 name=self.manager_name_edit.text().strip(),
                 position=self.manager_position_edit.text().strip(),
@@ -262,6 +261,34 @@ def run_gui() -> None:
         def _on_brand_tab_changed(self, index: int) -> None:
             self.settings.setValue("brand", self._brand_for_tab_index(index))
             self.settings.sync()
+            # Give Qt time to paint the selected placeholder before importing
+            # Excel/PDF/Word dependencies and restoring the page's project.
+            QTimer.singleShot(50, self._load_active_page)
+
+        def _load_active_page(self) -> None:
+            index = self.brand_tabs.currentIndex()
+            module_name, class_name, attribute = self._page_specs[index]
+            if getattr(self, attribute, None) is not None:
+                return
+            placeholder = self.brand_tabs.widget(index)
+            label = placeholder.findChild(QLabel)
+            try:
+                page_class = getattr(import_module(module_name), class_name)
+                page = page_class(self)
+            except Exception as exc:
+                label.setText(f"Не удалось загрузить страницу: {exc}")
+                return
+            setattr(self, attribute, page)
+            title = self.brand_tabs.tabText(index)
+            self.brand_tabs.blockSignals(True)
+            try:
+                self.brand_tabs.removeTab(index)
+                self.brand_tabs.insertTab(index, page, title)
+                self.brand_tabs.setCurrentIndex(index)
+            finally:
+                self.brand_tabs.blockSignals(False)
+            placeholder.deleteLater()
+            self._apply_responsive_metrics(force=True)
 
         # ------------------------- UI helpers for pages -------------------------
         def _display_file(self, path_text: str) -> str:
@@ -401,21 +428,23 @@ def run_gui() -> None:
             self.brand_tabs.setObjectName("BrandTabs")
             self.brand_tabs.setDocumentMode(True)
 
-            self.stulz_page = StulzPage(self)
-            self.riello_page = RielloPage(self)
-            self.dc_eltek_page = DcEltekPage(self)
-            self.battery_page = BatteryPage(self)
-            self.hvac_page = HVACPage(self)
-            self.genset_page = GensetPage(self)
-
-            self.brand_tabs.addTab(self.stulz_page, "Stulz")
-            self.brand_tabs.addTab(self.riello_page, "Riello")
-            self.brand_tabs.addTab(self.dc_eltek_page, "DC Eltek")
-            self.brand_tabs.addTab(self.battery_page, "Battery")
-            self.brand_tabs.addTab(self.hvac_page, "HVAC")
-            self.brand_tabs.addTab(self.genset_page, "Genset")
-            self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
+            self._page_specs = (
+                ("gui.pages.stulz_page", "StulzPage", "stulz_page"),
+                ("gui.pages.riello_page", "RielloPage", "riello_page"),
+                ("gui.pages.dc_eltek_page", "DcEltekPage", "dc_eltek_page"),
+                ("gui.pages.battery_page", "BatteryPage", "battery_page"),
+                ("gui.pages.hvac_page", "HVACPage", "hvac_page"),
+                ("gui.pages.genset_page", "GensetPage", "genset_page"),
+            )
+            for title in ("Stulz", "Riello", "DC Eltek", "Battery", "HVAC", "Genset"):
+                placeholder = QWidget()
+                layout = QVBoxLayout(placeholder)
+                label = QLabel(f"Загрузка {title}…")
+                label.setAlignment(Qt.AlignCenter)
+                layout.addWidget(label)
+                self.brand_tabs.addTab(placeholder, title)
             self.brand_tabs.setCurrentIndex(self._tab_index_for_brand(self._saved("brand", "Stulz")))
+            self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
 
             content_layout.addWidget(self.brand_tabs)
 
@@ -523,4 +552,5 @@ def run_gui() -> None:
         app.setWindowIcon(QIcon(str(icon_path)))
     window = OfferGeneratorWindow()
     window.show()
+    QTimer.singleShot(50, window._load_active_page)
     app.exec()
