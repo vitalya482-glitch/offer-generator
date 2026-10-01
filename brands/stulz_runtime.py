@@ -186,7 +186,10 @@ def _explicit_physical_rows(context: OfferContext) -> list[dict[str, Any]]:
         if not row.get("enabled", True):
             continue
 
-        model = str(row.get("model") or "").strip()
+        # Prefer the model parsed from the selected physical Calc.pdf. The
+        # Excel position may contain a stale/legacy model label, while the
+        # selected supplier folder is the authoritative specification source.
+        model = str(row.get("spec_model") or row.get("model") or "").strip()
         source_dir = str(row.get("source_dir") or "").strip()
         calc_pdf = str(row.get("calc_pdf") or "").strip()
         key = str(row.get("key") or calc_pdf or source_dir or "").strip().lower()

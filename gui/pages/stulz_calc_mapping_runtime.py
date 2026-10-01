@@ -66,6 +66,11 @@ def _entry_dict(entry: object) -> dict[str, object]:
         "source_dir": str(getattr(entry, "source_dir", "") or ""),
         "source_label": str(getattr(entry, "source_label", "") or ""),
         "calc_pdf": str(getattr(entry, "calc_pdf", "") or ""),
+        # Keep the model parsed from the physical Calc.pdf separately from the
+        # model displayed in the user's calculation. They can differ when a
+        # supplier folder was explicitly selected for a legacy/mistyped Calc
+        # row, and the physical model is the one required by the PDF parser.
+        "spec_model": str(getattr(entry, "model", "") or ""),
     }
 
 
@@ -168,6 +173,7 @@ def selected_spec_models(self) -> list[dict[str, object]]:
             "source_dir": source_dir,
             "source_label": _plain(meta.get("source_label")),
             "calc_pdf": _plain(meta.get("calc_pdf")),
+            "spec_model": _plain(meta.get("spec_model")),
             "mapping_mode": _plain(meta.get("mapping_mode")),
         })
     return rows
@@ -301,6 +307,10 @@ def browse_manual_spec_files(self) -> None:
 
     entries = [_entry_dict(entry) for entry in discover_stulz_spec_entries(folder)]
     matching = [entry for entry in entries if _model_key(entry.get("model")) == _model_key(model)]
+    mismatch = False
+    if not matching and len(entries) == 1:
+        matching = entries
+        mismatch = True
     if not matching:
         QMessageBox.warning(
             self,
@@ -310,11 +320,26 @@ def browse_manual_spec_files(self) -> None:
         return
 
     chosen = matching[0]
+    if mismatch:
+        spec_model = _plain(chosen.get("model"))
+        answer = QMessageBox.question(
+            self,
+            "Модель не совпадает",
+            "В выбранной папке найдена спецификация для модели "
+            f"«{spec_model}», а позиция Calc — «{model}».\n\n"
+            "Использовать эту несовпадающую спецификацию для выбранной позиции?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
     meta.update({
         "spec_key": _plain(chosen.get("key")),
         "source_dir": _plain(chosen.get("source_dir")),
         "source_label": _plain(chosen.get("source_label")),
         "calc_pdf": _plain(chosen.get("calc_pdf")),
+        "spec_model": _plain(chosen.get("spec_model") or chosen.get("model")),
         "mapping_mode": "manual",
     })
     position_item.setData(Qt.UserRole, meta)
@@ -430,6 +455,7 @@ def refresh_spec_models(self, context=None) -> None:
                 "source_dir": _plain(chosen.get("source_dir")) if chosen else "",
                 "source_label": _plain(chosen.get("source_label")) if chosen else "",
                 "calc_pdf": _plain(chosen.get("calc_pdf")) if chosen else "",
+                "spec_model": _plain(chosen.get("spec_model") or chosen.get("model")) if chosen else "",
                 "mapping_mode": mapping_mode if chosen else "",
             }
             position_item.setData(Qt.UserRole, meta)
