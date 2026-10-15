@@ -10,12 +10,15 @@ from openpyxl import load_workbook
 
 _QTY_ALIASES = ("quantity", "qty", "q-ty", "кол-во", "количество")
 _MODEL_ALIASES = ("model", "модель", "equipment", "оборудование")
+_TABLE_NAME_ALIASES = _MODEL_ALIASES + ("article", "артикул", "наименование", "description", "описание")
 _UNIT_PRICE_ALIASES = (
     "total per unit",
     "price per unit",
     "unit price",
+    "per unit",
     "цена за единицу",
 )
+_TABLE_TOTAL_ALIASES = ("total", "итого", "amount", "сумма")
 _TOTAL_PER_QTY_ALIASES = (
     "total per quantity",
     "total by quantity",
@@ -83,7 +86,9 @@ class CalcService:
 class CalcParseResult:
     file_path: Path
     sheet_name: str
+    version: str = "Version 1"
     items: list[CalcItem] = field(default_factory=list)
+    options: list[tuple[str, float]] = field(default_factory=list)
     currency: str | None = None
     exchange_rate: float | None = None
     vat_percent: float | None = None
@@ -159,7 +164,7 @@ def read_sheet_names(file_path: str | Path) -> list[str]:
         raise FileNotFoundError(f"Excel файл не найден: {path}")
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        return list(workbook.sheetnames)
+        return _visible_sheet_names(workbook)
     finally:
         workbook.close()
 
@@ -180,7 +185,9 @@ def parse_calculation(
         selected = _select_sheet(workbook, sheet_name or preferred_sheet)
         sheet = SheetIndex(workbook[selected])
         result = CalcParseResult(file_path=path, sheet_name=selected)
+        result.version = _clean_display_text(sheet.value(1, 3) or sheet.value(1, 1) or "Version 1")
 
+        table_layout = _find_vertical_table_layout(sheet)
         qty_row = _find_quantity_row(sheet)
         model_row = _find_model_row(sheet, qty_row)
         unit_price_row = _find_last_row(sheet, _UNIT_PRICE_ALIASES)
@@ -196,7 +203,9 @@ def parse_calculation(
         if total_per_qty_row is None and grand_total_row is None:
             result.warnings.append("Не найдена итоговая строка TOTAL / Total per quantity.")
 
-        if qty_row and model_row:
+        if table_layout:
+            result.items = _extract_vertical_table_items(sheet, table_layout)
+        elif qty_row and model_row:
             result.items = _extract_items(
                 sheet,
                 model_row=model_row,
@@ -204,6 +213,7 @@ def parse_calculation(
                 unit_price_row=unit_price_row,
                 total_row=grand_total_row or total_per_qty_row,
             )
+        result.options = _extract_options(sheet, result.items, model_row, table_layout)
 
         result.exchange_rate = _find_numeric_near_label(sheet, _RATE_ALIASES)
         result.vat_percent = _find_numeric_near_label(sheet, _VAT_ALIASES)
@@ -229,22 +239,31 @@ def parse_calculation(
 
 
 def _select_sheet(workbook, requested: str | None) -> str:
-    if requested and requested in workbook.sheetnames:
+    sheet_names = _visible_sheet_names(workbook)
+    if not sheet_names:
+        raise ValueError("В Excel-файле не найдено листов для обработки.")
+
+    # A saved sheet name must not override the visibility rule. This also
+    # protects against old settings that still contain a now-hidden sheet.
+    if requested and requested in sheet_names:
         return requested
     if requested:
         wanted = normalize_text(requested)
-        for name in workbook.sheetnames:
+        for name in sheet_names:
             if normalize_text(name) == wanted:
                 return name
 
-    best_name = workbook.sheetnames[0]
+    best_name = sheet_names[0]
     best_score = -1
-    for name in workbook.sheetnames:
+    for name in sheet_names:
         ws = workbook[name]
         score = 0
         title = normalize_text(name)
-        if "ddp" in title:
-            score += 5
+        # DDP is a delivery term, not a reliable indicator of the active
+        # calculation sheet. Workbooks often keep an older DDP offer sheet
+        # alongside a newer dated calculation sheet.
+        if re.search(r"\b\d{1,2}[\s._/-]+\d{1,2}[\s._/-]+\d{2,4}\b", name):
+            score += 10
         if "almaty" in title or "алматы" in title:
             score += 3
         for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 50), values_only=True):
@@ -259,6 +278,140 @@ def _select_sheet(workbook, requested: str | None) -> str:
         if score > best_score:
             best_name, best_score = name, score
     return best_name
+
+
+def _visible_sheet_names(workbook) -> list[str]:
+    """Return worksheet names that are visible to the user.
+
+    Hidden and very-hidden worksheets commonly contain templates, archived
+    calculations, or helper data. They must not participate in sheet listing
+    or automatic selection. An empty result is intentional when every sheet
+    is hidden; the caller must not silently parse a hidden worksheet.
+    """
+    visible = [
+        worksheet.title
+        for worksheet in workbook.worksheets
+        if getattr(worksheet, "sheet_state", "visible") == "visible"
+    ]
+    return visible
+
+
+def _find_vertical_table_layout(sheet: SheetIndex) -> tuple[int, int, int, int | None, int | None] | None:
+    """Return a conventional row-oriented item table header, when present.
+
+    SAM calculators support both repeated horizontal item columns and ordinary
+    rows with Description / Quantity / Unit price / Total headers.  Both
+    layouts are normalized into the same ``CalcItem`` result.
+    """
+    candidates: list[tuple[int, int, int, int, int | None, int | None]] = []
+    for row in range(1, min(sheet.max_row, 100) + 1):
+        name_col = qty_col = unit_col = total_col = None
+        for col in range(1, sheet.max_column + 1):
+            text = normalize_text(sheet.value(row, col))
+            if not text:
+                continue
+            if name_col is None and text in _TABLE_NAME_ALIASES:
+                name_col = col
+            if qty_col is None and text in _QTY_ALIASES:
+                qty_col = col
+            if unit_col is None and any(alias in text for alias in _UNIT_PRICE_ALIASES):
+                unit_col = col
+            if total_col is None and any(alias in text for alias in _TABLE_TOTAL_ALIASES):
+                total_col = col
+        if name_col is None or qty_col is None or (unit_col is None and total_col is None):
+            continue
+        item_count = 0
+        for data_row in range(row + 1, min(sheet.max_row, row + 80) + 1):
+            name = _clean_display_text(sheet.value(data_row, name_col))
+            qty = _to_number(sheet.value(data_row, qty_col))
+            money = _to_number(sheet.value(data_row, total_col)) if total_col else _to_number(sheet.value(data_row, unit_col))
+            if name and qty not in (None, 0) and money not in (None, 0):
+                item_count += 1
+        if item_count:
+            score = item_count * 100 + (20 if unit_col else 0) + (20 if total_col else 0) + row
+            candidates.append((score, row, name_col, qty_col, unit_col, total_col))
+    if not candidates:
+        return None
+    _score, row, name_col, qty_col, unit_col, total_col = max(candidates)
+    return row, name_col, qty_col, unit_col, total_col
+
+
+def _extract_vertical_table_items(
+    sheet: SheetIndex,
+    layout: tuple[int, int, int, int | None, int | None],
+) -> list[CalcItem]:
+    header_row, name_col, qty_col, unit_col, total_col = layout
+    items: list[CalcItem] = []
+    for row in range(header_row + 1, sheet.max_row + 1):
+        name = _clean_display_text(sheet.value(row, name_col))
+        if not name:
+            continue
+        normalized = normalize_text(name)
+        if normalized in _TABLE_TOTAL_ALIASES or normalized.startswith("grand total"):
+            break
+        qty = _to_number(sheet.value(row, qty_col))
+        unit_price = _to_number(sheet.value(row, unit_col)) if unit_col else None
+        total_price = _to_number(sheet.value(row, total_col)) if total_col else None
+        if qty in (None, 0) or (unit_price in (None, 0) and total_price in (None, 0)):
+            continue
+        if total_price in (None, 0) and unit_price not in (None, 0):
+            total_price = float(unit_price) * float(qty)
+        if unit_price in (None, 0) and total_price not in (None, 0):
+            unit_price = float(total_price) / float(qty)
+        items.append(
+            CalcItem(
+                key=_make_key(name, row),
+                name=name,
+                qty=qty,
+                unit_price=unit_price,
+                total_price=total_price,
+                source_col=name_col,
+            )
+        )
+    return items
+
+
+def _extract_options(
+    sheet: SheetIndex,
+    items: list[CalcItem],
+    model_row: int | None,
+    table_layout: tuple[int, int, int, int | None, int | None] | None,
+) -> list[tuple[str, float]]:
+    """Read selected options using the same item quantity columns.
+
+    Options are supplementary data for the Stulz description.  They are kept
+    in the common parser so a brand adapter does not need a second sheet scan.
+    """
+    marker_row = next(
+        (row for row, _col, text in sheet.text_cells if text.startswith("options") or text.startswith("опции")),
+        None,
+    )
+    if marker_row is None:
+        return []
+
+    quantity_columns: list[int] = []
+    if table_layout:
+        quantity_columns.append(table_layout[2])
+    else:
+        for item in items:
+            column = item.source_col
+            if model_row and column > 1 and normalize_text(sheet.value(model_row, column - 1)) in _QTY_ALIASES:
+                column -= 1
+            if column not in quantity_columns:
+                quantity_columns.append(column)
+
+    options: list[tuple[str, float]] = []
+    for row in range(marker_row + 1, min(sheet.max_row, marker_row + 120) + 1):
+        name = _clean_display_text(sheet.value(row, 1))
+        if not name:
+            continue
+        normalized = normalize_text(name)
+        if any(alias in normalized for alias in ("total exw", "transport", "customs", "certificate", "storage", "price without", "margin", "price +", "vat", "ddp", "dap", "exw")):
+            break
+        quantity = sum(float(_to_number(sheet.value(row, col)) or 0) for col in quantity_columns)
+        if quantity > 0:
+            options.append((name, quantity))
+    return options
 
 
 

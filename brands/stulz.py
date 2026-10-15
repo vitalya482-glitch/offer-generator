@@ -644,7 +644,10 @@ def _build_offer_item_description(item: OfferItem, block: dict[str, Any] | None,
     if not block:
         return item.name
 
-    model = str(block.get("calc_model") or block.get("model") or item.name).strip() or item.name
+    # The commercial position is authoritative: model and quantity come from
+    # the Excel Calc row. The specification block contributes only technical
+    # data and options for that position.
+    model = str(item.name or block.get("model") or block.get("calc_model") or "").strip() or item.name
     parts: list[str] = []
 
     if options.get("stulz_unit", True):

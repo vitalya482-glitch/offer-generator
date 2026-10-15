@@ -7,6 +7,7 @@ import re
 
 from openpyxl import load_workbook
 
+from core.excel_calc_parser import parse_calculation
 from core.models import CalcData, OfferItem
 from core.utils import as_float, first_not_empty
 
@@ -579,38 +580,33 @@ def parse_stulz_calc(xlsx_path: Path, sheet_name: Optional[str] = None) -> CalcD
     if cache_key in _PARSE_CACHE:
         return copy.deepcopy(_PARSE_CACHE[cache_key])
 
-    wb = load_workbook(path, read_only=True, data_only=True)
+    common = parse_calculation(path, sheet_name=sheet_name)
+    if not common.items:
+        details = "; ".join(common.warnings) or "позиции не найдены"
+        raise ValueError(f"Не удалось прочитать Excel: {details}")
 
-    sheet_names = [sheet_name] if sheet_name and sheet_name in wb.sheetnames else list(wb.sheetnames)
-    sheet_names = sorted(sheet_names, key=lambda s: _sheet_priority(s, sheet_name))
-
-    errors: list[str] = []
-
-    # 1) Try calculation sheets first. Each sheet is materialized once into
-    # CachedSheet, and all parser lookups use that in-memory snapshot/index.
-    for name in sheet_names:
-        ws = CachedSheet(wb[name])
-        try:
-            if _find_offer_header(ws) and (_norm(name).startswith("кп") or "offer" in _norm(name)):
-                continue
-            result = _parse_calc_sheet(ws)
-            _PARSE_CACHE[cache_key] = copy.deepcopy(result)
-            return result
-        except Exception as exc:
-            errors.append(f"{name}: {exc}")
-
-    # 2) Fallback to ready КП/offer sheets.
-    offer_candidates = sorted(wb.sheetnames, key=lambda s: _sheet_priority(s, sheet_name), reverse=True)
-    for name in offer_candidates:
-        ws = CachedSheet(wb[name])
-        try:
-            result = _parse_offer_sheet(ws)
-            _PARSE_CACHE[cache_key] = copy.deepcopy(result)
-            return result
-        except Exception as exc:
-            errors.append(f"{name} КП: {exc}")
-
-    raise ValueError("Не удалось прочитать Excel. Подробности: " + " | ".join(errors[:6]))
+    result = CalcData(
+        sheet_name=common.sheet_name,
+        version=common.version,
+        currency=common.currency or "EUR",
+        vat_percent=float(common.vat_percent or 0.0),
+        exchange_rate=float(common.exchange_rate or 1.0),
+        delivery_basis=common.delivery_basis or "DDP",
+        items=[
+            OfferItem(
+                no=index,
+                name=item.name,
+                qty=float(item.qty or 0.0),
+                unit_price=float(item.unit_price or 0.0),
+                total_price=float(item.total_price or 0.0),
+            )
+            for index, item in enumerate(common.items, start=1)
+        ],
+        options=list(common.options),
+        installation_included=bool(common.installation.included),
+    )
+    _PARSE_CACHE[cache_key] = copy.deepcopy(result)
+    return result
 
 
 def list_sheets(xlsx_path: Path) -> list[str]:
@@ -619,7 +615,14 @@ def list_sheets(xlsx_path: Path) -> list[str]:
     if signature in _SHEETS_CACHE:
         return list(_SHEETS_CACHE[signature])
     wb = load_workbook(path, read_only=True, data_only=True)
-    sheets = list(wb.sheetnames)
+    try:
+        sheets = [
+            worksheet.title
+            for worksheet in wb.worksheets
+            if getattr(worksheet, "sheet_state", "visible") == "visible"
+        ]
+    finally:
+        wb.close()
     _SHEETS_CACHE[signature] = list(sheets)
     return sheets
 

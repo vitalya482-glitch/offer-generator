@@ -177,11 +177,42 @@ def _safe_find_stulz_drawing_pdf(pdf_dir: str | Path | None, calc: CalcData) -> 
 _spec_core.find_stulz_drawing_pdf = _safe_find_stulz_drawing_pdf
 
 
-def _explicit_physical_rows(context: OfferContext) -> list[dict[str, Any]]:
+def _explicit_physical_rows(context: OfferContext, calc: CalcData) -> list[dict[str, Any]]:
     """Return enabled GUI rows that already point to a concrete Calc folder."""
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
+    used_calc_indexes: set[int] = set()
+    calc_items = list(getattr(calc, "items", []) or [])
+
+    def source_item_for_row(row: dict[str, Any]):
+        # The GUI mapping stores the original Calc row identity. Prefer it so
+        # duplicate models remain independent physical specifications.
+        calc_key = str(row.get("calc_key") or "").strip()
+        if calc_key.startswith("calc:"):
+            try:
+                source_index = int(calc_key.split(":", 2)[1])
+            except (TypeError, ValueError):
+                source_index = -1
+            if 0 <= source_index < len(calc_items):
+                used_calc_indexes.add(source_index)
+                return calc_items[source_index]
+
+        row_model = _model_key(str(row.get("model") or ""))
+        for index, item in enumerate(calc_items):
+            if index in used_calc_indexes:
+                continue
+            if row_model and _model_key(getattr(item, "name", "")) == row_model:
+                used_calc_indexes.add(index)
+                return item
+
+        # A manually confirmed mismatched specification still belongs to the
+        # only Calc position when the workbook contains one equipment row.
+        if len(calc_items) == 1:
+            used_calc_indexes.add(0)
+            return calc_items[0]
+        return None
+
     for row in getattr(context, "spec_models", []) or []:
         if not row.get("enabled", True):
             continue
@@ -201,11 +232,18 @@ def _explicit_physical_rows(context: OfferContext) -> list[dict[str, Any]]:
         if calc_pdf and not source_dir:
             source_dir = str(Path(calc_pdf).parent)
 
+        source_item = source_item_for_row(row)
+        calc_model = str(getattr(source_item, "name", "") or row.get("model") or "").strip()
+        calc_qty = getattr(source_item, "qty", None) if source_item is not None else None
+        if calc_qty in (None, ""):
+            calc_qty = row.get("qty_value", row.get("qty", 1))
+
         rows.append(
             {
                 "key": key,
                 "model": model,
-                "qty": _positive_qty(row.get("qty_value", row.get("qty", 1))),
+                "calc_model": calc_model,
+                "qty": _positive_qty(calc_qty),
                 "source_dir": source_dir,
                 "calc_pdf": calc_pdf,
                 "source_label": str(row.get("source_label") or ""),
@@ -249,14 +287,24 @@ def _discover_selected_physical_specs(context: OfferContext, calc: CalcData) -> 
 
     allowed_keys = _selected_model_keys(context, calc)
     result: list[dict[str, Any]] = []
-    for entry in discover_stulz_spec_entries(context.pdf_dir):
+    calc_items = list(getattr(calc, "items", []) or [])
+    for index, entry in enumerate(discover_stulz_spec_entries(context.pdf_dir)):
         if allowed_keys and _model_key(entry.model) not in allowed_keys:
             continue
+        matching_item = next(
+            (
+                item
+                for item in calc_items
+                if _model_key(getattr(item, "name", "")) == _model_key(entry.model)
+            ),
+            None,
+        )
         result.append(
             {
                 "key": entry.key,
                 "model": entry.model,
-                "qty": entry.quantity,
+                "calc_model": str(getattr(matching_item, "name", "") or entry.model),
+                "qty": getattr(matching_item, "qty", None) if matching_item is not None else entry.quantity,
                 "source_dir": str(entry.source_dir),
                 "calc_pdf": str(entry.calc_pdf),
                 "source_label": entry.source_label,
@@ -266,7 +314,7 @@ def _discover_selected_physical_specs(context: OfferContext, calc: CalcData) -> 
 
 
 def _physical_specs(context: OfferContext, calc: CalcData) -> list[dict[str, Any]]:
-    explicit = _explicit_physical_rows(context)
+    explicit = _explicit_physical_rows(context, calc)
     if explicit:
         return explicit
 
@@ -321,33 +369,37 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
     warnings: list[str] = []
 
     for selected in _physical_specs(context, calc):
-        model = str(selected["model"])
+        spec_model = str(selected["model"])
+        calc_model = str(selected.get("calc_model") or spec_model)
         qty = _positive_qty(selected.get("qty", 1))
         source_dir = Path(str(selected.get("source_dir") or context.pdf_dir or ""))
-        model_calc = _calc_for_physical_spec(calc, model, qty)
+        # Parse supplier PDFs using the physical model, but keep the Calc
+        # position as the commercial model and quantity.
+        model_calc = _calc_for_physical_spec(calc, spec_model, qty)
 
         # Critical rule: once Calc.pdf has identified a physical specification
         # folder, Calc/WinPlan/drawing are searched only inside that folder.
         specification = build_stulz_specification(source_dir, model_calc)
-        label = str(selected.get("source_label") or source_dir.name or model)
-        warnings.extend(f"{model} [{label}]: {warning}" for warning in specification.warnings)
+        label = str(selected.get("source_label") or source_dir.name or calc_model)
+        warnings.extend(f"{calc_model} [{label}]: {warning}" for warning in specification.warnings)
         if specification.drawing_pdf is None:
             warnings.append(
-                f"{model} [{label}]: чертёж PDF уверенно не определён — изображение в КП не будет вставлено."
+                f"{calc_model} [{label}]: чертёж PDF уверенно не определён — изображение в КП не будет вставлено."
             )
         totals = specification.totals
 
         blocks.append(
             {
-                "model": model,
-                "calc_model": getattr(totals, "model", "") if totals else "",
-                "quantity": getattr(totals, "quantity", None) if totals else qty,
+                "model": calc_model,
+                "spec_model": spec_model,
+                "calc_model": calc_model,
+                "quantity": qty,
                 "total_list_price": getattr(totals, "total_list_price", None) if totals else None,
                 "total_purchase_price": getattr(totals, "total_purchase_price", None) if totals else None,
                 "unit_list_price": getattr(totals, "unit_list_price", None) if totals else None,
                 "unit_purchase_price": getattr(totals, "unit_purchase_price", None) if totals else None,
                 "currency": getattr(totals, "currency", "") if totals else "",
-                "options_title": f"Опции, включенные в комплектацию кондиционеров {model}:",
+                "options_title": f"Опции, включенные в комплектацию кондиционеров {calc_model}:",
                 "options": [
                     {
                         "description": option.description,
@@ -358,7 +410,7 @@ def build_specification_blocks(context: OfferContext, calc: CalcData) -> tuple[l
                     }
                     for option in specification.options
                 ],
-                "technical_specs_title": f"Технические характеристики кондиционеров {model}:",
+                "technical_specs_title": f"Технические характеристики кондиционеров {calc_model}:",
                 "technical_specs": [
                     {"name": row.name, "value": row.value, "is_section": row.is_section}
                     for row in specification.technical_specs
@@ -426,7 +478,9 @@ def _build_offer_item_description(
     if not block:
         return item.name
 
-    model = str(block.get("calc_model") or block.get("model") or item.name).strip() or item.name
+    # The commercial model comes from the Excel Calc row. Specification data
+    # must not replace the position name in the offer.
+    model = str(item.name or block.get("model") or block.get("calc_model") or "").strip() or item.name
     parts: list[str] = []
 
     if options.get("stulz_unit", True):

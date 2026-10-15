@@ -53,6 +53,13 @@ def _extract_items(
             continue
 
         qty = _legacy._to_number(sheet.value(qty_row, col))
+        # In SAM calculators an item can be represented by a repeated pair
+        # ``Q-ty | Model``. Prices belong to the Model column, while the
+        # quantity sits in the preceding Q-ty column.
+        if qty is None and col > 1:
+            preceding_header = _legacy.normalize_text(sheet.value(model_row, col - 1))
+            if preceding_header in {"q-ty", "qty", "quantity", "кол-во", "количество"}:
+                qty = _legacy._to_number(sheet.value(qty_row, col - 1))
         unit_price = _legacy._to_number(sheet.value(unit_price_row, col)) if unit_price_row else None
         total_price = _legacy._to_number(sheet.value(total_row, col)) if total_row else None
         qty = _recover_qty(qty, unit_price, total_price)
