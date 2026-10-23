@@ -305,7 +305,9 @@ def _find_vertical_table_layout(sheet: SheetIndex) -> tuple[int, int, int, int |
     """
     candidates: list[tuple[int, int, int, int, int | None, int | None]] = []
     for row in range(1, min(sheet.max_row, 100) + 1):
-        name_col = qty_col = unit_col = total_col = None
+        name_col = qty_col = None
+        unit_cols: list[int] = []
+        total_cols: list[int] = []
         for col in range(1, sheet.max_column + 1):
             text = normalize_text(sheet.value(row, col))
             if not text:
@@ -314,10 +316,11 @@ def _find_vertical_table_layout(sheet: SheetIndex) -> tuple[int, int, int, int |
                 name_col = col
             if qty_col is None and text in _QTY_ALIASES:
                 qty_col = col
-            if unit_col is None and any(alias in text for alias in _UNIT_PRICE_ALIASES):
-                unit_col = col
-            if total_col is None and any(alias in text for alias in _TABLE_TOTAL_ALIASES):
-                total_col = col
+            if any(alias in text for alias in _UNIT_PRICE_ALIASES):
+                unit_cols.append(col)
+            if any(alias in text for alias in _TABLE_TOTAL_ALIASES):
+                total_cols.append(col)
+        unit_col, total_col = _select_table_money_columns(sheet, row, unit_cols, total_cols)
         if name_col is None or qty_col is None or (unit_col is None and total_col is None):
             continue
         item_count = 0
@@ -334,6 +337,64 @@ def _find_vertical_table_layout(sheet: SheetIndex) -> tuple[int, int, int, int |
         return None
     _score, row, name_col, qty_col, unit_col, total_col = max(candidates)
     return row, name_col, qty_col, unit_col, total_col
+
+
+def _select_table_money_columns(
+    sheet: SheetIndex,
+    header_row: int,
+    unit_cols: list[int],
+    total_cols: list[int],
+) -> tuple[int | None, int | None]:
+    """Choose the price columns for a row-oriented HVAC calculation.
+
+    HVAC calculators can expose the source price first and then append a
+    second, final price block after margin, currency conversion and financing.
+    In that layout the rightmost exact ``TOTAL`` column is the amount that
+    belongs in the offer.  Prefer its matching ``Total per unit`` column and
+    otherwise derive the unit price from the selected total.
+    """
+    normalized_headers = {
+        col: normalize_text(sheet.value(header_row, col))
+        for col in set(unit_cols + total_cols)
+    }
+
+    non_unit_total_cols = [
+        col
+        for col in total_cols
+        if normalized_headers.get(col)
+        not in {"total per unit", "price per unit", "unit price", "per unit", "цена за единицу"}
+    ]
+    exact_total_cols = [
+        col for col in non_unit_total_cols if normalized_headers.get(col) in {"total", "итого"}
+    ]
+    quantity_total_cols = [
+        col
+        for col in non_unit_total_cols
+        if normalized_headers.get(col) in {"total per quantity", "total by quantity", "сумма по количеству"}
+    ]
+    selected_total = (
+        max(exact_total_cols)
+        if exact_total_cols
+        else max(quantity_total_cols or non_unit_total_cols, default=None)
+    )
+
+    exact_total_per_unit = [
+        col
+        for col in unit_cols
+        if normalized_headers.get(col) in {"total per unit", "цена за единицу"}
+    ]
+    if exact_total_per_unit:
+        # In a multi-block HVAC table the final unit-price column is the one
+        # nearest to the selected final total column.
+        selected_unit = min(
+            exact_total_per_unit,
+            key=lambda col: (abs(col - selected_total) if selected_total else 0, -col),
+        )
+    elif unit_cols:
+        selected_unit = max(unit_cols)
+    else:
+        selected_unit = None
+    return selected_unit, selected_total
 
 
 def _extract_vertical_table_items(
@@ -451,10 +512,15 @@ def _find_model_row(sheet: SheetIndex, qty_row: int | None) -> int | None:
 
 
 def _find_grand_total_row(sheet: SheetIndex) -> int | None:
-    exact_total = sheet.find(("total", "итого"), exact=True)
-    if exact_total:
-        return max(row for row, _ in exact_total)
-    return _find_last_row(sheet, _GRAND_TOTAL_ALIASES)
+    # Do not mistake a column header such as ``TOTAL`` for a result row.
+    # A real total row must also contain at least one numeric value.
+    exact_total = sheet.find(("grand total", "total", "итого"), exact=True)
+    valid_rows = {
+        row
+        for row, _ in exact_total
+        if any(_to_number(sheet.value(row, col)) is not None for col in range(2, sheet.max_column + 1))
+    }
+    return max(valid_rows) if valid_rows else None
 
 
 def _extract_items(
