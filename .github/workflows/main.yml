@@ -347,7 +347,7 @@ jobs:
             }
             notes = @(
               "Раздельное обновление app/runtime через LVKUpdater.",
-              "Runtime скачивается при изменении замороженного кода, зависимостей или PyInstaller layout.",
+              "Runtime скачивается при изменении замороженного кода, зависимостей или PyInstaller layout."
             )
           }
 
