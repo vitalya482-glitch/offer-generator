@@ -18,13 +18,14 @@ from PySide6.QtWidgets import (
 )
 
 from core.manager_profile import find_manager_in_project
-from core.project_scanner import clear_scan_cache, scan_project_files
 from core.riello_offer_word import (
     generate_riello_word_offer,
     preview_riello_offer_calc,
     read_riello_offer_calc,
+    validate_riello_word_template,
 )
-from gui.path_helpers import extract_client_from_project_dir, infer_output_dir
+from gui.project_folder_selector import ProjectFolderSelector
+from core.runtime_paths import resource_path
 
 
 class RielloOfferPage(QWidget):
@@ -36,11 +37,19 @@ class RielloOfferPage(QWidget):
         self.settings = owner.settings
         self._updating_path_display = False
 
-        self.project_dir_path = self._saved("riello_offer/project_dir", self._saved("riello/project_dir", ""))
-        self.output_dir_path = self._saved("riello_offer/output_dir", self._saved("riello/output_dir", ""))
+        self.project_dir_path = self._saved("riello_offer/project_dir", "")
+        self.output_dir_path = self._saved("riello_offer/output_dir", "")
 
-        self.project_edit = QLineEdit(owner._display_dir(self.project_dir_path))
-        self.project_edit.setToolTip(self.project_dir_path)
+        self.project_selector = ProjectFolderSelector(
+            owner,
+            self.settings,
+            settings_key="riello_offer/project_dir",
+            available_brands=("Stulz", "Riello", "DC Eltek", "Generator", "HVAC", "Battery"),
+            initial_path=self.project_dir_path,
+            parent=self,
+        )
+        self.project_edit = self.project_selector.path_edit
+        self.project_selector.projectSelected.connect(self._on_project_folder_selected)
         self.client_edit = QLineEdit(self._saved("riello_offer/client", self._saved("riello/client", "ТОО Example")))
         self.calc_combo = QComboBox()
         self.calc_combo.setEditable(True)
@@ -76,14 +85,7 @@ class RielloOfferPage(QWidget):
         header.addWidget(self.generate_btn, alignment=Qt.AlignTop)
         layout.addLayout(header)
 
-        project_card = owner._card("Папка проекта")
-        project_grid = QGridLayout()
-        project_card.layout().addLayout(project_grid)
-        project_grid.setColumnStretch(1, 1)
-        project_grid.setVerticalSpacing(12)
-        project_grid.setHorizontalSpacing(10)
-        owner._add_row(project_grid, 0, "Папка проекта", self.project_edit, "Выбрать", self.browse_project_dir)
-        layout.addWidget(project_card)
+        layout.addWidget(self.project_selector.widget)
 
         files_card = owner._card("Riello: файлы и параметры КП")
         files_grid = QGridLayout()
@@ -119,7 +121,7 @@ class RielloOfferPage(QWidget):
         layout.addWidget(preview_card)
         layout.addStretch(1)
 
-        self.project_edit.textChanged.connect(self._on_project_text_changed)
+        self.project_selector.pathEdited.connect(self._on_project_text_changed)
         self.client_edit.textChanged.connect(self._remember_and_refresh)
         self.calc_combo.currentTextChanged.connect(self._remember_and_refresh)
         self.template_combo.currentTextChanged.connect(self._remember_and_refresh)
@@ -142,12 +144,19 @@ class RielloOfferPage(QWidget):
         return self.owner._path_from_combo(combo)
 
     def _set_line_path(self, line_edit: QLineEdit, path_text: str) -> None:
+        if line_edit is self.project_edit:
+            self._updating_path_display = True
+            try:
+                self.project_selector.set_project_path(path_text)
+            finally:
+                self._updating_path_display = False
+            return
         self._updating_path_display = True
         self.owner._set_line_path(line_edit, path_text, is_file=False)
         self._updating_path_display = False
 
     def project_path_text(self) -> str:
-        return self.project_dir_path or self.project_edit.toolTip() or self.project_edit.text().strip()
+        return self.project_selector.project_path_text()
 
     def output_path_text(self) -> str:
         return self.output_dir_path or self.output_edit.toolTip() or self.output_edit.text().strip()
@@ -186,25 +195,17 @@ class RielloOfferPage(QWidget):
             self.output_edit.setToolTip(self.output_dir_path)
         self.remember_values()
 
-    def adopt_project(self, path_text: str) -> None:
-        path_text = str(path_text or "").strip()
-        if not path_text or path_text == self.project_path_text():
-            return
-        self.project_dir_path = path_text
-        self._set_line_path(self.project_edit, path_text)
-        self.autofill_client(force=False)
-        self.scan_project(force=True)
-
     def browse_project_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта Riello", self.project_path_text())
-        if not path:
-            return
+        self.project_selector.browse()
+
+    def _on_project_folder_selected(self, _old_project: str, path: str) -> None:
         self.project_dir_path = path
-        self._set_line_path(self.project_edit, path)
         self.autofill_client(force=True)
-        if not self.output_path_text():
-            self.output_dir_path = infer_output_dir(path)
-            self._set_line_path(self.output_edit, self.output_dir_path)
+        # A newly selected project must never inherit the previous project's
+        # output folder from QSettings.  The Calc and the resulting КП belong
+        # to the project selected in this action.
+        self.output_dir_path = self.project_selector.project_info().output_dir
+        self._set_line_path(self.output_edit, self.output_dir_path)
         self.autofill_manager(force=False)
         self.scan_project(force=True)
 
@@ -248,9 +249,9 @@ class RielloOfferPage(QWidget):
         root = Path(text) if text else None
         if root is None or not root.exists():
             return
-        if force:
-            clear_scan_cache()
-        found = scan_project_files(root, use_cache=not force)
+        self.project_selector.scan_async(self._apply_project_scan, force=force)
+
+    def _apply_project_scan(self, found: dict[str, list[Path]]) -> None:
 
         old_calc = self._path_from_combo(self.calc_combo)
         self.calc_combo.blockSignals(True)
@@ -272,26 +273,31 @@ class RielloOfferPage(QWidget):
         self.template_combo.blockSignals(True)
         try:
             self.template_combo.clear()
-            if old_template and Path(old_template).exists():
-                self.owner._add_path_item(self.template_combo, old_template, is_file=True)
+            bundled_template = resource_path(Path("templates") / "riello" / "Offer_Company_17-08-26_TAGGED_UPS.docx")
+            if bundled_template.exists():
+                self.owner._add_path_item(self.template_combo, str(bundled_template), is_file=True)
             for path in found.get("word", []):
                 if self.owner._find_combo_path(self.template_combo, str(path)) < 0:
                     self.owner._add_path_item(self.template_combo, str(path), is_file=True)
+            if old_template and Path(old_template).exists() and self.owner._find_combo_path(self.template_combo, old_template) < 0:
+                self.owner._add_path_item(self.template_combo, old_template, is_file=True)
             if old_template:
                 idx = self.owner._find_combo_path(self.template_combo, old_template)
                 if idx >= 0:
                     self.template_combo.setCurrentIndex(idx)
+            elif self.template_combo.count():
+                self.template_combo.setCurrentIndex(0)
         finally:
             self.template_combo.blockSignals(False)
 
         if not self.output_path_text():
-            self.output_dir_path = infer_output_dir(str(root))
+            self.output_dir_path = self.project_selector.project_info().output_dir
             self._set_line_path(self.output_edit, self.output_dir_path)
         self.remember_values()
         self.refresh_preview()
 
     def autofill_client(self, force: bool = False) -> None:
-        client = extract_client_from_project_dir(self.project_path_text())
+        client = self.project_selector.client_name()
         if not client:
             return
         current = self.client_edit.text().strip()
@@ -346,6 +352,18 @@ class RielloOfferPage(QWidget):
             return
 
         try:
+            # Project folders often contain source specifications in DOCX
+            # format.  They are not offer templates.  If such a file is
+            # selected or restored from old settings, use the bundled tagged
+            # Riello template automatically.
+            try:
+                validate_riello_word_template(template_path)
+            except ValueError:
+                bundled_template = resource_path(Path("templates") / "riello" / "Offer_Company_17-08-26_TAGGED_UPS.docx")
+                validate_riello_word_template(bundled_template)
+                template_path = bundled_template
+                self._select_combo_path(self.template_combo, str(template_path))
+                self.remember_values()
             signer = self.owner._selected_signer()
             manager = self.owner._manager_profile()
             output = generate_riello_word_offer(

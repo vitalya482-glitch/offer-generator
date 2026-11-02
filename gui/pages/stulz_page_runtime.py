@@ -33,7 +33,7 @@ DESCRIPTION_OPTION_LABELS: dict[str, str] = {
 class StulzPage(_BaseStulzPage):
     """STULZ page with one GUI row per physical Calc.pdf specification set."""
 
-    def _row_metadata(self, model_item: QTableWidgetItem | None) -> dict[str, str]:
+    def _row_metadata(self, model_item: QTableWidgetItem | None) -> dict[str, object]:
         if not model_item:
             return {}
         raw = model_item.data(Qt.UserRole)
@@ -97,6 +97,11 @@ class StulzPage(_BaseStulzPage):
                     "source_dir": str(meta.get("source_dir") or ""),
                     "source_label": str(meta.get("source_label") or ""),
                     "calc_pdf": str(meta.get("calc_pdf") or ""),
+                    "unit_list_price": meta.get("unit_list_price"),
+                    "total_list_price": meta.get("total_list_price"),
+                    "unit_purchase_price": meta.get("unit_purchase_price"),
+                    "total_purchase_price": meta.get("total_purchase_price"),
+                    "currency": str(meta.get("currency") or "").upper(),
                 }
             )
         return models
@@ -113,6 +118,11 @@ class StulzPage(_BaseStulzPage):
                 "calc_pdf": str(entry.calc_pdf),
                 "source_dir": str(entry.source_dir),
                 "source_label": entry.source_label,
+                "unit_list_price": entry.unit_list_price,
+                "total_list_price": entry.total_list_price,
+                "unit_purchase_price": entry.unit_purchase_price,
+                "total_purchase_price": entry.total_purchase_price,
+                "currency": entry.currency,
             }
             for entry in discover_stulz_spec_entries(spec_dir)
         ]
@@ -136,6 +146,11 @@ class StulzPage(_BaseStulzPage):
                     "calc_pdf": str(entry.calc_pdf),
                     "source_dir": str(entry.source_dir),
                     "source_label": entry.source_label,
+                    "unit_list_price": entry.unit_list_price,
+                    "total_list_price": entry.total_list_price,
+                    "unit_purchase_price": entry.unit_purchase_price,
+                    "total_purchase_price": entry.total_purchase_price,
+                    "currency": entry.currency,
                 }
             )
         return models
@@ -282,33 +297,67 @@ class StulzPage(_BaseStulzPage):
         self.refresh_preview()
 
     def open_spec_preview(self) -> None:
-        """Open spec details without the description-option block moved to main page."""
+        """Create a Calc workbook from checked PDF model rows."""
 
         try:
-            from brands.registry import get_brand_module
-            from gui.spec_preview_dialog import SpecPreviewDialog
+            from core.stulz_calc_writer import StulzCalcWriter
 
+            self.validate_calc_parameters()
             context = self.make_context()
-            self.validate_context(context)
-            module = get_brand_module(self.brand_name)
-            calc = module.load_calc(context)
-            spec_blocks, warnings = module.build_specification_blocks(context, calc)
-            dialog = SpecPreviewDialog(
-                spec_blocks,
-                warnings,
-                self,
-                description_options=self.description_options(),
+            if not context.project_dir.exists():
+                raise FileNotFoundError("Выберите существующую папку проекта.")
+            if context.pdf_dir and not context.pdf_dir.exists():
+                raise FileNotFoundError("Выберите существующую папку спецификаций.")
+            parameters = self.calc_parameter_values()
+            self.refresh_spec_models(context)
+            selected_models = [
+                row for row in self.selected_spec_models()
+                if row.get("enabled", True) and str(row.get("model") or "").strip()
+            ]
+            if not selected_models:
+                if getattr(self, "spec_models_table", None) is not None and self.spec_models_table.rowCount() == 0:
+                    raise ValueError(
+                        "В выбранной папке спецификаций не найдены Calc.pdf. "
+                        "Проверьте поле «Папка спецификаций» или обновите её содержимое."
+                    )
+                raise ValueError("Отметьте хотя бы одну модель в таблице на вкладке «1. Собрать расчёт».")
+
+            output_path = Path(parameters["Сохранить Calc"])
+            if output_path.exists():
+                answer = QMessageBox.question(
+                    self,
+                    "Перезаписать Calc?",
+                    f"Файл уже существует:\n{output_path}\n\nПерезаписать его?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+
+            self.spec_preview_button.setEnabled(False)
+            self.spec_preview_button.setText("Формирую Calc…")
+            from PySide6.QtWidgets import QApplication
+            QApplication.processEvents()
+            saved_path = StulzCalcWriter().write(
+                template_path=parameters["Шаблон Calc"],
+                sheet_name=parameters["Лист шаблона"],
+                output_path=output_path,
+                models=selected_models,
+                currency=parameters["Валюта"],
+                delivery_terms=parameters["Условия поставки"],
+                delivery_point=parameters["Пункт поставки"],
+                exchange_rate=parameters["Курс"],
+                vat_percent=parameters["НДС, %"],
+                margin_percent=parameters["Маржа, %"],
             )
-
-            # Older SpecPreviewDialog still creates this group. Hide it here so
-            # there is a single source of truth: the main "Проверка данных" card.
-            for group in dialog.findChildren(QGroupBox):
-                if group.title().strip() == "Текст для включения в описание в КП":
-                    group.setVisible(False)
-
-            dialog.exec()
+            self.remember_values()
+            self.status_label.setText(f"Calc сформирован: {saved_path.name}")
+            QMessageBox.information(self, "Calc сформирован", f"Файл сохранён:\n{saved_path}")
         except Exception as exc:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть предпросмотр спецификаций:\n{exc}")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать Calc:\n{exc}")
+        finally:
+            self.spec_preview_button.setEnabled(True)
+            self.spec_preview_button.setText("Сформировать расчёт")
 
     def _short_source_label(self, entry: dict[str, object]) -> str:
         source_dir = str(entry.get("source_dir") or "")
@@ -331,9 +380,8 @@ class StulzPage(_BaseStulzPage):
         if self._updating_spec_models:
             return
 
-        # The base page is created with three columns. Runtime adds a fourth
-        # per-row switch controlling whether the Excel legend is printed in the
-        # specification headings.
+        # The separate Calc input table lives on workflow step 1. This table
+        # remains the legacy specification selection used while preparing КП.
         if table.columnCount() < 4:
             table.setColumnCount(4)
         table.setHorizontalHeaderLabels(["Вкл", "Модель", "Кол-во", "Легенда"])
@@ -376,6 +424,9 @@ class StulzPage(_BaseStulzPage):
             self._update_manual_mode_label()
 
             if not models:
+                self.status_label.setText(
+                    "Calc.pdf не найдены. Проверьте папку спецификаций или выберите PDF вручную."
+                )
                 return
 
             for entry in models:
@@ -405,6 +456,11 @@ class StulzPage(_BaseStulzPage):
                         "source_dir": str(entry.get("source_dir") or ""),
                         "source_label": str(entry.get("source_label") or ""),
                         "calc_pdf": str(entry.get("calc_pdf") or ""),
+                        "unit_list_price": entry.get("unit_list_price"),
+                        "total_list_price": entry.get("total_list_price"),
+                        "unit_purchase_price": entry.get("unit_purchase_price"),
+                        "total_purchase_price": entry.get("total_purchase_price"),
+                        "currency": str(entry.get("currency") or "").upper(),
                     },
                 )
                 files = entry.get("files") or []
@@ -430,8 +486,45 @@ class StulzPage(_BaseStulzPage):
                 table.setItem(row, 3, legend_item)
 
             table.resizeRowsToContents()
-        except Exception:
+            self.status_label.setText(f"Найдено позиций: {table.rowCount()}. Отметьте нужные для Calc.")
+        except Exception as exc:
             table.setRowCount(0)
+            self.status_label.setText(f"Не удалось прочитать позиции Calc.pdf: {exc}")
         finally:
             table.blockSignals(False)
             self._updating_spec_models = False
+
+    @staticmethod
+    def _money_table_item(value: object) -> QTableWidgetItem:
+        item = QTableWidgetItem("")
+        if value is not None:
+            try:
+                item.setText(f"{float(value):,.2f}".replace(",", " ").replace(".", ","))
+            except (TypeError, ValueError):
+                item.setText(str(value))
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        return item
+
+    def _on_spec_model_table_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating_spec_models:
+            return
+        row = item.row()
+        if item.column() == 2:
+            meta = self._row_metadata(self.spec_models_table.item(row, 1))
+            try:
+                quantity = float(item.text().strip().replace(",", "."))
+            except (TypeError, ValueError):
+                quantity = 0.0
+            for column, price_key in ((4, "unit_list_price"), (6, "unit_purchase_price")):
+                unit_price = meta.get(price_key)
+                total = float(unit_price) * quantity if unit_price is not None else None
+                self.spec_models_table.setItem(row, column, self._money_table_item(total))
+        checked = sum(
+            1 for index in range(self.spec_models_table.rowCount())
+            if self.spec_models_table.item(index, 0)
+            and self.spec_models_table.item(index, 0).checkState() == Qt.Checked
+        )
+        self.status_label.setText(
+            f"Найдено позиций: {self.spec_models_table.rowCount()}. В Calc отмечено: {checked}."
+        )

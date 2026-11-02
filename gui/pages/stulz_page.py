@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+import re
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -27,10 +30,9 @@ from brands.registry import get_brand_module
 from core.excel_reader import list_sheets
 from core.manager_profile import find_manager_in_project
 from core.models import OfferContext
-from core.project_scanner import clear_scan_cache, scan_project_files
+from core.runtime_paths import resource_path
+from gui.project_folder_selector import ProjectFolderSelector
 from gui.path_helpers import (
-    extract_brand_from_project_dir,
-    extract_client_from_project_dir,
     infer_output_dir,
     infer_specifications_dir,
 )
@@ -81,8 +83,30 @@ class StulzPage(QWidget):
         self.output_dir_path = self._saved("output_dir", "")
         self.spec_dir_path = self._saved("spec_dir", "")
 
-        self.project_edit = QLineEdit(self._display_dir(self.project_dir_path))
-        self.project_edit.setToolTip(self.project_dir_path)
+        self.project_selector = ProjectFolderSelector(
+            owner,
+            self.settings,
+            settings_key="project_dir",
+            available_brands=("Stulz", "Riello", "DC Eltek", "Generator", "HVAC", "Battery"),
+            initial_path=self.project_dir_path,
+            parent=self,
+        )
+        self.project_edit = self.project_selector.path_edit
+        self.project_selector.projectSelected.connect(self._on_project_folder_selected)
+        offer_project_dir = self._saved("stulz/offer_project_dir", self.project_dir_path)
+        self.offer_project_selector = ProjectFolderSelector(
+            owner,
+            self.settings,
+            settings_key="stulz/offer_project_dir",
+            available_brands=("Stulz", "Riello", "DC Eltek", "Generator", "HVAC", "Battery"),
+            initial_path=offer_project_dir,
+            parent=self,
+        )
+        self.offer_project_selector.projectSelected.connect(self._on_offer_project_folder_selected)
+        self.offer_calc_combo = QComboBox()
+        self.offer_calc_combo.setEditable(True)
+        self.offer_sheet_combo = QComboBox()
+        self.offer_sheet_combo.setEditable(True)
         self.client_edit = QLineEdit(self._saved("client", "ТОО Example"))
         self.calc_combo = QComboBox()
         self.calc_combo.setEditable(True)
@@ -94,13 +118,61 @@ class StulzPage(QWidget):
         self.spec_edit.setToolTip(self.spec_dir_path)
         self.output_edit = QLineEdit(self._display_dir(self.output_dir_path))
         self.output_edit.setToolTip(self.output_dir_path)
+
+        # Параметры нового Calc вынесены на первый шаг, чтобы пользователь
+        # видел все обязательные поля до запуска формирования расчёта.
+        saved_calc_template = self._saved("calc_template_path", "").strip()
+        default_calc_template = resource_path(Path("templates") / "calc exel" / "Calc_14-08-26 Stulz.xlsx")
+        if not saved_calc_template or not Path(saved_calc_template).exists():
+            saved_calc_template = str(default_calc_template) if default_calc_template.exists() else ""
+        self.calc_template_edit = QLineEdit(saved_calc_template)
+        self.calc_template_edit.setReadOnly(True)
+        self.calc_template_edit.setToolTip(self.calc_template_edit.text().strip())
+        self.calc_template_sheet_combo = QComboBox()
+        self.calc_template_sheet_combo.addItem("Сначала выберите шаблон Calc", "")
+        self.calc_output_edit = QLineEdit(self._saved("calc_output_path", ""))
+        self.calc_output_edit.setToolTip(self.calc_output_edit.text().strip())
+
+        self.calc_delivery_combo = QComboBox()
+        self.calc_delivery_combo.setEditable(True)
+        self.calc_delivery_combo.addItem("Не указано", "")
+        for term in ("EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FOB", "CFR", "CIF"):
+            self.calc_delivery_combo.addItem(term, term)
+        self.calc_delivery_combo.setCurrentIndex(0)
+
+        self.calc_delivery_point_combo = QComboBox()
+        self.calc_delivery_point_combo.setEditable(True)
+        self.calc_delivery_point_combo.addItem("Не указано", "")
+        for city in (
+            "Алматы", "Астана", "Шымкент", "Караганда", "Атырау", "Актау", "Актобе",
+            "Павлодар", "Усть-Каменогорск", "Семей", "Костанай", "Кокшетау",
+            "Петропавловск", "Тараз", "Талдыкорган", "Уральск", "Кызылорда",
+            "Туркестан", "Жезказган", "Экибастуз", "Темиртау", "Рудный", "Балхаш",
+        ):
+            self.calc_delivery_point_combo.addItem(city, city)
+        self.calc_delivery_point_combo.setCurrentIndex(0)
+
+        self.calc_currency_combo = QComboBox()
+        self.calc_currency_combo.addItem("Не указана", "")
+        self.calc_currency_combo.addItem("KZT", "KZT")
+        self.calc_currency_combo.addItem("EUR", "EUR")
+        self.calc_currency_combo.addItem("USD", "USD")
+        self.calc_currency_combo.setCurrentIndex(0)
+
+        self.calc_exchange_rate_edit = QLineEdit(self._saved("calc_exchange_rate", ""))
+        self.calc_exchange_rate_edit.setPlaceholderText("например 530")
+        self.calc_vat_edit = QLineEdit(self._saved("calc_vat_percent", ""))
+        self.calc_vat_edit.setPlaceholderText("например 16")
+        self.calc_margin_edit = QLineEdit(self._saved("calc_margin_percent", ""))
+        self.calc_margin_edit.setPlaceholderText("например 20")
         self.status_label = QLabel("Выберите папку проекта")
 
         self._load_saved_combo_paths()
+        self.load_calc_template_sheets(refresh=False)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(0)
 
         header = QHBoxLayout()
         h_text = QVBoxLayout()
@@ -110,79 +182,255 @@ class StulzPage(QWidget):
         page_subtitle.setObjectName("PageSubtitle")
         h_text.addWidget(page_title)
         h_text.addWidget(page_subtitle)
-        self.generate_btn = QPushButton("Сформировать КП")
-        self.generate_btn.setObjectName("PrimaryButton")
-        self.generate_btn.clicked.connect(self.generate)
         header.addLayout(h_text, stretch=1)
-        header.addWidget(self.generate_btn, stretch=0, alignment=Qt.AlignTop)
         layout.addLayout(header)
 
-        project_card = owner._card("Папка проекта")
-        project_grid = QGridLayout()
-        project_card.layout().addLayout(project_grid)
-        project_grid.setColumnStretch(1, 1)
-        project_grid.setVerticalSpacing(12)
-        project_grid.setHorizontalSpacing(10)
-        owner._add_row(project_grid, 0, "Папка проекта", self.project_edit, "Выбрать", self.browse_project_dir)
-        layout.addWidget(project_card)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setObjectName("StulzWorkflowTabs")
 
-        files_card = owner._card("Stulz: файлы и параметры КП")
+        self.calc_stage = QWidget()
+        self.offer_stage = QWidget()
+        self.positions_stage = QWidget()
+        self.tabs.addTab(self.calc_stage, "1. Собрать расчёт")
+        self.tabs.addTab(self.offer_stage, "2. Собрать КП")
+        self.tabs.addTab(self.positions_stage, "3. Позиции и цены")
+        self.tabs.currentChanged.connect(self._on_stage_changed)
+        saved_stage = str(self.settings.value("stulz/workspace_tab", "0") or "0")
+        try:
+            self.tabs.setCurrentIndex(max(0, min(2, int(saved_stage))))
+        except Exception:
+            self.tabs.setCurrentIndex(0)
+        layout.addWidget(self.tabs)
+
+        calc_layout = QVBoxLayout(self.calc_stage)
+        calc_layout.setContentsMargins(18, 18, 18, 18)
+        calc_layout.setSpacing(14)
+        calc_layout.addWidget(self.project_selector.widget)
+
+        files_card = owner._card("Stulz: источники расчёта")
         grid = QGridLayout()
         files_card.layout().addLayout(grid)
         grid.setColumnStretch(1, 1)
         grid.setVerticalSpacing(12)
         grid.setHorizontalSpacing(10)
 
-        owner._add_row(grid, 0, "Клиент", self.client_edit, None, None)
-        owner._add_row(grid, 1, "Excel-расчет", self.calc_combo, "Обновить", lambda: self.scan_project(force=True))
-        owner._add_row(grid, 2, "Лист Excel", self.sheet_combo, "Листы", self.load_sheets)
-        owner._add_row(grid, 3, "Word-шаблон", self.template_combo, "Выбрать", self.browse_template_file)
-        owner._add_row(grid, 4, "Папка спецификаций", self.spec_edit, "Выбрать", self.browse_spec_dir)
-        owner._add_row(grid, 5, "Папка результата", self.output_edit, "Выбрать", self.browse_output_dir)
-        layout.addWidget(files_card)
+        owner._add_row(grid, 0, "Excel-расчет", self.calc_combo, "Обновить", lambda: self.scan_project(force=True))
+        owner._add_row(grid, 1, "Лист Excel", self.sheet_combo, "Листы", self.load_sheets)
+        owner._add_row(grid, 2, "Папка спецификаций", self.spec_edit, "Выбрать", self.browse_spec_dir)
+        calc_layout.addWidget(files_card)
 
-        bottom = QHBoxLayout()
-        preview_card = owner._card("Проверка данных")
+        calc_parameters_card = owner._card("Параметры нового расчёта")
+        parameters_grid = QGridLayout()
+        calc_parameters_card.layout().addLayout(parameters_grid)
+        parameters_grid.setColumnStretch(1, 1)
+        parameters_grid.setColumnStretch(3, 1)
+        parameters_grid.setVerticalSpacing(12)
+        parameters_grid.setHorizontalSpacing(10)
+        owner._add_row(
+            parameters_grid,
+            0,
+            "Шаблон Calc",
+            self.calc_template_edit,
+            "Выбрать",
+            self.browse_calc_template,
+        )
+        owner._add_row(
+            parameters_grid,
+            1,
+            "Лист шаблона",
+            self.calc_template_sheet_combo,
+            None,
+            None,
+        )
+        owner._add_row(
+            parameters_grid,
+            2,
+            "Сохранить Calc",
+            self.calc_output_edit,
+            "Выбрать",
+            self.browse_calc_output,
+        )
+        owner._add_row(parameters_grid, 3, "Условия поставки", self.calc_delivery_combo, None, None)
+        owner._add_row(parameters_grid, 4, "Пункт поставки", self.calc_delivery_point_combo, None, None)
+        owner._add_row(parameters_grid, 5, "Валюта", self.calc_currency_combo, None, None)
+        owner._add_row(parameters_grid, 6, "Курс", self.calc_exchange_rate_edit, None, None)
+        owner._add_row(parameters_grid, 7, "НДС, %", self.calc_vat_edit, None, None)
+        owner._add_row(parameters_grid, 8, "Маржа, %", self.calc_margin_edit, None, None)
+        calc_parameters_hint = QLabel(
+            "Все поля обязательны для формирования Calc. Если значение не найдено автоматически, "
+            "оставьте его пустым и заполните вручную. Дополнительные расходы пока не используются."
+        )
+        calc_parameters_hint.setObjectName("Hint")
+        calc_parameters_hint.setWordWrap(True)
+        calc_parameters_card.layout().addWidget(calc_parameters_hint)
+        calc_layout.addWidget(calc_parameters_card)
+
+        calc_action_card = owner._card("Расчёт Calc")
+        calc_action_layout = QVBoxLayout()
+        calc_action_card.layout().addLayout(calc_action_layout)
+        calc_hint = QLabel(
+            "Проверьте найденные позиции и спецификации, затем откройте форму параметров расчёта."
+        )
+        calc_hint.setObjectName("Hint")
+        calc_hint.setWordWrap(True)
+        calc_action_layout.addWidget(calc_hint)
+        self.spec_preview_button = QPushButton("Сформировать расчёт")
+        self.spec_preview_button.setMinimumHeight(42)
+        self.spec_preview_button.setObjectName("PrimaryButton")
+        self.spec_preview_button.clicked.connect(self.generate_calc_file)
+        calc_action_layout.addWidget(self.spec_preview_button)
+        calc_layout.addWidget(calc_action_card)
+        calc_layout.addStretch(1)
+
+        offer_layout = QVBoxLayout(self.offer_stage)
+        offer_layout.setContentsMargins(18, 18, 18, 18)
+        offer_layout.setSpacing(14)
+        offer_layout.addWidget(self.offer_project_selector.widget)
+
+        offer_files_card = owner._card("Stulz: параметры КП")
+        offer_grid = QGridLayout()
+        offer_files_card.layout().addLayout(offer_grid)
+        offer_grid.setColumnStretch(1, 1)
+        offer_grid.setVerticalSpacing(12)
+        offer_grid.setHorizontalSpacing(10)
+        owner._add_row(offer_grid, 0, "Excel Calc", self.offer_calc_combo, "Обновить", self.refresh_offer_project_files)
+        owner._add_row(offer_grid, 1, "Лист Excel", self.offer_sheet_combo, "Листы", self.load_offer_sheets)
+        owner._add_row(offer_grid, 2, "Клиент", self.client_edit, None, None)
+        owner._add_row(offer_grid, 3, "Word-шаблон", self.template_combo, "Выбрать", self.browse_template_file)
+        owner._add_row(offer_grid, 4, "Папка результата", self.output_edit, "Выбрать", self.browse_output_dir)
+        offer_layout.addWidget(offer_files_card)
+
+        offer_header = QHBoxLayout()
+        offer_title = QLabel("Проверка и формирование КП")
+        offer_title.setObjectName("SectionTitle")
+        offer_header.addWidget(offer_title)
+        offer_header.addStretch(1)
+        self.generate_btn = QPushButton("Сформировать КП")
+        self.generate_btn.setObjectName("PrimaryButton")
+        self.generate_btn.clicked.connect(self.generate)
+        offer_header.addWidget(self.generate_btn)
+        offer_layout.addLayout(offer_header)
+
+        preview_card = owner._card("Проверка данных КП")
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
         preview_card.layout().addWidget(self.preview)
-        bottom.addWidget(preview_card, stretch=2)
+        offer_layout.addWidget(preview_card, stretch=1)
+        offer_layout.addStretch(1)
 
-        spec_card = owner._card("Спецификации")
+        calc_positions_card = owner._card("Позиции для нового Calc")
         spec_hint = QLabel(
-            "Модели берутся из выбранной папки спецификаций, а не из Excel КП. "
-            "Количество берется из Calc.pdf. Можно отключать позиции и менять количество."
+            "Позиции загружаются из Calc.pdf. Отметьте модели, которые должны попасть в новый Calc; "
+            "количество можно скорректировать перед формированием."
         )
         spec_hint.setObjectName("Hint")
         spec_hint.setWordWrap(True)
-        spec_card.layout().addWidget(spec_hint)
+        calc_positions_card.layout().addWidget(spec_hint)
 
+        self.calc_models_table = QTableWidget(0, 8)
+        self.calc_models_table.setHorizontalHeaderLabels([
+            "В Calc", "Модель", "Кол-во", "List total",
+            "Покупка / шт.", "Purchase total", "Валюта", "Файл Calc.pdf",
+        ])
+        self.calc_models_table.verticalHeader().setVisible(False)
+        self.calc_models_table.setAlternatingRowColors(True)
+        self.calc_models_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.calc_models_table.setMinimumHeight(190)
+        self.calc_models_table.setColumnWidth(0, 52)
+        self.calc_models_table.setColumnWidth(2, 80)
+        self.calc_models_table.setColumnWidth(3, 115)
+        self.calc_models_table.setColumnWidth(4, 120)
+        self.calc_models_table.setColumnWidth(5, 125)
+        self.calc_models_table.setColumnWidth(6, 72)
+        self.calc_models_table.horizontalHeader().setStretchLastSection(True)
+        self.calc_models_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        calc_positions_card.layout().addWidget(self.calc_models_table)
+        self.calc_models_status_label = QLabel("Выберите папку проекта для поиска Calc.pdf.")
+        self.calc_models_status_label.setObjectName("Hint")
+        calc_models_status_row = QHBoxLayout()
+        calc_models_status_row.addWidget(self.calc_models_status_label, stretch=1)
+        self.open_calc_button = QPushButton("Открыть расчёт")
+        self.open_calc_button.setObjectName("GhostButton")
+        self.open_calc_button.clicked.connect(self.open_generated_calc)
+        self.open_calc_folder_button = QPushButton("Открыть папку расчёта")
+        self.open_calc_folder_button.setObjectName("GhostButton")
+        self.open_calc_folder_button.clicked.connect(self.open_calc_output_folder)
+        calc_models_status_row.addWidget(self.open_calc_button)
+        calc_models_status_row.addWidget(self.open_calc_folder_button)
+        calc_positions_card.layout().addLayout(calc_models_status_row)
+
+        calc_positions_controls = QHBoxLayout()
+        self.calc_models_refresh_button = QPushButton("Обновить позиции")
+        self.calc_models_refresh_button.setObjectName("GhostButton")
+        self.calc_models_refresh_button.clicked.connect(self.refresh_calc_models_table)
+        self.calc_models_manual_button = QPushButton("Выбрать Calc.pdf вручную")
+        self.calc_models_manual_button.setObjectName("GhostButton")
+        self.calc_models_manual_button.clicked.connect(self.browse_calc_model_pdfs)
+        self.calc_models_auto_button = QPushButton("Автопоиск")
+        self.calc_models_auto_button.setObjectName("GhostButton")
+        self.calc_models_auto_button.clicked.connect(self.clear_calc_model_manual_selection)
+        calc_positions_controls.addWidget(self.calc_models_refresh_button)
+        calc_positions_controls.addWidget(self.calc_models_manual_button)
+        calc_positions_controls.addWidget(self.calc_models_auto_button)
+        calc_positions_controls.addStretch(1)
+        calc_positions_card.layout().addLayout(calc_positions_controls)
+
+        calc_layout.insertWidget(calc_layout.indexOf(calc_parameters_card), calc_positions_card)
+
+        positions_layout = QVBoxLayout(self.positions_stage)
+        positions_layout.setContentsMargins(18, 18, 18, 18)
+        positions_layout.setSpacing(14)
+        positions_title = QLabel("Stulz: позиции и цены")
+        positions_title.setObjectName("PageTitle")
+        positions_layout.addWidget(positions_title)
+        positions_hint = QLabel(
+            "Выбор моделей для нового Calc находится на подвкладке «1. Собрать расчёт». "
+            "Там можно проверить цены и отметить позиции, которые попадут в файл."
+        )
+        positions_hint.setObjectName("PageSubtitle")
+        positions_hint.setWordWrap(True)
+        positions_layout.addWidget(positions_hint)
+        spec_card = owner._card("Сопоставление позиций исходного Calc со спецификациями")
+        spec_map_hint = QLabel(
+            "Эта таблица используется при подготовке КП. Выбор позиций для нового файла Calc "
+            "находится на подвкладке «1. Собрать расчёт»."
+        )
+        spec_map_hint.setObjectName("Hint")
+        spec_map_hint.setWordWrap(True)
+        spec_card.layout().addWidget(spec_map_hint)
         self.spec_models_table = QTableWidget(0, 3)
-        self.spec_models_table.setHorizontalHeaderLabels(["Вкл", "Модель", "Кол-во"])
+        self.spec_models_table.setHorizontalHeaderLabels(["Позиция", "Кол-во", "Папка спецификации"])
         self.spec_models_table.verticalHeader().setVisible(False)
         self.spec_models_table.setAlternatingRowColors(True)
         self.spec_models_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.spec_models_table.setMinimumHeight(170)
-        self.spec_models_table.setColumnWidth(0, 52)
-        self.spec_models_table.setColumnWidth(2, 80)
-        self.spec_models_table.horizontalHeader().setStretchLastSection(False)
-        self.spec_models_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.spec_models_table.setMinimumHeight(190)
+        self.spec_models_table.horizontalHeader().setStretchLastSection(True)
+        self.spec_models_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         spec_card.layout().addWidget(self.spec_models_table)
-
-        self.spec_preview_button = QPushButton("Предпросмотр спецификаций")
-        self.spec_preview_button.setMinimumHeight(42)
-        self.spec_preview_button.setObjectName("PrimaryButton")
-        self.spec_preview_button.clicked.connect(self.open_spec_preview)
-        spec_card.layout().addWidget(self.spec_preview_button)
         spec_card.layout().addWidget(self.status_label)
-        bottom.addWidget(spec_card, stretch=1)
-        layout.addLayout(bottom)
+        positions_layout.addWidget(spec_card, stretch=1)
+        positions_layout.addStretch(1)
 
         self._ensure_runtime_layers_loaded()
         self._connect_changes()
+        self._update_calc_open_buttons()
         self.load_sheets(refresh=False)
         self.scan_project(force=False)
+        if self.offer_project_path_text() and Path(self.offer_project_path_text()).is_dir():
+            self.refresh_offer_project_files()
+        self.refresh_calc_models_table()
         self.refresh_preview()
+        self.settings.setValue("stulz/offer_project_dir", self.offer_project_path_text())
+
+    def _on_stage_changed(self, index: int) -> None:
+        """Сохраняет выбранную подвкладку и обновляет связанные данные."""
+        self.settings.setValue("stulz/workspace_tab", index)
+        self.settings.sync()
+        if index == 1 and hasattr(self, "preview"):
+            self.refresh_preview()
+        if index == 0 and hasattr(self, "calc_models_table"):
+            self.refresh_calc_models_table()
 
     # ------------------------- settings/path helpers -------------------------
     def _saved(self, key: str, default: str) -> str:
@@ -202,6 +450,13 @@ class StulzPage(QWidget):
         return self.owner._path_from_combo(combo)
 
     def _set_line_path(self, line_edit: QLineEdit, path_text: str, is_file: bool = False) -> None:
+        if line_edit is self.project_edit:
+            self._updating_path_display = True
+            try:
+                self.project_selector.set_project_path(path_text)
+            finally:
+                self._updating_path_display = False
+            return
         self._updating_path_display = True
         self.owner._set_line_path(line_edit, path_text, is_file=is_file)
         self._updating_path_display = False
@@ -215,7 +470,83 @@ class StulzPage(QWidget):
             self.spec_edit.blockSignals(False)
 
     def project_path_text(self) -> str:
-        return self.project_dir_path or self.project_edit.toolTip() or self.project_edit.text().strip()
+        return self.project_selector.project_path_text()
+
+    def offer_project_path_text(self) -> str:
+        return self.offer_project_selector.project_path_text()
+
+    def _on_offer_project_folder_selected(self, _old_project: str, path: str) -> None:
+        self.settings.setValue("stulz/offer_project_dir", path)
+        self.settings.sync()
+        if path:
+            self.refresh_offer_project_files()
+
+    def refresh_offer_project_files(self) -> None:
+        path = self.offer_project_path_text().strip()
+        if not path or not Path(path).is_dir():
+            self.status_label.setText("Выберите папку проекта для КП.")
+            return
+        self.status_label.setText("Сканирую файлы проекта для КП…")
+        self.offer_project_selector.scan_async(self._apply_offer_project_scan)
+
+    def load_offer_sheets(self) -> None:
+        current = self.offer_sheet_combo.currentText().strip() or self._saved("stulz/offer_sheet_name", "")
+        self.offer_sheet_combo.blockSignals(True)
+        self.offer_sheet_combo.clear()
+        calc_path = self._path_from_combo(self.offer_calc_combo).strip()
+        try:
+            if calc_path and Path(calc_path).exists():
+                sheets = list_sheets(Path(calc_path))
+                self.offer_sheet_combo.addItems(sheets)
+                if current and current in sheets:
+                    self.offer_sheet_combo.setCurrentText(current)
+        except Exception as exc:
+            self.offer_sheet_combo.addItem(f"Не удалось прочитать листы: {exc}")
+        finally:
+            self.offer_sheet_combo.blockSignals(False)
+
+    def _apply_offer_project_scan(self, found: dict[str, list[Path]]) -> None:
+        project_info = self.offer_project_selector.project_info(found.get("pdf_dirs", []))
+        current_calc = self._path_from_combo(self.offer_calc_combo)
+        self.offer_calc_combo.blockSignals(True)
+        self.offer_calc_combo.clear()
+        for path in found.get("excel", []):
+            self.owner._add_path_item(self.offer_calc_combo, str(path), is_file=True)
+        calc_index = self.owner._find_combo_path(self.offer_calc_combo, current_calc) if current_calc else -1
+        if calc_index < 0 and self.offer_calc_combo.count():
+            calc_index = 0
+        if calc_index >= 0:
+            self.offer_calc_combo.setCurrentIndex(calc_index)
+        self.offer_calc_combo.blockSignals(False)
+
+        current_template = self._path_from_combo(self.template_combo)
+        self.template_combo.blockSignals(True)
+        self.template_combo.clear()
+        for path in found.get("word", []):
+            self.owner._add_path_item(self.template_combo, str(path), is_file=True)
+        template_index = self.owner._find_combo_path(self.template_combo, current_template) if current_template else -1
+        if template_index < 0 and current_template and Path(current_template).exists():
+            self.owner._add_path_item(self.template_combo, current_template, is_file=True)
+            template_index = self.template_combo.count() - 1
+        if template_index < 0 and self.template_combo.count():
+            template_index = 0
+        if template_index >= 0:
+            self.template_combo.setCurrentIndex(template_index)
+        self.template_combo.blockSignals(False)
+
+        client = self.offer_project_selector.client_name()
+        if client:
+            self.client_edit.setText(client)
+        if project_info.output_dir:
+            self.output_dir_path = project_info.output_dir
+            self._set_line_path(self.output_edit, project_info.output_dir, is_file=False)
+        self.load_offer_sheets()
+        self.status_label.setText(
+            f"Файлы проекта для КП: Excel — {len(found.get('excel', []))}, "
+            f"Word — {len(found.get('word', []))}, PDF — {len(found.get('pdf_dirs', []))} папок."
+        )
+        self.remember_values()
+        self.refresh_preview()
 
     def output_path_text(self) -> str:
         return self.output_dir_path or self.output_edit.toolTip() or self.output_edit.text().strip()
@@ -239,8 +570,37 @@ class StulzPage(QWidget):
             self.sheet_combo.addItem(saved_sheet)
             self.sheet_combo.setCurrentText(saved_sheet)
 
+        saved_offer_calc = self._saved("stulz/offer_calc_path", "")
+        if saved_offer_calc:
+            self.owner._add_path_item(self.offer_calc_combo, saved_offer_calc, is_file=True)
+            self.offer_calc_combo.setCurrentIndex(0)
+        saved_offer_sheet = self._saved("stulz/offer_sheet_name", "")
+        if saved_offer_sheet:
+            self.offer_sheet_combo.addItem(saved_offer_sheet)
+            self.offer_sheet_combo.setCurrentText(saved_offer_sheet)
+
+        saved_delivery = self._saved("calc_delivery_terms", "")
+        if saved_delivery:
+            self.calc_delivery_combo.setCurrentText(saved_delivery)
+        saved_delivery_point = self._saved("calc_delivery_point", "")
+        if saved_delivery_point:
+            self.calc_delivery_point_combo.setCurrentText(saved_delivery_point)
+        saved_currency = self._saved("calc_currency", "").upper()
+        if saved_currency:
+            currency_index = self.calc_currency_combo.findData(saved_currency)
+            if currency_index >= 0:
+                self.calc_currency_combo.setCurrentIndex(currency_index)
+
     def _connect_changes(self) -> None:
-        self.project_edit.textChanged.connect(self.on_project_dir_changed)
+        self.project_selector.pathEdited.connect(self.on_project_dir_changed)
+        self.project_selector.pathEdited.connect(lambda _path: self.remember_values())
+        self.offer_project_selector.pathEdited.connect(
+            lambda path: self.settings.setValue("stulz/offer_project_dir", path)
+        )
+        self.offer_project_selector.path_edit.editingFinished.connect(self.refresh_offer_project_files)
+        self.offer_calc_combo.currentTextChanged.connect(self.load_offer_sheets)
+        self.offer_calc_combo.currentTextChanged.connect(self.refresh_preview)
+        self.offer_sheet_combo.currentTextChanged.connect(self.refresh_preview)
         self.client_edit.textChanged.connect(self.refresh_preview)
         self.calc_combo.currentTextChanged.connect(lambda _text: self.load_sheets())
         self.calc_combo.currentTextChanged.connect(self.refresh_preview)
@@ -248,6 +608,15 @@ class StulzPage(QWidget):
         self.sheet_combo.currentTextChanged.connect(self.refresh_preview)
         self.output_edit.textChanged.connect(self.on_output_dir_changed)
         self.spec_edit.textChanged.connect(self.on_spec_dir_changed)
+        self.calc_models_table.itemChanged.connect(self.on_calc_model_table_changed)
+        self.calc_output_edit.textChanged.connect(self.on_calc_output_changed)
+        self.calc_template_sheet_combo.currentIndexChanged.connect(self._on_calc_template_sheet_changed)
+        self.calc_exchange_rate_edit.textChanged.connect(self.refresh_preview)
+        self.calc_vat_edit.textChanged.connect(self.refresh_preview)
+        self.calc_margin_edit.textChanged.connect(self.refresh_preview)
+        self.calc_delivery_combo.currentTextChanged.connect(self.refresh_preview)
+        self.calc_delivery_point_combo.currentTextChanged.connect(self.refresh_preview)
+        self.calc_currency_combo.currentIndexChanged.connect(self.refresh_preview)
 
         for widget_signal in (
             self.project_edit.textChanged,
@@ -257,6 +626,15 @@ class StulzPage(QWidget):
             self.calc_combo.currentTextChanged,
             self.template_combo.currentTextChanged,
             self.sheet_combo.currentTextChanged,
+            self.calc_template_edit.textChanged,
+            self.calc_template_sheet_combo.currentTextChanged,
+            self.calc_output_edit.textChanged,
+            self.calc_exchange_rate_edit.textChanged,
+            self.calc_vat_edit.textChanged,
+            self.calc_margin_edit.textChanged,
+            self.calc_delivery_combo.currentTextChanged,
+            self.calc_delivery_point_combo.currentTextChanged,
+            self.calc_currency_combo.currentTextChanged,
         ):
             widget_signal.connect(lambda *_: self.remember_values())
 
@@ -306,6 +684,7 @@ class StulzPage(QWidget):
             self.project_edit.setToolTip(self.project_dir_path)
         self.autofill_client_from_project_dir()
         self.status_label.setText("Папка изменена. Нажмите «Обновить» или выберите папку через кнопку.")
+        self.refresh_calc_models_table()
         self.refresh_preview()
 
     def on_output_dir_changed(self) -> None:
@@ -319,15 +698,48 @@ class StulzPage(QWidget):
             self.spec_dir_path = self.spec_edit.text().strip()
             self.spec_edit.setToolTip(self.spec_dir_path)
         self.refresh_preview()
+        self.refresh_calc_models_table()
+
+    def on_calc_output_changed(self) -> None:
+        self.calc_output_edit.setToolTip(self.calc_output_edit.text().strip())
+        self._update_calc_open_buttons()
+        self.refresh_preview()
+
+    def _update_calc_open_buttons(self) -> None:
+        if not hasattr(self, "open_calc_button"):
+            return
+        output_text = self.calc_output_edit.text().strip()
+        output_path = Path(output_text) if output_text else None
+        self.open_calc_button.setEnabled(bool(output_path and output_path.is_file()))
+        self.open_calc_folder_button.setEnabled(bool(output_path and output_path.parent.is_dir()))
+
+    def open_generated_calc(self) -> None:
+        output_text = self.calc_output_edit.text().strip()
+        output_path = Path(output_text) if output_text else None
+        if not output_path or not output_path.is_file():
+            QMessageBox.warning(self, "Calc", "Сначала сформируйте расчёт или укажите существующий файл.")
+            self._update_calc_open_buttons()
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_path.resolve()))):
+            QMessageBox.warning(self, "Calc", f"Не удалось открыть файл:\n{output_path}")
+
+    def open_calc_output_folder(self) -> None:
+        output_text = self.calc_output_edit.text().strip()
+        output_path = Path(output_text) if output_text else None
+        folder = output_path.parent if output_path else None
+        if not folder or not folder.is_dir():
+            QMessageBox.warning(self, "Calc", "Папка для расчёта не найдена.")
+            self._update_calc_open_buttons()
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder.resolve()))):
+            QMessageBox.warning(self, "Calc", f"Не удалось открыть папку:\n{folder}")
 
     def browse_project_dir(self) -> None:
-        old_project = self.project_path_text().strip()
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", old_project)
-        if not path:
-            return
+        self.project_selector.browse()
 
+    def _on_project_folder_selected(self, old_project: str, path: str) -> None:
         self.project_dir_path = path
-        self._set_line_path(self.project_edit, path, is_file=False)
+        self.autofill_client_from_project_dir(force=True)
 
         if path != old_project:
             self.spec_dir_path = ""
@@ -335,12 +747,12 @@ class StulzPage(QWidget):
             self._set_line_path(self.spec_edit, "", is_file=False)
             self._set_line_path(self.output_edit, "", is_file=False)
 
-        self.autofill_client_from_project_dir(force=True)
-        brand = extract_brand_from_project_dir(path, tuple(["Stulz", "Riello", "DC Eltek", "Generator"]))
+        brand = self.project_selector.brand_name()
         if brand and brand != self.brand_name:
             self.owner._select_tab_for_brand(brand)
         self.scan_project(force=True)
         self.autofill_manager_from_project(force=False)
+        self.remember_values()
 
     def browse_output_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Выберите папку результата", self.output_path_text() or self.project_path_text())
@@ -355,6 +767,130 @@ class StulzPage(QWidget):
             self.spec_dir_path = path
             self._set_line_path(self.spec_edit, path, is_file=False)
             self.refresh_preview()
+
+    def browse_calc_template(self) -> None:
+        current = self.calc_template_edit.text().strip()
+        start_dir = str(Path(current).parent) if current else self.project_path_text()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите Excel-шаблон расчёта",
+            start_dir,
+            "Excel (*.xlsx *.xlsm)",
+        )
+        if path:
+            self.calc_template_edit.setText(path)
+            self.calc_template_edit.setToolTip(path)
+            self.load_calc_template_sheets()
+            self.refresh_preview()
+
+    def load_calc_template_sheets(self, refresh: bool = True) -> None:
+        """Загружает доступные листы выбранного Excel-шаблона."""
+        template_path = Path(self.calc_template_edit.text().strip())
+        saved_sheet = self._saved("calc_template_sheet", "").strip()
+        self.calc_template_sheet_combo.blockSignals(True)
+        try:
+            self.calc_template_sheet_combo.clear()
+            if not template_path.exists():
+                self.calc_template_sheet_combo.addItem("Сначала выберите шаблон Calc", "")
+                return
+
+            sheets = list_sheets(template_path)
+            self.calc_template_sheet_combo.addItem("Выберите лист шаблона", "")
+            for sheet in sheets:
+                self.calc_template_sheet_combo.addItem(sheet, sheet)
+            saved_index = self.calc_template_sheet_combo.findData(saved_sheet)
+            if saved_index >= 0:
+                self.calc_template_sheet_combo.setCurrentIndex(saved_index)
+            elif sheets:
+                self.calc_template_sheet_combo.setCurrentIndex(1)
+        except Exception as exc:
+            self.calc_template_sheet_combo.clear()
+            self.calc_template_sheet_combo.addItem(f"Не удалось прочитать листы: {exc}", "")
+        finally:
+            self.calc_template_sheet_combo.blockSignals(False)
+
+        self._on_calc_template_sheet_changed()
+        if refresh:
+            self.refresh_preview()
+
+    def _on_calc_template_sheet_changed(self, *_args) -> None:
+        self.settings.setValue(
+            "calc_template_sheet",
+            str(self.calc_template_sheet_combo.currentData() or ""),
+        )
+        self.settings.sync()
+
+    def browse_calc_output(self) -> None:
+        current = self.calc_output_edit.text().strip()
+        if current:
+            initial_path = current
+        else:
+            output_dir = self.output_path_text().strip() or self.project_path_text().strip()
+            project_name = Path(self.project_path_text().strip()).name or "Project"
+            safe_project_name = re.sub(r'[<>:"/\\|?*]+', "_", project_name).strip(" ._") or "Project"
+            filename = f"Calc_Stulz_{safe_project_name}_{datetime.now():%d-%m-%y}.xlsx"
+            initial_path = str(Path(output_dir) / filename) if output_dir else filename
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Куда сохранить расчёт Calc",
+            initial_path,
+            "Excel (*.xlsx)",
+        )
+        if path:
+            if not path.lower().endswith((".xlsx", ".xlsm")):
+                path += ".xlsx"
+            self.calc_output_edit.setText(path)
+
+    def calc_parameter_values(self) -> dict[str, str]:
+        """Возвращает значения обязательных полей нового расчёта."""
+
+        def combo_value(combo: QComboBox) -> str:
+            text = combo.currentText().strip()
+            return "" if not text or text == "Не указано" else text
+
+        return {
+            "Шаблон Calc": self.calc_template_edit.text().strip(),
+            "Лист шаблона": str(self.calc_template_sheet_combo.currentData() or "").strip(),
+            "Сохранить Calc": self.calc_output_edit.text().strip(),
+            "Условия поставки": combo_value(self.calc_delivery_combo),
+            "Пункт поставки": combo_value(self.calc_delivery_point_combo),
+            "Валюта": str(self.calc_currency_combo.currentData() or "").strip().upper(),
+            "Курс": self.calc_exchange_rate_edit.text().strip(),
+            "НДС, %": self.calc_vat_edit.text().strip(),
+            "Маржа, %": self.calc_margin_edit.text().strip(),
+        }
+
+    def validate_calc_parameters(self) -> None:
+        """Проверяет обязательные параметры до открытия предпросмотра Calc."""
+        values = self.calc_parameter_values()
+        for label, value in values.items():
+            if not value:
+                raise ValueError(f"Заполните поле «{label}» перед формированием расчёта.")
+
+        template_path = Path(values["Шаблон Calc"])
+        if not template_path.exists():
+            raise FileNotFoundError(f"Файл из поля «Шаблон Calc» не найден: {template_path}")
+        if template_path.suffix.lower() not in {".xlsx", ".xlsm"}:
+            raise ValueError("Поле «Шаблон Calc» должно содержать Excel-файл .xlsx или .xlsm.")
+        if values["Лист шаблона"] not in list_sheets(template_path):
+            raise ValueError("Выберите существующий лист в поле «Лист шаблона».")
+
+        output_path = Path(values["Сохранить Calc"])
+        if output_path.suffix.lower() not in {".xlsx", ".xlsm"}:
+            raise ValueError("Поле «Сохранить Calc» должно заканчиваться на .xlsx или .xlsm.")
+
+        for label in ("Курс", "НДС, %", "Маржа, %"):
+            try:
+                number = float(values[label].replace(",", "."))
+            except ValueError as exc:
+                raise ValueError(f"Поле «{label}» должно быть числом.") from exc
+            if number < 0:
+                raise ValueError(f"Поле «{label}» не может быть отрицательным.")
+        if float(values["Курс"].replace(",", ".")) <= 0:
+            raise ValueError("Поле «Курс» должно быть больше нуля.")
+        for label in ("НДС, %", "Маржа, %"):
+            if float(values[label].replace(",", ".")) > 100:
+                raise ValueError(f"Поле «{label}» не может быть больше 100%.")
 
     def browse_calc_file(self) -> None:
         current_calc = self._path_from_combo(self.calc_combo)
@@ -389,12 +925,12 @@ class StulzPage(QWidget):
             self.status_label.setText("Папка проекта не выбрана")
             return
 
-        if force:
-            clear_scan_cache()
+        self.project_selector.scan_async(self._apply_project_scan, force=force)
 
-        found = scan_project_files(project_dir, use_cache=not force)
+    def _apply_project_scan(self, found: dict[str, list[Path]]) -> None:
         old_calc = self._path_from_combo(self.calc_combo)
         old_template = self._path_from_combo(self.template_combo)
+        project_info = self.project_selector.project_info(found.get("pdf_dirs", []))
 
         self.calc_combo.blockSignals(True)
         self.calc_combo.clear()
@@ -421,7 +957,7 @@ class StulzPage(QWidget):
         self.template_combo.blockSignals(False)
 
         if not self.output_path_text().strip():
-            guessed_output_dir = infer_output_dir(str(project_dir))
+            guessed_output_dir = project_info.output_dir
             self.output_dir_path = guessed_output_dir
             self._set_line_path(self.output_edit, guessed_output_dir, is_file=False)
 
@@ -429,7 +965,7 @@ class StulzPage(QWidget):
         current_spec_dir = Path(current_spec_text) if current_spec_text else None
         should_guess_spec_dir = not current_spec_text or bool(current_spec_dir and not current_spec_dir.exists())
         if should_guess_spec_dir:
-            guessed_spec_dir = infer_specifications_dir(str(project_dir), found.get("pdf_dirs", []))
+            guessed_spec_dir = project_info.specifications_dir
             self._set_spec_dir_path(guessed_spec_dir)
 
         spec_hint = self._display_dir(self.spec_dir_path) if self.spec_dir_path else "не выбрана"
@@ -439,6 +975,7 @@ class StulzPage(QWidget):
         )
         self.load_sheets()
         self.refresh_preview()
+        self.refresh_calc_models_table()
 
     def load_sheets(self, refresh: bool = True) -> None:
         current = self.sheet_combo.currentText().strip() or self._saved("sheet_name", "")
@@ -460,7 +997,7 @@ class StulzPage(QWidget):
 
     # ------------------------- autofill manager/client -------------------------
     def autofill_client_from_project_dir(self, force: bool = False) -> None:
-        client = extract_client_from_project_dir(self.project_path_text())
+        client = self.project_selector.client_name()
         if not client:
             return
         current = self.client_edit.text().strip()
@@ -495,24 +1032,273 @@ class StulzPage(QWidget):
 
     # ------------------------- specifications -------------------------
     def open_spec_preview(self) -> None:
-        try:
-            from brands.stulz import build_specification_blocks, load_calc
-            from gui.spec_preview_dialog import SpecPreviewDialog
+        """Compatibility handler for older UI integrations."""
+        self.generate_calc_file()
 
-            context = self.make_context()
-            self.validate_context(context)
-            calc = load_calc(context)
-            spec_blocks, warnings = build_specification_blocks(context, calc)
-            dialog = SpecPreviewDialog(
-                spec_blocks,
-                warnings,
-                self,
-                description_options=self.description_options(),
+    def _calc_model_table_state(self) -> dict[str, tuple[bool, str]]:
+        state: dict[str, tuple[bool, str]] = {}
+        table = self.calc_models_table
+        for row in range(table.rowCount()):
+            check = table.item(row, 0)
+            model_item = table.item(row, 1)
+            quantity = table.item(row, 2)
+            meta = model_item.data(Qt.UserRole) if model_item else None
+            key = str(meta.get("key") or "") if isinstance(meta, dict) else ""
+            if key:
+                state[key] = (
+                    check.checkState() == Qt.Checked if check else True,
+                    quantity.text().strip() if quantity else "",
+                )
+        return state
+
+    def refresh_calc_models_table(self) -> None:
+        """Load PDF Calc models into the first workflow step, independently of source Excel."""
+        if not hasattr(self, "calc_models_table"):
+            return
+        if not getattr(self, "_calc_models_entries_ready", False):
+            previous = self._calc_model_table_state()
+            manual_paths = list(getattr(self, "_calc_manual_spec_files", []) or [])
+            project_text = self.project_path_text().strip()
+            spec_text = self.spec_path_text().strip()
+            self.calc_models_status_label.setText("Идёт загрузка позиций Calc.pdf…")
+            self.owner.run_background(
+                lambda: self._discover_calc_entries(manual_paths, project_text, spec_text),
+                lambda entries: self._continue_calc_models_refresh(entries, previous),
+                self._show_calc_models_error,
             )
-            dialog.exec()
-            self._save_description_options(dialog.description_options())
+            return
+
+        self._calc_models_entries_ready = False
+        table = self.calc_models_table
+        previous = getattr(self, "_calc_models_previous_state", {})
+        entries = getattr(self, "_calc_models_preloaded_entries", [])
+        table.blockSignals(True)
+        try:
+            table.setRowCount(0)
+            if not entries:
+                self.calc_models_status_label.setText(
+                    "В этой папке не найдены Calc.pdf. Проверьте папку спецификаций "
+                    "или выберите PDF вручную."
+                )
+                return
+
+            for entry in entries:
+                row = table.rowCount()
+                table.insertRow(row)
+                old_enabled, old_qty = previous.get(entry.key, (True, ""))
+
+                check = QTableWidgetItem("")
+                check.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+                check.setCheckState(Qt.Checked if old_enabled else Qt.Unchecked)
+
+                model_item = QTableWidgetItem(entry.model)
+                model_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                model_item.setData(Qt.UserRole, {
+                    "key": entry.key,
+                    "model": entry.model,
+                    "calc_pdf": str(entry.calc_pdf),
+                    "unit_list_price": entry.unit_list_price,
+                    "unit_purchase_price": entry.unit_purchase_price,
+                    "currency": entry.currency,
+                })
+                model_item.setToolTip(str(entry.calc_pdf))
+
+                qty_text = old_qty or self._format_qty_for_table(entry.quantity)
+                qty_item = QTableWidgetItem(qty_text)
+                qty_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+                try:
+                    quantity = float(qty_text.replace(",", "."))
+                except ValueError:
+                    quantity = 0.0
+
+                table.setItem(row, 0, check)
+                table.setItem(row, 1, model_item)
+                table.setItem(row, 2, qty_item)
+                table.setItem(row, 3, self._calc_money_item(
+                    entry.unit_list_price * quantity if entry.unit_list_price is not None else None
+                ))
+                table.setItem(row, 4, self._calc_money_item(entry.unit_purchase_price))
+                table.setItem(row, 5, self._calc_money_item(
+                    entry.unit_purchase_price * quantity if entry.unit_purchase_price is not None else None
+                ))
+                table.setItem(row, 6, QTableWidgetItem(entry.currency))
+                table.setItem(row, 7, QTableWidgetItem(entry.calc_pdf.name))
+
+            table.resizeRowsToContents()
+            self.calc_models_status_label.setText(
+                f"Найдено Calc.pdf: {table.rowCount()}. Отметьте позиции для включения в новый файл."
+            )
         except Exception as exc:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть предпросмотр спецификаций:\n{exc}")
+            table.setRowCount(0)
+            self.calc_models_status_label.setText(f"Не удалось прочитать Calc.pdf: {exc}")
+        finally:
+            table.blockSignals(False)
+
+    @staticmethod
+    def _discover_calc_entries(manual_paths, project_text: str, spec_text: str):
+        from core.stulz_spec_catalog import discover_stulz_spec_entries, load_stulz_spec_entry
+
+        if manual_paths:
+            return [entry for path in manual_paths if (entry := load_stulz_spec_entry(path)) is not None]
+        project_dir = Path(project_text) if project_text else None
+        roots = [Path(spec_text)] if spec_text else []
+        if project_dir and project_dir.exists():
+            roots.extend((Path(infer_specifications_dir(str(project_dir))), project_dir))
+        entries = []
+        seen_roots: set[str] = set()
+        seen_entries: set[str] = set()
+        for root in roots:
+            root_key = str(root.resolve()) if root.exists() else str(root)
+            if not root.exists() or root_key in seen_roots:
+                continue
+            seen_roots.add(root_key)
+            for entry in discover_stulz_spec_entries(root):
+                if entry.key not in seen_entries:
+                    seen_entries.add(entry.key)
+                    entries.append(entry)
+        return entries
+
+    def _continue_calc_models_refresh(self, entries, previous: dict[str, tuple[bool, str]]) -> None:
+        self._calc_models_preloaded_entries = entries
+        self._calc_models_previous_state = previous
+        self._calc_models_entries_ready = True
+        self.refresh_calc_models_table()
+
+    def _show_calc_models_error(self, error: Exception) -> None:
+        self.calc_models_table.setRowCount(0)
+        self.calc_models_status_label.setText(f"Не удалось прочитать Calc.pdf: {error}")
+
+    @staticmethod
+    def _calc_money_item(value: object) -> QTableWidgetItem:
+        item = QTableWidgetItem("")
+        if value is not None:
+            try:
+                item.setText(f"{float(value):,.2f}".replace(",", " ").replace(".", ","))
+            except (TypeError, ValueError):
+                item.setText(str(value))
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        return item
+
+    def on_calc_model_table_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 2:
+            model_item = self.calc_models_table.item(item.row(), 1)
+            meta = model_item.data(Qt.UserRole) if model_item else None
+            if isinstance(meta, dict):
+                try:
+                    quantity = float(item.text().strip().replace(",", "."))
+                except ValueError:
+                    quantity = 0.0
+                for column, key in ((3, "unit_list_price"), (5, "unit_purchase_price")):
+                    unit_price = meta.get(key)
+                    total = float(unit_price) * quantity if unit_price is not None else None
+                    self.calc_models_table.setItem(item.row(), column, self._calc_money_item(total))
+
+        selected_count = sum(
+            1 for row in range(self.calc_models_table.rowCount())
+            if self.calc_models_table.item(row, 0)
+            and self.calc_models_table.item(row, 0).checkState() == Qt.Checked
+        )
+        self.calc_models_status_label.setText(
+            f"Найдено Calc.pdf: {self.calc_models_table.rowCount()}. Отмечено для нового Calc: {selected_count}."
+        )
+
+    def selected_calc_models(self) -> list[dict[str, object]]:
+        models: list[dict[str, object]] = []
+        table = self.calc_models_table
+        for row in range(table.rowCount()):
+            check = table.item(row, 0)
+            model_item = table.item(row, 1)
+            qty_item = table.item(row, 2)
+            meta = model_item.data(Qt.UserRole) if model_item else None
+            if not isinstance(meta, dict):
+                continue
+            try:
+                quantity = float(qty_item.text().strip().replace(",", ".")) if qty_item else 0.0
+            except ValueError:
+                quantity = 0.0
+            models.append({
+                **meta,
+                "enabled": check.checkState() == Qt.Checked if check else True,
+                "qty_value": quantity,
+            })
+        return models
+
+    def browse_calc_model_pdfs(self) -> None:
+        start_dir = self.spec_path_text() or self.project_path_text()
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Выберите Calc.pdf", start_dir, "PDF (*.pdf)"
+        )
+        if paths:
+            self._calc_manual_spec_files = paths
+            self.refresh_calc_models_table()
+
+    def clear_calc_model_manual_selection(self) -> None:
+        self._calc_manual_spec_files = []
+        self.refresh_calc_models_table()
+
+    def generate_calc_file(self) -> None:
+        try:
+            from core.stulz_calc_writer import StulzCalcWriter
+
+            self.validate_calc_parameters()
+            self.refresh_calc_models_table()
+            selected = [row for row in self.selected_calc_models() if row.get("enabled")]
+            if not selected:
+                raise ValueError("Отметьте хотя бы одну позицию в таблице на вкладке «1. Собрать расчёт».")
+
+            values = self.calc_parameter_values()
+            output_path = Path(values["Сохранить Calc"])
+            if output_path.resolve() == Path(values["Шаблон Calc"]).resolve():
+                raise ValueError("Нельзя сохранять результат поверх файла шаблона.")
+            if output_path.exists():
+                answer = QMessageBox.question(
+                    self,
+                    "Перезаписать Calc?",
+                    f"Файл уже существует:\n{output_path}\n\nПерезаписать его?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+
+            self.spec_preview_button.setEnabled(False)
+            self.spec_preview_button.setText("Формирую Calc…")
+            QApplication.processEvents()
+            result = StulzCalcWriter().write(
+                template_path=values["Шаблон Calc"],
+                sheet_name=values["Лист шаблона"],
+                output_path=output_path,
+                models=selected,
+                currency=values["Валюта"],
+                delivery_terms=values["Условия поставки"],
+                delivery_point=values["Пункт поставки"],
+                exchange_rate=values["Курс"],
+                vat_percent=values["НДС, %"],
+                margin_percent=values["Маржа, %"],
+            )
+            self.remember_values()
+            self.calc_models_status_label.setText(f"Calc сформирован: {result.name}")
+            self._update_calc_open_buttons()
+            message = QMessageBox(self)
+            message.setWindowTitle("Calc сформирован")
+            message.setIcon(QMessageBox.Information)
+            message.setText("Расчёт успешно сформирован.")
+            message.setInformativeText(f"Файл сохранён:\n{result}")
+            open_file_action = message.addButton("Открыть расчёт", QMessageBox.ActionRole)
+            open_folder_action = message.addButton("Открыть папку расчёта", QMessageBox.ActionRole)
+            message.addButton("Закрыть", QMessageBox.AcceptRole)
+            message.exec()
+            clicked = message.clickedButton()
+            if clicked == open_file_action:
+                self.open_generated_calc()
+            elif clicked == open_folder_action:
+                self.open_calc_output_folder()
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать Calc:\n{exc}")
+        finally:
+            self.spec_preview_button.setEnabled(True)
+            self.spec_preview_button.setText("Сформировать расчёт")
 
     def clear_spec_models(self) -> None:
         self.spec_models_table.setRowCount(0)
@@ -668,13 +1454,14 @@ class StulzPage(QWidget):
 
     # ------------------------- context/generate/preview -------------------------
     def make_context(self) -> OfferContext:
-        project_dir = Path(self.project_path_text().strip())
+        project_dir = Path(self.offer_project_path_text().strip())
         output_dir = Path(self.output_path_text().strip() or project_dir)
-        spec_text = self.spec_path_text().strip()
-        pdf_dir = Path(spec_text) if spec_text else (project_dir if project_dir.exists() else None)
-        calc_text = self._path_from_combo(self.calc_combo).strip()
+        spec_text = infer_specifications_dir(str(project_dir)) if project_dir.exists() else ""
+        pdf_dir = Path(spec_text) if spec_text and Path(spec_text).exists() else (project_dir if project_dir.exists() else None)
+        calc_text = self._path_from_combo(self.offer_calc_combo).strip()
         template_text = self._path_from_combo(self.template_combo).strip()
         signer = self.owner._selected_signer()
+        calc_parameters = self.calc_parameter_values()
         return OfferContext(
             brand=self.brand_name,
             project_dir=project_dir,
@@ -682,7 +1469,7 @@ class StulzPage(QWidget):
             calc_path=Path(calc_text) if calc_text else Path("__calc_not_selected__.xlsx"),
             output_dir=output_dir,
             client_name=self.client_edit.text().strip() or "Client",
-            sheet_name=self.sheet_combo.currentText().strip() or None,
+            sheet_name=self.offer_sheet_combo.currentText().strip() or None,
             pdf_dir=pdf_dir,
             manager_name=self.owner.manager_name_edit.text().strip(),
             manager_position=self.owner.manager_position_edit.text().strip(),
@@ -692,7 +1479,7 @@ class StulzPage(QWidget):
             signer_position=signer["position"],
             spec_models=self.selected_spec_models(),
             description_options=self.description_options(),
-            brand_options={},
+            brand_options={"stulz_calc_parameters": calc_parameters},
         )
 
     def validate_context(self, context: OfferContext) -> None:
@@ -759,13 +1546,24 @@ class StulzPage(QWidget):
     # ------------------------- persistence/page hooks -------------------------
     def remember_values(self) -> None:
         self._set_saved("project_dir", self.project_path_text())
+        self._set_saved("stulz/offer_project_dir", self.offer_project_path_text())
+        self._set_saved("stulz/offer_calc_path", self._path_from_combo(self.offer_calc_combo))
+        self._set_saved("stulz/offer_sheet_name", self.offer_sheet_combo.currentText().strip())
         self._set_saved("client", self.client_edit.text().strip())
         self._set_saved("calc_path", self._path_from_combo(self.calc_combo))
         self._set_saved("template_path", self._path_from_combo(self.template_combo))
         self._set_saved("sheet_name", self.sheet_combo.currentText().strip())
         self._set_saved("output_dir", self.output_path_text())
         self._set_saved("spec_dir", self.spec_path_text())
-        self._set_saved("brand", self.brand_name)
+        self._set_saved("calc_template_path", self.calc_template_edit.text().strip())
+        self._set_saved("calc_template_sheet", str(self.calc_template_sheet_combo.currentData() or "").strip())
+        self._set_saved("calc_output_path", self.calc_output_edit.text().strip())
+        self._set_saved("calc_delivery_terms", self.calc_delivery_combo.currentText().strip())
+        self._set_saved("calc_delivery_point", self.calc_delivery_point_combo.currentText().strip())
+        self._set_saved("calc_currency", str(self.calc_currency_combo.currentData() or "").strip().upper())
+        self._set_saved("calc_exchange_rate", self.calc_exchange_rate_edit.text().strip())
+        self._set_saved("calc_vat_percent", self.calc_vat_edit.text().strip())
+        self._set_saved("calc_margin_percent", self.calc_margin_edit.text().strip())
         self.settings.sync()
 
     def on_settings_changed(self) -> None:
@@ -783,14 +1581,47 @@ class StulzPage(QWidget):
         self.output_dir_path = ""
         self.spec_dir_path = ""
         self._set_line_path(self.project_edit, "", is_file=False)
+        self.offer_project_selector.set_project_path("")
         self._set_line_path(self.output_edit, "", is_file=False)
         self._set_line_path(self.spec_edit, "", is_file=False)
+        default_calc_template = resource_path(Path("templates") / "calc exel" / "Calc_14-08-26 Stulz.xlsx")
+        self.calc_template_edit.setText(str(default_calc_template) if default_calc_template.exists() else "")
+        self.calc_template_edit.setToolTip(self.calc_template_edit.text().strip())
+        self.load_calc_template_sheets(refresh=False)
+        self.calc_output_edit.clear()
+        self.calc_delivery_combo.setCurrentIndex(0)
+        self.calc_delivery_point_combo.setCurrentIndex(0)
+        self.calc_currency_combo.setCurrentIndex(0)
+        self.calc_exchange_rate_edit.clear()
+        self.calc_vat_edit.clear()
+        self.calc_margin_edit.clear()
         self.calc_combo.clear()
+        self.offer_calc_combo.clear()
+        self.offer_sheet_combo.clear()
         self.template_combo.clear()
         self.sheet_combo.clear()
         self.clear_spec_models()
+        self.calc_models_table.setRowCount(0)
+        self._calc_manual_spec_files = []
+        self.calc_models_status_label.setText("Кэш очищен. Выберите папку проекта заново.")
         self.preview.setPlainText("Кэш очищен. Выберите папку проекта заново.")
         self.status_label.setText("Кэш очищен. Выберите папку проекта заново.")
+        for key in (
+            "calc_template_path",
+            "calc_template_sheet",
+            "calc_output_path",
+            "calc_delivery_terms",
+            "calc_delivery_point",
+            "calc_currency",
+            "calc_exchange_rate",
+            "calc_vat_percent",
+            "calc_margin_percent",
+            "stulz/offer_project_dir",
+            "stulz/offer_calc_path",
+            "stulz/offer_sheet_name",
+        ):
+            self.settings.remove(key)
+        self.settings.sync()
 
     def apply_responsive_metrics(self, scale: float) -> None:
         self.generate_btn.setMinimumWidth(int(220 * scale))

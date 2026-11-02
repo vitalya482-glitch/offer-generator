@@ -1,0 +1,17 @@
+# Общие параметры расчёта.
+brand=Riello
+scenario=DDP
+client_name=ТОО Example
+delivery_city=Алматы
+currency=EUR
+exchange_rate=1
+margin_percent=20
+vat_percent=0
+
+# Формат позиции:
+# position=код|название|бренд|количество|цена_за_единицу|общая_цена|валюта|источник|описание
+position=TEST-001|Тестовая позиция|Riello|2|100|0|EUR|price-list|Базовая позиция
+
+# Формат расхода:
+# expense=название|значение|is_percent
+expense=Транспорт|50|false

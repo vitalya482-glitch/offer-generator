@@ -31,7 +31,7 @@ SIGNERS = {
 
 def run_gui() -> None:
     try:
-        from PySide6.QtCore import Qt, QSettings, QTimer
+        from PySide6.QtCore import QObject, QRunnable, Qt, QSettings, QThreadPool, QTimer, Signal
         from PySide6.QtGui import QFont, QIcon
         from PySide6.QtWidgets import (
             QApplication,
@@ -46,6 +46,7 @@ def run_gui() -> None:
             QMainWindow,
             QMessageBox,
             QPushButton,
+            QProgressBar,
             QRadioButton,
             QScrollArea,
             QSizePolicy,
@@ -56,6 +57,28 @@ def run_gui() -> None:
         )
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("Для запуска GUI установите PySide6: pip install PySide6") from exc
+
+    class _BackgroundSignals(QObject):
+        completed = Signal(object, object, object, object, object)
+
+    class _BackgroundTask(QRunnable):
+        def __init__(self, task, success_callback, error_callback) -> None:
+            super().__init__()
+            self.task = task
+            self.success_callback = success_callback
+            self.error_callback = error_callback
+            self.signals = _BackgroundSignals()
+
+        def run(self) -> None:
+            try:
+                result = self.task()
+                error = None
+            except Exception as exc:
+                result = None
+                error = exc
+            self.signals.completed.emit(
+                self, result, error, self.success_callback, self.error_callback
+            )
 
     class OfferGeneratorWindow(QMainWindow):
         """Главное окно: только каркас приложения и общие сервисы.
@@ -79,6 +102,13 @@ def run_gui() -> None:
             self._base_font_size = 10
             self._last_scale = 0.0
             self._responsive_widgets: list[QWidget] = []
+            self._background_jobs: set[_BackgroundTask] = set()
+            self._loading_count = 0
+            self._loading_frames = ("◐", "◓", "◑", "◒")
+            self._loading_frame_index = 0
+            self._loading_timer = QTimer(self)
+            self._loading_timer.setInterval(120)
+            self._loading_timer.timeout.connect(self._animate_loading)
 
             # Данные исполнителя — общие для всех страниц и редактируются в настройках.
             self.manager_name_edit = QLineEdit(self._saved("manager_name", ""))
@@ -258,6 +288,44 @@ def run_gui() -> None:
                 return
             self.brand_tabs.setCurrentIndex(self._tab_index_for_brand(brand))
 
+        def run_background(self, task, on_success, on_error=None) -> None:
+            """Выполняет файловую подготовку вне GUI-потока и показывает индикатор."""
+            worker = _BackgroundTask(task, on_success, on_error)
+            worker.signals.completed.connect(self._on_background_completed)
+            self._background_jobs.add(worker)
+            self._loading_count += 1
+            self._update_loading_indicator()
+            QThreadPool.globalInstance().start(worker)
+
+        def _on_background_completed(self, worker, result, error, on_success, on_error) -> None:
+            self._background_jobs.discard(worker)
+            try:
+                if error is None:
+                    on_success(result)
+                elif on_error:
+                    on_error(error)
+                else:
+                    QMessageBox.warning(self, "Ошибка загрузки", str(error))
+            except Exception as exc:
+                QMessageBox.warning(self, "Ошибка загрузки", str(exc))
+            finally:
+                self._loading_count = max(0, self._loading_count - 1)
+                self._update_loading_indicator()
+
+        def _animate_loading(self) -> None:
+            self._loading_frame_index = (self._loading_frame_index + 1) % len(self._loading_frames)
+            self.loading_spinner.setText(self._loading_frames[self._loading_frame_index])
+
+        def _update_loading_indicator(self) -> None:
+            if not hasattr(self, "loading_indicator"):
+                return
+            is_loading = self._loading_count > 0
+            self.loading_indicator.setVisible(is_loading)
+            if is_loading and not self._loading_timer.isActive():
+                self._loading_timer.start()
+            elif not is_loading:
+                self._loading_timer.stop()
+
         def _on_brand_tab_changed(self, index: int) -> None:
             self.settings.setValue("brand", self._brand_for_tab_index(index))
             self.settings.sync()
@@ -272,11 +340,33 @@ def run_gui() -> None:
                 return
             placeholder = self.brand_tabs.widget(index)
             label = placeholder.findChild(QLabel)
+            if getattr(self, "_page_import_index", None) == index:
+                return
+            self._page_import_index = index
+            self.run_background(
+                lambda: getattr(import_module(module_name), class_name),
+                lambda page_class: self._finish_page_load(index, attribute, page_class),
+                lambda exc: self._show_page_load_error(index, exc),
+            )
+
+        def _show_page_load_error(self, index: int, error: Exception) -> None:
+            if index < self.brand_tabs.count():
+                label = self.brand_tabs.widget(index).findChild(QLabel)
+                if label:
+                    label.setText(f"Не удалось загрузить страницу: {error}")
+            self._page_import_index = None
+
+        def _finish_page_load(self, index: int, attribute: str, page_class) -> None:
+            self._page_import_index = None
+            if index >= self.brand_tabs.count():
+                return
+            placeholder = self.brand_tabs.widget(index)
+            label = placeholder.findChild(QLabel)
             try:
-                page_class = getattr(import_module(module_name), class_name)
                 page = page_class(self)
             except Exception as exc:
-                label.setText(f"Не удалось загрузить страницу: {exc}")
+                if label:
+                    label.setText(f"Не удалось загрузить страницу: {exc}")
                 return
             setattr(self, attribute, page)
             title = self.brand_tabs.tabText(index)
@@ -430,7 +520,7 @@ def run_gui() -> None:
 
             self._page_specs = (
                 ("gui.pages.stulz_page", "StulzPage", "stulz_page"),
-                ("gui.pages.riello_page", "RielloPage", "riello_page"),
+                ("gui.pages.riello_workspace", "RielloPage", "riello_page"),
                 ("gui.pages.dc_eltek_page", "DcEltekPage", "dc_eltek_page"),
                 ("gui.pages.battery_page", "BatteryPage", "battery_page"),
                 ("gui.pages.hvac_page", "HVACPage", "hvac_page"),
@@ -445,6 +535,28 @@ def run_gui() -> None:
                 self.brand_tabs.addTab(placeholder, title)
             self.brand_tabs.setCurrentIndex(self._tab_index_for_brand(self._saved("brand", "Stulz")))
             self.brand_tabs.currentChanged.connect(self._on_brand_tab_changed)
+
+            self.loading_indicator = QWidget()
+            loading_layout = QHBoxLayout(self.loading_indicator)
+            loading_layout.setContentsMargins(12, 4, 12, 4)
+            loading_layout.setSpacing(10)
+            self.loading_spinner = QLabel(self._loading_frames[0])
+            self.loading_spinner.setMinimumWidth(24)
+            self.loading_spinner.setAlignment(Qt.AlignCenter)
+            self.loading_spinner.setStyleSheet("font-size: 18px; color: #d71920; font-weight: 700;")
+            loading_layout.addWidget(self.loading_spinner)
+            loading_text = QLabel("Идёт загрузка")
+            loading_text.setStyleSheet("color: #34445a; font-weight: 600;")
+            loading_layout.addWidget(loading_text)
+            self.loading_progress = QProgressBar()
+            self.loading_progress.setRange(0, 0)
+            self.loading_progress.setTextVisible(False)
+            self.loading_progress.setFixedWidth(150)
+            self.loading_progress.setMaximumHeight(10)
+            loading_layout.addWidget(self.loading_progress)
+            loading_layout.addStretch(1)
+            self.loading_indicator.setVisible(False)
+            content_layout.addWidget(self.loading_indicator)
 
             content_layout.addWidget(self.brand_tabs)
 
@@ -542,6 +654,9 @@ def run_gui() -> None:
                         page.remember_values()
                     except Exception:
                         pass
+            # Страницы сохраняют собственные поля, а выбранная вкладка
+            # принадлежит главному окну и фиксируется последней.
+            self.settings.setValue("brand", self._brand_for_tab_index(self.brand_tabs.currentIndex()))
             self.settings.setValue("signer_key", self._selected_signer_key())
             self.settings.sync()
             super().closeEvent(event)

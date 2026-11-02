@@ -238,10 +238,8 @@ jobs:
           $artifactRoot = "dist/action-artifacts"
           $runtimeArtifact = Join-Path $artifactRoot "runtime"
           $appArtifact = Join-Path $artifactRoot "app"
-          $fullArtifact = Join-Path $artifactRoot "full"
           $runtimeZip = Join-Path $moduleRoot "SAM-Offer-Generator-Runtime-Win64.zip"
           $appZip = Join-Path $moduleRoot "SAM-Offer-Generator-App-No-Runtime.zip"
-          $fullZip = Join-Path $moduleRoot "SAM-Offer-Generator-Full-Win64.zip"
 
           if (!(Test-Path (Join-Path $dist "_internal"))) {
             throw "Runtime folder was not found: $dist/_internal"
@@ -262,7 +260,6 @@ jobs:
           New-Item -ItemType Directory -Path $appStage -Force | Out-Null
           New-Item -ItemType Directory -Path $runtimeArtifact -Force | Out-Null
           New-Item -ItemType Directory -Path $appArtifact -Force | Out-Null
-          New-Item -ItemType Directory -Path $fullArtifact -Force | Out-Null
 
           $runtimeTarget = Join-Path $runtimeStage "SAM-Offer-Generator"
           New-Item -ItemType Directory -Path $runtimeTarget -Force | Out-Null
@@ -276,11 +273,9 @@ jobs:
 
           Compress-Archive -Path $runtimeTarget -DestinationPath $runtimeZip -Force
           Compress-Archive -Path $appTarget -DestinationPath $appZip -Force
-          Compress-Archive -Path $dist -DestinationPath $fullZip -Force
 
           Copy-Item -Path $runtimeTarget -Destination $runtimeArtifact -Recurse -Force
           Copy-Item -Path $appTarget -Destination $appArtifact -Recurse -Force
-          Copy-Item -Path $dist -Destination $fullArtifact -Recurse -Force
 
           Get-ChildItem $moduleRoot -Filter "*.zip" | Select-Object Name, Length
 
@@ -292,13 +287,12 @@ jobs:
           $files = Get-ChildItem "dist/distribution-modules" -Filter "*.zip" | Sort-Object Name
           $expected = @(
             "SAM-Offer-Generator-App-No-Runtime.zip",
-            "SAM-Offer-Generator-Full-Win64.zip",
             "SAM-Offer-Generator-Runtime-Win64.zip"
           )
           $actual = @($files | ForEach-Object { $_.Name })
 
-          if ($actual.Count -ne 3) {
-            throw "Expected exactly 3 release ZIPs, got $($actual.Count): $($actual -join ', ')"
+          if ($actual.Count -ne 2) {
+            throw "Expected exactly 2 release ZIPs, got $($actual.Count): $($actual -join ', ')"
           }
 
           foreach ($name in $expected) {
@@ -309,50 +303,6 @@ jobs:
 
           Write-Host "Release ZIPs are OK:"
           $files | Select-Object Name, Length
-
-      - name: Verify full ZIP contents
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $moduleRoot = "dist/distribution-modules"
-          $fullZip = Join-Path $moduleRoot "SAM-Offer-Generator-Full-Win64.zip"
-          $extractDir = "dist/full-zip-check"
-
-          if (Test-Path $extractDir) {
-            Remove-Item $extractDir -Recurse -Force
-          }
-
-          Expand-Archive -Path $fullZip -DestinationPath $extractDir -Force
-
-          $root = Get-ChildItem $extractDir -Directory | Where-Object { $_.Name -eq "SAM-Offer-Generator" } | Select-Object -First 1
-          if (-not $root) {
-            throw "Full ZIP does not contain SAM-Offer-Generator root folder"
-          }
-
-          $requiredPaths = @(
-            (Join-Path $root.FullName "SAM-Offer-Generator.exe"),
-            (Join-Path $root.FullName "_internal")
-          )
-
-          foreach ($path in $requiredPaths) {
-            if (!(Test-Path $path)) {
-              throw "Full ZIP is missing: $path"
-            }
-          }
-
-          $selfCheck = Start-Process `
-            -FilePath (Join-Path $root.FullName "SAM-Offer-Generator.exe") `
-            -ArgumentList "--self-check" `
-            -WorkingDirectory $root.FullName `
-            -WindowStyle Hidden `
-            -Wait `
-            -PassThru
-          if ($selfCheck.ExitCode -ne 0) {
-            throw "Full ZIP self-check failed with exit code $($selfCheck.ExitCode)"
-          }
-
-          Write-Host "Full ZIP contents are verified."
 
       - name: Build LVK manifest asset
         shell: pwsh
@@ -398,7 +348,6 @@ jobs:
             notes = @(
               "Раздельное обновление app/runtime через LVKUpdater.",
               "Runtime скачивается при изменении замороженного кода, зависимостей или PyInstaller layout.",
-              "Для чистой установки можно скачать SAM-Offer-Generator-Full-Win64.zip."
             )
           }
 
@@ -417,8 +366,6 @@ jobs:
           $requiredPaths = @(
             "$artifactRoot/runtime/SAM-Offer-Generator/_internal",
             "$artifactRoot/app/SAM-Offer-Generator/SAM-Offer-Generator.exe",
-            "$artifactRoot/full/SAM-Offer-Generator/SAM-Offer-Generator.exe",
-            "$artifactRoot/full/SAM-Offer-Generator/_internal",
             "$artifactRoot/manifest/offer-generator.json"
           )
 
@@ -454,14 +401,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload full portable artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SAM-Offer-Generator-Full-Win64
-          path: dist/action-artifacts/full
-          if-no-files-found: error
-          retention-days: 30
-
       - name: Upload LVK manifest artifact
         uses: actions/upload-artifact@v4
         with:
@@ -485,7 +424,6 @@ jobs:
           $env:RELEASE_NOTES
 
           Release assets:
-          - SAM-Offer-Generator-Full-Win64.zip
           - SAM-Offer-Generator-Runtime-Win64.zip
           - SAM-Offer-Generator-App-No-Runtime.zip
           - offer-generator.json
@@ -497,7 +435,6 @@ jobs:
           $notes | Set-Content $notesPath -Encoding UTF8
 
           $files = @(
-            "dist/distribution-modules/SAM-Offer-Generator-Full-Win64.zip",
             "dist/distribution-modules/SAM-Offer-Generator-Runtime-Win64.zip",
             "dist/distribution-modules/SAM-Offer-Generator-App-No-Runtime.zip",
             "dist/offer-generator.json"

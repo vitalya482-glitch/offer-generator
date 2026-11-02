@@ -12,7 +12,7 @@
 
 - исходный код уже разделен на независимые папки `core/`, `brands/`, `gui/`, `config/`, `mcp/`, `prices/`;
 - `sam_offer_generator.spec` собирает Windows-приложение в режиме PyInstaller `onedir`, то есть не в один монолитный EXE, а в папку `SAM-Offer-Generator/`;
-- GitHub Actions публикует полный архив `SAM-Offer-Generator-Full-Win64.zip`, модуль runtime, модуль app без runtime и manifest `offer-generator.json`;
+- GitHub Actions публикует модуль runtime, модуль app без runtime и manifest `offer-generator.json`;
 - `MODULES_MANIFEST.json` описывает состав модулей и зависимости между ними;
 - `tools/package_modules.py` собирает отдельные архивы исходных модулей для локальной диагностики;
 - `tools/prepare_portable_release.py` добавляет в релиз редактируемые `config/`, `templates/`, `prices/`, README и служебные файлы обновления.
@@ -119,6 +119,24 @@ MODULES_MANIFEST.json   # описание модульных архивов
 ---
 
 ## Запуск GUI
+
+## Карта архитектуры проекта
+
+Чтобы быстро понять устройство проекта, откройте [docs/architecture.html](docs/architecture.html). Это автономная HTML-карта с вкладками:
+
+- общий runtime-поток от выбора проекта до готового Word-КП;
+- модули, классы и методы, найденные в исходниках;
+- внутренние импорты между файлами;
+- внешние библиотеки из `requirements.txt`;
+- отдельные сценарии Stulz, Riello, DC Eltek, HVAC и Generator.
+
+После изменения Python-кода карту можно обновить:
+
+```bash
+.venv\Scripts\python.exe tools\generate_architecture_html.py
+```
+
+Генератор использует AST-анализ, поэтому список файлов, классов, функций и внутренних зависимостей обновляется автоматически.
 
 ```bash
 python app.py

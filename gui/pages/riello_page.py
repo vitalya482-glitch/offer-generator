@@ -39,7 +39,7 @@ from core.riello_price import (
     option_items,
 )
 from core.runtime_paths import resource_path
-from gui.path_helpers import extract_client_from_project_dir, infer_output_dir
+from gui.project_folder_selector import ProjectFolderSelector
 
 
 class RielloPage(QWidget):
@@ -61,11 +61,19 @@ class RielloPage(QWidget):
         self.option_price_items: list[RielloPriceItem] = option_items()
         self.quote_rows: list[dict[str, Any]] = self._load_quote_rows()
 
-        self.project_dir_path = self._saved("riello/project_dir", self._saved("project_dir", ""))
-        self.output_dir_path = self._saved("riello/output_dir", self._saved("output_dir", ""))
+        self.project_dir_path = self._saved("riello/project_dir", "")
+        self.output_dir_path = self._saved("riello/output_dir", "")
 
-        self.project_edit = QLineEdit(owner._display_dir(self.project_dir_path))
-        self.project_edit.setToolTip(self.project_dir_path)
+        self.project_selector = ProjectFolderSelector(
+            owner,
+            owner.settings,
+            settings_key="riello/project_dir",
+            available_brands=("Stulz", "Riello", "DC Eltek", "Generator", "HVAC", "Battery"),
+            initial_path=self.project_dir_path,
+            parent=self,
+        )
+        self.project_edit = self.project_selector.path_edit
+        self.project_selector.projectSelected.connect(self._on_project_folder_selected)
         self.client_edit = QLineEdit(self._saved("riello/client", self._saved("client", "ТОО Example")))
         self.calc_combo = QComboBox()
         self.calc_combo.setEditable(True)
@@ -96,14 +104,7 @@ class RielloPage(QWidget):
         header.addWidget(self.generate_btn, stretch=0, alignment=Qt.AlignTop)
         layout.addLayout(header)
 
-        project_card = owner._card("Папка проекта")
-        project_grid = QGridLayout()
-        project_card.layout().addLayout(project_grid)
-        project_grid.setColumnStretch(1, 1)
-        project_grid.setVerticalSpacing(12)
-        project_grid.setHorizontalSpacing(10)
-        owner._add_row(project_grid, 0, "Папка проекта", self.project_edit, "Выбрать", self.browse_project_dir)
-        layout.addWidget(project_card)
+        layout.addWidget(self.project_selector.widget)
 
         files_card = owner._card("Riello: Excel-шаблон и результат")
         files_grid = QGridLayout()
@@ -234,12 +235,19 @@ class RielloPage(QWidget):
         return self.owner._path_from_combo(combo)
 
     def _set_line_path(self, line_edit: QLineEdit, path_text: str, is_file: bool = False) -> None:
+        if line_edit is self.project_edit:
+            self._updating_path_display = True
+            try:
+                self.project_selector.set_project_path(path_text)
+            finally:
+                self._updating_path_display = False
+            return
         self._updating_path_display = True
         self.owner._set_line_path(line_edit, path_text, is_file=is_file)
         self._updating_path_display = False
 
     def project_path_text(self) -> str:
-        return self.project_dir_path or self.project_edit.toolTip() or self.project_edit.text().strip()
+        return self.project_selector.project_path_text()
 
     def output_path_text(self) -> str:
         return self.output_dir_path or self.output_edit.toolTip() or self.output_edit.text().strip()
@@ -257,7 +265,7 @@ class RielloPage(QWidget):
                 combo.setCurrentIndex(index)
 
     def _connect_changes(self) -> None:
-        self.project_edit.textChanged.connect(self._on_project_dir_changed)
+        self.project_selector.pathEdited.connect(self._on_project_dir_changed)
         self.client_edit.textChanged.connect(self._on_changed)
         self.calc_combo.currentTextChanged.connect(self._on_changed)
         self.output_edit.textChanged.connect(self._on_output_dir_changed)
@@ -303,12 +311,10 @@ class RielloPage(QWidget):
 
     # ------------------------- browse/project -------------------------
     def browse_project_dir(self) -> None:
-        old_project = self.project_path_text().strip()
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта Riello", old_project)
-        if not path:
-            return
+        self.project_selector.browse()
+
+    def _on_project_folder_selected(self, old_project: str, path: str) -> None:
         self.project_dir_path = path
-        self._set_line_path(self.project_edit, path, is_file=False)
         if path != old_project:
             self.output_dir_path = ""
             self._set_line_path(self.output_edit, "", is_file=False)
@@ -316,14 +322,15 @@ class RielloPage(QWidget):
         self.save_options()
 
     def apply_project_dir(self, project_dir: Path) -> None:
+        project_info = self.project_selector.project_info()
         if not self.output_path_text().strip():
             try:
-                guessed = infer_output_dir(str(project_dir))
+                guessed = project_info.output_dir
             except Exception:
                 guessed = str(project_dir)
             self.output_dir_path = guessed
             self._set_line_path(self.output_edit, guessed, is_file=False)
-        client = extract_client_from_project_dir(str(project_dir))
+        client = project_info.client_name
         if client and (not self.client_edit.text().strip() or self.client_edit.text().strip() == "ТОО Example"):
             self.client_edit.setText(client)
         self.autofill_manager_from_project(project_dir, force=False)
@@ -720,7 +727,6 @@ class RielloPage(QWidget):
         self._set_saved("riello/client", self.client_edit.text().strip())
         self._set_saved("riello/calc_path", self._path_from_combo(self.calc_combo))
         self._set_saved("riello/output_dir", self.output_path_text())
-        self._set_saved("brand", self.brand_name)
         self._set_saved("riello/required_power_kw", str(options.get("required_power_kw", "")))
         self._set_saved("riello/ups_model", str(options.get("ups_model", "")))
         self._set_saved("riello/ups_quantity", str(options.get("ups_quantity", "")))

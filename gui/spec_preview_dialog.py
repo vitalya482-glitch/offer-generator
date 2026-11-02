@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTabWidget,
     QTableWidget,
@@ -120,12 +121,29 @@ class SpecPreviewDialog(QDialog):
         if settings is not None:
             template_path = str(settings.value("calc_template_path", "") or "")
 
+        selected_blocks = self._selected_spec_blocks()
+        if not selected_blocks:
+            QMessageBox.warning(self, "Расчёт Calc", "Отметьте в таблице хотя бы одну позицию для включения в расчёт.")
+            return
+
         dialog = CalcBuilderDialog(
-            self._spec_blocks,
+            selected_blocks,
             parent=self,
             template_path=template_path,
         )
         dialog.exec()
+
+    def _selected_spec_blocks(self) -> list[dict[str, Any]]:
+        """Возвращает отмеченные для расчёта строки таблицы итогов."""
+        table = getattr(self, "_total_table", None)
+        if table is None:
+            return list(self._spec_blocks)
+        return [
+            block
+            for row, block in enumerate(self._spec_blocks)
+            if table.item(row, 0) is not None
+            and table.item(row, 0).checkState() == Qt.Checked
+        ]
 
     def _make_description_options_group(self) -> QGroupBox:
         group = QGroupBox("Текст для включения в описание в КП")
@@ -165,8 +183,9 @@ class SpecPreviewDialog(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        table = QTableWidget(0, 8)
+        table = QTableWidget(0, 9)
         table.setHorizontalHeaderLabels([
+            "В расчёт",
             "Модель в КП",
             "Модель в Calc",
             "Кол-во",
@@ -182,6 +201,8 @@ class SpecPreviewDialog(QDialog):
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.verticalHeader().setVisible(False)
         table.setRowCount(len(spec_blocks))
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._total_table = table
 
         total_purchase = 0.0
         total_list = 0.0
@@ -206,6 +227,7 @@ class SpecPreviewDialog(QDialog):
             calc_pdf = block.get("calc_pdf")
             calc_name = Path(calc_pdf).name if calc_pdf else "не найден"
             values = [
+                "",
                 _to_text(block.get("model")),
                 _to_text(block.get("calc_model")),
                 self._format_qty(block.get("quantity")),
@@ -218,22 +240,27 @@ class SpecPreviewDialog(QDialog):
 
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if col in (2, 3, 4, 5, 6):
+                if col == 0:
+                    item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Checked)
+                    item.setToolTip("Включить позицию в создаваемый Calc")
+                elif col in (3, 4, 5, 6, 7):
                     item.setTextAlignment(Qt.AlignCenter)
                 else:
                     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                if col in (3, 4, 5) and not value:
+                if col in (4, 5, 6) and not value:
                     item.setBackground(Qt.yellow)
                     item.setToolTip("Цена не найдена в Calc.pdf")
                 table.setItem(row, col, item)
 
         header = table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
-        for col in range(2, 7):
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        for col in range(3, 8):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(7, QHeaderView.Stretch)
+        header.setSectionResizeMode(8, QHeaderView.Stretch)
 
         table.resizeRowsToContents()
         layout.addWidget(table, stretch=1)

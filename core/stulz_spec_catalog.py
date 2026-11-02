@@ -24,6 +24,11 @@ class StulzSpecEntry:
     calc_pdf: Path
     source_dir: Path
     source_label: str
+    unit_list_price: float | None = None
+    total_list_price: float | None = None
+    unit_purchase_price: float | None = None
+    total_purchase_price: float | None = None
+    currency: str = ""
 
 
 def _format_model(value: str) -> str:
@@ -89,6 +94,11 @@ def load_stulz_spec_entry(
         calc_pdf=path,
         source_dir=source_dir,
         source_label=_source_label(label_root, source_dir),
+        unit_list_price=getattr(totals, "unit_list_price", None),
+        total_list_price=getattr(totals, "total_list_price", None),
+        unit_purchase_price=getattr(totals, "unit_purchase_price", None),
+        total_purchase_price=getattr(totals, "total_purchase_price", None),
+        currency=str(getattr(totals, "currency", "") or "").upper(),
     )
 
 

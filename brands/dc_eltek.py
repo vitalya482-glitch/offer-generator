@@ -9,6 +9,8 @@ import zipfile
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from core.excel_calc_parser import parse_calculation
+
 try:
     from core.models import OfferContext
 except Exception:  # pragma: no cover
@@ -115,6 +117,9 @@ SERVICE_NAME_TOKENS = {
     "сумма",
     "quantity",
     "qty",
+    "q-ty",
+    "model",
+    "модель",
     "количество",
     "кол-во",
     "price",
@@ -894,14 +899,7 @@ def _detect_currency(
 
 
 def detect_dc_eltek_currency(calc_path: str | Path, sheet_name: str) -> str:
-    matrix, formats, _max_row, _max_col = _read_sheet_matrix_with_formats(calc_path, sheet_name)
-    layout = detect_offer_layout(calc_path, sheet_name)
-    return _detect_currency(
-        matrix,
-        formats,
-        unit_price_row=int(layout["unit_price_row"] or 0) if layout.get("unit_price_row") else None,
-        total_row=int(layout["total_row"] or 0) if layout.get("total_row") else None,
-    )
+    return str(parse_calculation(calc_path, sheet_name=sheet_name).currency or "")
 
 
 
@@ -1138,52 +1136,27 @@ def read_dc_eltek_offer_items(
     Model/Quantity/Total per unit/TOTAL/VAT и затем проходит все колонки слева направо.
     Валюта должна быть найдена в ценовом блоке или явно выбрана пользователем.
     """
-    matrix, formats, _max_row, max_col = _read_sheet_matrix_with_formats(calc_path, sheet_name)
+    common = parse_calculation(calc_path, sheet_name=sheet_name)
+    if not common.items:
+        details = "; ".join(common.warnings) or "позиции не найдены"
+        raise ValueError(f"Не удалось прочитать позиции DC Eltek: {details}")
+
+    # Общий парсер — единственный источник позиций, валюты, НДС и итогов.
+    # Ниже остаётся преобразование результата для Word-шаблона Eltek и чтение
+    # дополнительных условий, которых в общем контракте пока нет.
+    matrix, _formats, _max_row, _max_col = _read_sheet_matrix_with_formats(calc_path, sheet_name)
     layout = detect_offer_layout(calc_path, sheet_name)
-
-    required = ["name_row", "quantity_row", "unit_price_row", "total_row"]
-    missing = [key for key in required if not layout.get(key)]
-    if missing:
-        raise ValueError(
-            "Не удалось определить структуру листа DC Eltek. Не найдены строки: "
-            + ", ".join(missing)
-        )
-
-    name_row = int(layout["name_row"] or 0)
-    quantity_row = int(layout["quantity_row"] or 0)
-    unit_price_row = int(layout["unit_price_row"] or 0)
-    total_row = int(layout["total_row"] or 0)
-    vat_percent_row = int(layout.get("vat_percent_row") or 0) or None
-    common_vat_percent = _extract_single_vat_percent(matrix, vat_percent_row)
-    detected_currency = _detect_currency(
-        matrix,
-        formats,
-        unit_price_row=unit_price_row,
-        total_row=total_row,
-    )
+    common_vat_percent = float(common.vat_percent or 0.0)
+    detected_currency = str(common.currency or "")
     currency = (currency_override or detected_currency or "").upper().strip()
 
     items: list[dict[str, Any]] = []
 
-    for col in range(1, max_col + 1):
-        name = _cell_text(matrix, name_row, col)
-        if _is_service_name(name):
-            continue
-
-        quantity = _cell_number(matrix, quantity_row, col)
-        unit_price = _cell_number(matrix, unit_price_row, col)
-        total = _cell_number(matrix, total_row, col)
+    for common_item in common.items:
+        quantity = float(common_item.qty or 0.0)
+        unit_price = float(common_item.unit_price or 0.0)
+        total = float(common_item.total_price or 0.0)
         vat_percent = common_vat_percent
-
-        if quantity is None or quantity <= 0:
-            continue
-        if (unit_price is None or unit_price <= 0) and (total is None or total <= 0):
-            continue
-
-        if (total is None or total <= 0) and unit_price is not None:
-            total = unit_price * quantity
-        if (unit_price is None or unit_price <= 0) and total is not None and quantity:
-            unit_price = total / quantity
 
         vat_percent = vat_percent or 0.0
         total_with_vat = float(total or 0.0)
@@ -1197,7 +1170,7 @@ def read_dc_eltek_offer_items(
         items.append(
             {
                 "number": len(items) + 1,
-                "name": name,
+                "name": common_item.name,
                 "quantity": quantity,
                 "unit_price": float(unit_price or 0.0),
                 "total_without_vat": total_without_vat,
@@ -1206,7 +1179,7 @@ def read_dc_eltek_offer_items(
                 "total": total_with_vat,
                 "currency": currency,
                 "detected_currency": detected_currency,
-                "source_column": col,
+                "source_column": common_item.source_col,
             }
         )
 

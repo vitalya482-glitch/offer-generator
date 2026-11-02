@@ -38,7 +38,7 @@ class RielloOfferCalc:
 
     @property
     def equipment(self) -> list[RielloOfferItem]:
-        rows = [item for item in self.items if item.kind.lower().startswith("ибп")]
+        rows = [item for item in self.items if not item.kind.lower().startswith("опц")]
         return rows or list(self.items)
 
     @property
@@ -153,6 +153,69 @@ def _find_ddp_total(values_wb) -> tuple[float | None, str]:
     return value, label
 
 
+def _read_ddp_columns(values_wb, items: list[RielloOfferItem]) -> tuple[float | None, str]:
+    """Apply final per-position DDP values from the generated Calc sheet.
+
+    Riello Calc places each selected position in its own column (D, E, ...).
+    The final customer total is row 37 and the final unit price is row 36.
+    Older files may not have these columns, so the caller keeps its source
+    values as a fallback.
+    """
+    sheet = _sheet_starting(values_wb, "DDP")
+    if sheet is None:
+        return None, ""
+    matched = 0
+    totals: list[float] = []
+    labels: list[str] = []
+    for col in range(4, sheet.max_column + 1):
+        model = str(sheet.cell(2, col).value or "").strip()
+        if not model:
+            continue
+        qty = _number(sheet.cell(4, col).value, 0.0)
+        unit = _number(sheet.cell(36, col).value, 0.0)
+        total = _number(sheet.cell(37, col).value, 0.0)
+        if total <= 0:
+            continue
+        note = str(sheet.cell(9, col).value or "").strip()
+        # Prefer the same order as UPS configuration.  The generated Calc
+        # writes the columns in exactly that order; name matching handles
+        # legacy files where a column was removed.
+        target = None
+        for item in items:
+            if item.model == model or model in item.model or item.model in model:
+                target = item
+                break
+        if target is None and matched < len(items):
+            target = items[matched]
+        if target is None:
+            continue
+        if qty > 0:
+            target.qty = qty
+        target.unit_price = unit if unit > 0 else (total / target.qty if target.qty else total)
+        target.total = total
+        if note:
+            target.note = note
+        target.kind = _kind_from_model(target.model, target.note)
+        matched += 1
+        totals.append(total)
+        if note and note not in labels:
+            labels.append(note)
+    if not totals:
+        return None, ""
+    return sum(totals), "; ".join(labels)
+
+
+def _kind_from_model(model: str, note: str = "") -> str:
+    text = f"{model} {note}".lower().replace("ё", "е")
+    if "опция" in text or "option" in text:
+        return "Опция"
+    if any(token in text for token in ("акб", "battery", "batt", "батар")):
+        return "АКБ"
+    if any(token in text for token in ("ибп", "ups", "riello")):
+        return "ИБП"
+    return "Позиция"
+
+
 def read_riello_offer_calc(path: str | Path) -> RielloOfferCalc:
     path = Path(path)
     if not path.exists():
@@ -197,23 +260,23 @@ def read_riello_offer_calc(path: str | Path) -> RielloOfferCalc:
                     dimensions=dimensions,
                     weight_kg=weight,
                     note=note,
-                    kind=_kind_from_note(note),
+                    kind=_kind_from_model(model, note),
                 )
             )
 
         if not result.items:
             raise ValueError("На листе 'UPS configuration' не найдены позиции оборудования.")
 
-        result.ddp_total, result.ddp_label = _find_ddp_total(values_wb)
+        per_column_total, per_column_label = _read_ddp_columns(values_wb, result.items)
+        if per_column_total is not None:
+            result.ddp_total = per_column_total
+            result.ddp_label = per_column_label or "DDP по позициям"
+        else:
+            result.ddp_total, result.ddp_label = _find_ddp_total(values_wb)
         if result.ddp_total is None:
             result.warnings.append(
                 "Итоговая DDP-стоимость не прочитана из кэша формул Excel. "
                 "Если Calc только что создан, откройте его в Excel, сохраните и нажмите F5."
-            )
-        if len(result.equipment) > 1 and result.ddp_total is not None:
-            result.warnings.append(
-                "В Calc несколько ИБП. Общая DDP-сумма найдена, но Calc пока не содержит "
-                "однозначных конечных цен по каждой позиции; в таблице КП используются цены строк UPS configuration."
             )
         return result
     finally:
@@ -276,11 +339,10 @@ def _offer_rows(calc: RielloOfferCalc) -> tuple[list[dict[str, Any]], float]:
 
     # For the common Riello case one UPS configuration can safely receive the
     # final DDP total from Calc. Options remain part of its configuration.
-    one_equipment_ddp = len(equipment) == 1 and calc.ddp_total is not None
-    grand_total = calc.ddp_total if one_equipment_ddp else sum(item.total for item in equipment)
+    grand_total = calc.ddp_total if calc.ddp_total is not None else sum(item.total for item in equipment)
 
     for index, item in enumerate(equipment, start=1):
-        total = calc.ddp_total if one_equipment_ddp else item.total
+        total = item.total
         unit_price = total / item.qty if item.qty else total
         name = item.model
         if item.code:
@@ -331,7 +393,8 @@ def generate_riello_word_offer(
     ]
     technical_specs: list[dict[str, Any]] = []
     for item in calc.equipment:
-        technical_specs.append({"name": f"ИБП {item.model}", "value": "", "is_section": True})
+        prefix = "АКБ" if item.kind.upper().startswith("АКБ") else ("ИБП" if item.kind.upper().startswith("ИБП") else "")
+        technical_specs.append({"name": f"{prefix} {item.model}".strip(), "value": "", "is_section": True})
         if item.code:
             technical_specs.append({"name": "Код:", "value": item.code, "is_section": False})
         if item.dimensions:
@@ -353,7 +416,7 @@ def generate_riello_word_offer(
         "{{total_price_block}}": f"{_fmt_money(grand_total)} {currency_name}.",
         "{{payment_terms}}": "Условия оплаты уточняются.",
         "{{delivery_time}}": "Срок поставки уточняется после размещения заказа.",
-        "{{delivery_terms}}": "Согласно расчету Riello Calc.",
+        "{{delivery_terms}}": "; ".join(dict.fromkeys(item.note for item in calc.items if item.note)) or "Согласно расчету Riello Calc.",
         "{{installation_terms}}": "Согласно расчету и составу предложения.",
         "{{startup_terms}}": "Согласно расчету и составу предложения.",
         "{{offer_validity}}": "Коммерческое предложение действительно в течение 30 календарных дней.",

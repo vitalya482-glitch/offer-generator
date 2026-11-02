@@ -83,10 +83,10 @@ Important:
   EXE depends on the files and folders shipped with it.
 
 Release modules:
-  GitHub Release publishes three ZIP files:
-  - SAM-Offer-Generator-Full-Win64.zip
+  GitHub Release publishes two ZIP files and the updater manifest:
   - SAM-Offer-Generator-Runtime-Win64.zip
   - SAM-Offer-Generator-App-No-Runtime.zip
+  - offer-generator.json
 
 Update model:
   Normal Python/UI fixes are delivered through App-No-Runtime.zip. Runtime is

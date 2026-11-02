@@ -42,8 +42,8 @@ from core.final_offer_word_maker import (
     format_amount_in_words,
     make_final_offer,
 )
-from core.project_scanner import clear_scan_cache, scan_project_files
-from gui.path_helpers import extract_client_from_project_dir, infer_output_dir
+from gui.path_helpers import infer_output_dir
+from gui.project_folder_selector import ProjectFolderSelector
 
 
 _FROM_CLIENT_ALIASES = (
@@ -80,7 +80,7 @@ class HVACPage(QWidget):
         self._updating_path_display = False
         self._output_selected_manually = False
 
-        self.project_dir_path = self._saved("hvac/project_dir", self._saved("project_dir", ""))
+        self.project_dir_path = self._saved("hvac/project_dir", "")
         self.output_dir_path = self._saved("hvac/output_dir", "")
         self.client_company = ""
         self.from_client_dir: Path | None = None
@@ -88,6 +88,16 @@ class HVACPage(QWidget):
         self.parse_result: CalcParseResult | None = None
         self.items: list[CalcItem] = []
         self.item_checks: list[QCheckBox] = []
+        self.project_selector = ProjectFolderSelector(
+            owner,
+            self.settings,
+            settings_key="hvac/project_dir",
+            available_brands=("Stulz", "Riello", "DC Eltek", "Generator", "HVAC", "Battery"),
+            initial_path=self.project_dir_path,
+            parent=self,
+        )
+        self.project_edit = self.project_selector.path_edit
+        self.project_selector.projectSelected.connect(self._on_project_folder_selected)
 
         self._build_ui()
         self._load_saved_values()
@@ -125,24 +135,7 @@ class HVACPage(QWidget):
         header.addWidget(self.generate_btn, alignment=Qt.AlignTop)
         layout.addLayout(header)
 
-        project_card = self.owner._card("Папка проекта")
-        project_grid = QGridLayout()
-        project_grid.setColumnStretch(1, 1)
-        project_grid.setVerticalSpacing(12)
-        project_grid.setHorizontalSpacing(10)
-        project_card.layout().addLayout(project_grid)
-
-        self.project_edit = QLineEdit()
-        self.project_edit.setToolTip(self.project_dir_path)
-        self.owner._add_row(
-            project_grid,
-            0,
-            "Папка проекта",
-            self.project_edit,
-            "Выбрать",
-            self.browse_project_dir,
-        )
-        layout.addWidget(project_card)
+        layout.addWidget(self.project_selector.widget)
 
         files_card = self.owner._card("Файлы")
         files_grid = QGridLayout()
@@ -279,7 +272,7 @@ class HVACPage(QWidget):
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.status_label)
 
-        self.project_edit.textChanged.connect(self._on_project_text_changed)
+        self.project_selector.pathEdited.connect(self._on_project_text_changed)
         self.output_edit.textChanged.connect(self._on_output_text_changed)
         for widget in (
             self.offer_version,
@@ -366,6 +359,13 @@ class HVACPage(QWidget):
 
     # --------------------------------------------------------------- paths
     def _set_line_path(self, widget: QLineEdit, path_text: str, *, is_file: bool) -> None:
+        if widget is self.project_edit:
+            self._updating_path_display = True
+            try:
+                self.project_selector.set_project_path(path_text)
+            finally:
+                self._updating_path_display = False
+            return
         self._updating_path_display = True
         try:
             self.owner._set_line_path(widget, path_text, is_file=is_file)
@@ -376,7 +376,7 @@ class HVACPage(QWidget):
         return self.owner._path_from_combo(combo)
 
     def project_path_text(self) -> str:
-        return self.project_dir_path or self.project_edit.toolTip() or self.project_edit.text().strip()
+        return self.project_selector.project_path_text()
 
     def output_path_text(self) -> str:
         return self.output_dir_path or self.output_edit.toolTip() or self.output_edit.text().strip()
@@ -404,14 +404,11 @@ class HVACPage(QWidget):
         self.remember_values()
 
     def browse_project_dir(self) -> None:
-        old_project = self.project_path_text().strip()
-        start = old_project or str(Path.home())
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", start)
-        if not path:
-            return
+        self.project_selector.browse()
+
+    def _on_project_folder_selected(self, old_project: str, path: str) -> None:
         project_changed = not _same_windows_path(path, old_project)
         self.project_dir_path = path
-        self._set_line_path(self.project_edit, path, is_file=False)
         if project_changed:
             # Папка результата относится к конкретному проекту. Не переносим
             # сохранённый путь от предыдущего проекта в новый расчёт.
@@ -473,9 +470,11 @@ class HVACPage(QWidget):
             self.status_label.setText("Папка проекта не выбрана или недоступна")
             return
 
-        if force:
-            clear_scan_cache()
-        found = scan_project_files(project_dir, use_cache=not force)
+        self.project_selector.scan_async(self._apply_project_scan, force=force)
+
+    def _apply_project_scan(self, found: dict[str, list[Path]]) -> None:
+        project_dir = Path(self.project_path_text().strip())
+        project_info = self.project_selector.project_info(found.get("pdf_dirs", []))
         excel_files = [Path(path) for path in found.get("excel", [])]
         old_calc = self._path_from_combo(self.calc_combo)
 
@@ -497,7 +496,7 @@ class HVACPage(QWidget):
         current_output = self.output_path_text().strip()
         output_belongs_to_project = _path_is_inside(current_output, str(project_dir))
         if not current_output or (not self._output_selected_manually and not output_belongs_to_project):
-            self.output_dir_path = infer_output_dir(str(project_dir))
+            self.output_dir_path = project_info.output_dir
             self._set_line_path(self.output_edit, self.output_dir_path, is_file=False)
 
         self._refresh_project_metadata()
@@ -514,7 +513,7 @@ class HVACPage(QWidget):
             self._refresh_auto_data()
             return
 
-        self.client_company = extract_client_from_project_dir(project_text).strip()
+        self.client_company = self.project_selector.client_name().strip()
         project_dir = Path(project_text)
         if project_dir.is_dir():
             self.from_client_dir = _find_from_client_dir(project_dir)

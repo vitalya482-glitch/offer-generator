@@ -27,6 +27,7 @@ from brands.dc_eltek import (
     preview as build_dc_eltek_preview,
 )
 from brands.dc_eltek_en import make_offer as make_dc_eltek_offer_en
+from gui.project_folder_selector import ProjectFolderSelector
 
 
 PROJECTS_MARKER = "02_Projects"
@@ -269,6 +270,21 @@ class DcEltekPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
+        self.project_selector = ProjectFolderSelector(
+            owner,
+            self.settings,
+            settings_key="dc_eltek_project_dir",
+            available_brands=("Stulz", "Riello", "DC Eltek", "Generator", "HVAC", "Battery"),
+            initial_path=self._saved("dc_eltek_project_dir", ""),
+            parent=self,
+        )
+        self.project_dir_edit = self.project_selector.path_edit
+        self.project_selector.projectSelected.connect(self._on_project_folder_selected)
+        self.project_dir_edit.editingFinished.connect(
+            lambda: self._on_project_dir_changed(force_client=False, force_calc=True)
+        )
+        layout.addWidget(self.project_selector.widget)
+
         card = owner._card("DC Eltek")
         form = QGridLayout()
         form.setContentsMargins(0, 0, 0, 0)
@@ -277,25 +293,20 @@ class DcEltekPage(QWidget):
         form.setColumnStretch(1, 1)
         card.layout().addLayout(form)
 
-        self.project_dir_edit = QLineEdit(self._saved("dc_eltek_project_dir", ""))
-        self.project_dir_edit.setPlaceholderText("Папка проекта")
-        self.project_dir_edit.editingFinished.connect(lambda: self._on_project_dir_changed(force_client=False, force_calc=True))
-        owner._add_row(form, 0, "Папка проекта", self.project_dir_edit, "Выбрать", self.select_project_dir)
-
         self.client_edit = QLineEdit(self._saved("dc_eltek_client", ""))
         self.client_edit.setPlaceholderText("Клиент")
         self.client_edit.editingFinished.connect(self._on_field_changed)
-        owner._add_row(form, 1, "Клиент", self.client_edit, None, None)
+        owner._add_row(form, 0, "Клиент", self.client_edit, None, None)
 
         self.calc_path_edit = QLineEdit(self._saved("dc_eltek_calc_path", ""))
         self.calc_path_edit.setPlaceholderText("Excel calc будет найден автоматически в sales")
         self.calc_path_edit.setReadOnly(True)
-        owner._add_row(form, 2, "Расчёт Excel", self.calc_path_edit, None, None)
+        owner._add_row(form, 1, "Расчёт Excel", self.calc_path_edit, None, None)
 
         self.sheet_combo = QComboBox()
         self.sheet_combo.setEditable(False)
         self.sheet_combo.currentTextChanged.connect(self._on_sheet_changed)
-        owner._add_row(form, 3, "Лист для КП", self.sheet_combo, None, None)
+        owner._add_row(form, 2, "Лист для КП", self.sheet_combo, None, None)
 
         self.currency_combo = QComboBox()
         self.currency_combo.addItem("Не указана", "")
@@ -303,13 +314,13 @@ class DcEltekPage(QWidget):
         self.currency_combo.addItem("EUR", "EUR")
         self.currency_combo.addItem("USD", "USD")
         self.currency_combo.currentIndexChanged.connect(self._on_currency_changed)
-        owner._add_row(form, 4, "Валюта", self.currency_combo, None, None)
+        owner._add_row(form, 3, "Валюта", self.currency_combo, None, None)
 
         saved_template = self._saved("dc_eltek_template_path", "") or find_default_dc_eltek_template()
         self.template_path_edit = QLineEdit(saved_template)
         self.template_path_edit.setPlaceholderText("Шаблон КП .docx")
         self.template_path_edit.editingFinished.connect(self._on_field_changed)
-        owner._add_row(form, 5, "Шаблон КП", self.template_path_edit, "Выбрать", self.select_template_file)
+        owner._add_row(form, 4, "Шаблон КП", self.template_path_edit, "Выбрать", self.select_template_file)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
@@ -346,40 +357,60 @@ class DcEltekPage(QWidget):
         layout.addWidget(card)
         layout.addStretch(1)
 
-        self._initial_sync_calc_with_project()
-        self._load_sheet_names(initial=True)
-        self._restore_or_detect_currency()
-        self._update_open_buttons()
-        self._update_preview()
+        if not self._initial_sync_calc_with_project():
+            self._load_sheet_names(initial=True)
+            self._restore_or_detect_currency()
+            self._update_open_buttons()
+            self._update_preview()
 
     def _saved(self, key: str, default: str) -> str:
         value = self.settings.value(key, default)
         return str(value) if value is not None else default
 
     def project_path_text(self) -> str:
-        return self.project_dir_edit.text().strip()
+        return self.project_selector.project_path_text()
 
     def _calc_output_dir(self) -> str:
         calc_path = self.calc_path_edit.text().strip()
         if calc_path:
             return str(Path(calc_path).parent)
-        return self.project_dir_edit.text().strip()
+        return self.project_path_text()
 
     def _calc_belongs_to_current_project(self) -> bool:
-        project_dir = self.project_dir_edit.text().strip()
+        project_dir = self.project_path_text()
         calc_path = self.calc_path_edit.text().strip()
         if not project_dir or not calc_path:
             return False
         return _is_path_inside(calc_path, project_dir)
 
-    def _initial_sync_calc_with_project(self) -> None:
-        project_dir = self.project_dir_edit.text().strip()
+    def _initial_sync_calc_with_project(self) -> bool:
+        project_dir = self.project_path_text()
         if not project_dir:
-            return
+            return False
         # Если в настройках остался calc от другого проекта, сразу выбрасываем его.
         # Именно это давало ситуацию, когда в DC Eltek оставался путь из STULZ.
         if not self._calc_belongs_to_current_project():
-            self._auto_find_calc_from_project(show_warning=False, force=True)
+            self.calc_path_edit.clear()
+            self.sheet_combo.clear()
+            self._set_currency_value("")
+            self.preview_box.setPlainText("Идёт загрузка данных проекта…")
+            self.owner.run_background(
+                lambda: find_calc_file_in_sales(project_dir),
+                self._apply_initial_calc_search,
+                self._show_initial_calc_search_error,
+            )
+            return True
+        return False
+
+    def _apply_initial_calc_search(self, calc_path: str) -> None:
+        if calc_path:
+            self.calc_path_edit.setText(calc_path)
+            self.calc_path_edit.setToolTip(calc_path)
+        self._reload_calc_dependent_data(initial=True)
+
+    def _show_initial_calc_search_error(self, error: Exception) -> None:
+        self.preview_box.setPlainText(f"Не удалось найти расчёт: {error}")
+        self._update_open_buttons()
 
     def _currency_value(self) -> str:
         return str(self.currency_combo.currentData() or "").upper().strip()
@@ -397,8 +428,7 @@ class DcEltekPage(QWidget):
             self._setting_currency_programmatically = False
 
     def remember_values(self) -> None:
-        self.settings.setValue("brand", "DC Eltek")
-        self.settings.setValue("dc_eltek_project_dir", self.project_dir_edit.text().strip())
+        self.settings.setValue("dc_eltek_project_dir", self.project_path_text())
         self.settings.setValue("dc_eltek_client", self.client_edit.text().strip())
         self.settings.setValue("dc_eltek_calc_path", self.calc_path_edit.text().strip())
         self.settings.setValue("dc_eltek_sheet_name", self.sheet_combo.currentText().strip())
@@ -419,7 +449,7 @@ class DcEltekPage(QWidget):
             "dc_eltek_last_output_path",
         ):
             self.settings.remove(key)
-        self.project_dir_edit.clear()
+        self.project_selector.set_project_path("")
         self.client_edit.clear()
         self.calc_path_edit.clear()
         self.sheet_combo.clear()
@@ -459,11 +489,9 @@ class DcEltekPage(QWidget):
         self._update_open_buttons()
 
     def select_project_dir(self) -> None:
-        current = self.project_dir_edit.text().strip() or str(Path.home())
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку проекта", current)
-        if not path:
-            return
-        self.project_dir_edit.setText(path)
+        self.project_selector.browse()
+
+    def _on_project_folder_selected(self, _old_project: str, _path: str) -> None:
         self._on_project_dir_changed(force_client=True, show_calc_warning=True, force_calc=True)
 
     def _on_project_dir_changed(
@@ -472,8 +500,8 @@ class DcEltekPage(QWidget):
         show_calc_warning: bool = False,
         force_calc: bool = True,
     ) -> None:
-        path_text = self.project_dir_edit.text().strip()
-        extracted_client = extract_client_from_project_path(path_text)
+        path_text = self.project_path_text()
+        extracted_client = self.project_selector.client_name()
         if extracted_client and (force_client or not self.client_edit.text().strip()):
             self.client_edit.setText(extracted_client)
         self._auto_find_calc_from_project(show_warning=show_calc_warning, force=force_calc)
@@ -482,7 +510,7 @@ class DcEltekPage(QWidget):
         self._update_open_buttons()
 
     def _auto_find_calc_from_project(self, show_warning: bool = False, force: bool = False) -> bool:
-        project_dir = self.project_dir_edit.text().strip()
+        project_dir = self.project_path_text()
         if not project_dir:
             return False
 
@@ -516,7 +544,7 @@ class DcEltekPage(QWidget):
         return True
 
     def select_template_file(self) -> None:
-        start_dir = self.project_dir_edit.text().strip() or str(Path.home())
+        start_dir = self.project_path_text() or str(Path.home())
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Выберите шаблон КП",
@@ -530,7 +558,7 @@ class DcEltekPage(QWidget):
         self._update_preview()
 
     def refresh_data(self) -> None:
-        if self.project_dir_edit.text().strip():
+        if self.project_path_text():
             self._auto_find_calc_from_project(show_warning=True, force=True)
         else:
             self._reload_calc_dependent_data(initial=False)
@@ -599,7 +627,7 @@ class DcEltekPage(QWidget):
         signer = self._selected_signer()
         manager = self._manager_profile()
         return {
-            "project_dir": self.project_dir_edit.text().strip(),
+            "project_dir": self.project_path_text(),
             "output_dir": self._calc_output_dir(),
             "client": self.client_edit.text().strip(),
             "calc_path": self.calc_path_edit.text().strip(),
@@ -629,7 +657,7 @@ class DcEltekPage(QWidget):
         self.remember_values()
         language = "en" if language == "en" else "ru"
 
-        if not self.calc_path_edit.text().strip() and self.project_dir_edit.text().strip():
+        if not self.calc_path_edit.text().strip() and self.project_path_text():
             self._auto_find_calc_from_project(show_warning=True, force=True)
 
         data = self._context_dict(language)
